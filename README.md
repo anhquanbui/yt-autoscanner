@@ -1,0 +1,2 @@
+# yt-autoscanner
+Starter repo

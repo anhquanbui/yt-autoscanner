@@ -1,0 +1,15 @@
+﻿# VSCode
+.vscode/
+*.code-workspace
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Env
+.env
+venv/
+.venv/
+
+# Docker volumes
+mongo_data/
