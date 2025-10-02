@@ -48,7 +48,7 @@ python -m venv venv
 
 # If PowerShell blocks scripts, run once as Admin:
 #   Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-.env\Scripts\Activate.ps1
+.venv\Scripts\Activate.ps1
 ```
 Verify:
 ```powershell
@@ -183,7 +183,7 @@ un_scheduler.ps1 -IntervalSeconds 30
 - **Swagger “Failed to fetch”**: ensure MongoDB is running; set `MONGO_URI` in the same terminal; restart Uvicorn.
 - **PowerShell cannot run `Activate.ps1`**: run once as Admin  
   `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`  
-  or use `venv\Scriptsctivate.bat` from CMD.
+  or use `venv\Scripts\activate.bat` from CMD.
 - **`found=0` with search**: region/filters too tight or lookback too small. Increase `YT_LOOKBACK_MINUTES`, remove filters, or rely on fallback `mostPopular`.
 - **`upserted=0` with `found>0`**: those videos were already present (upsert skips duplicates).
 - **Key security**: rotate your API key if it was exposed.
