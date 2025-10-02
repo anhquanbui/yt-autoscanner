@@ -1,13 +1,17 @@
-
-# discover_once.py (v3 with RANDOM MODE)
+# discover_once.py — v4 COMPLETE
+# (see message for full feature list)
 from dotenv import load_dotenv
-load_dotenv()  # load .env nếu có
-import os, sys, random
+load_dotenv()
+
+import os, sys, io, random
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
+from zoneinfo import ZoneInfo
+
 import requests
 from pymongo import MongoClient, UpdateOne
-import sys, io
+
+# UTF-8 console
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -31,11 +35,17 @@ RANDOM_WINDOW_MINUTES = int(os.getenv("YT_RANDOM_WINDOW_MINUTES", "30"))
 RANDOM_REGION_POOL = [x.strip().upper() for x in os.getenv("YT_RANDOM_REGION_POOL","").split(",") if x.strip()]
 RANDOM_QUERY_POOL = [x.strip() for x in os.getenv("YT_RANDOM_QUERY_POOL","").split(",") if x.strip()]
 
+SINCE_MODE = os.getenv("YT_SINCE_MODE", "lookback")  # lookback|now|minutes|local_midnight
+SINCE_MINUTES = int(os.getenv("YT_SINCE_MINUTES", "60"))
+LOCAL_TZ = os.getenv("YT_LOCAL_TZ")
+
 SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 
 def resolve_channel_id_from_handle(handle: str) -> str:
+    if not handle:
+        raise ValueError("Empty handle")
     if not handle.startswith("@"):
         handle = "@" + handle
     try:
@@ -98,7 +108,7 @@ def videos_details(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
             out[vid] = it
     return out
 
-def most_popular(region: str, category_id: str, max_results: int = 50) -> List[Dict[str, Any]]:
+def most_popular(region: str, category_id: str, max_results: int = 50):
     params = {"key": API_KEY, "part": "snippet", "chart": "mostPopular",
               "regionCode": region, "videoCategoryId": category_id, "maxResults": max_results}
     r = requests.get(VIDEOS_URL, params=params, timeout=30)
@@ -107,7 +117,7 @@ def most_popular(region: str, category_id: str, max_results: int = 50) -> List[D
     items = [{"id": {"videoId": it["id"]}, "snippet": it["snippet"]} for it in data.get("items", [])]
     return items
 
-def upsert_videos(items: List[Dict[str, Any]], db):
+def upsert_videos(items, db):
     ops = []
     now = datetime.now(timezone.utc).isoformat()
     for it in items:
@@ -137,15 +147,16 @@ def upsert_videos(items: List[Dict[str, Any]], db):
             "ml_flags": {"likely_viral": False, "viral_confirmed": False, "score": 0.0}
         }
         ops.append(UpdateOne({"_id": vid}, {"$setOnInsert": doc}, upsert=True))
-    if ops:
-        result = db.videos.bulk_write(ops, ordered=False)
-        return result.upserted_count or 0
-    return 0
+    if not ops:
+        return 0
+    res = db.videos.bulk_write(ops, ordered=False)
+    return res.upserted_count or 0
 
 def main() -> int:
     global CHANNEL_ID, REGION, QUERY
-    print(">>> discover_once v3 starting")
+    print(">>> discover_once v4 starting")
     print(f"RANDOM_MODE={RANDOM_MODE}, RANDOM_LOOKBACK_MINUTES={RANDOM_LOOKBACK_MINUTES}, RANDOM_WINDOW_MINUTES={RANDOM_WINDOW_MINUTES}")
+    print(f"SINCE_MODE={SINCE_MODE}, YT_LOCAL_TZ={LOCAL_TZ}, YT_SINCE_MINUTES={SINCE_MINUTES}")
     if not API_KEY:
         print("Missing YT_API_KEY", file=sys.stderr); return 2
 
@@ -157,11 +168,11 @@ def main() -> int:
             print(f"Failed to resolve handle {CHANNEL_HANDLE}: {e}", file=sys.stderr); return 1
 
     client = MongoClient(MONGO_URI); db = client.get_database()
-    now = datetime.now(timezone.utc)
+    now_utc = datetime.now(timezone.utc)
 
     if RANDOM_MODE:
         offset = random.randint(0, max(1, RANDOM_LOOKBACK_MINUTES))
-        end = now - timedelta(minutes=offset)
+        end = now_utc - timedelta(minutes=offset)
         start = end - timedelta(minutes=RANDOM_WINDOW_MINUTES)
         published_after = start.isoformat()
         published_before = end.isoformat()
@@ -169,9 +180,20 @@ def main() -> int:
         query_choice = random.choice(RANDOM_QUERY_POOL) if RANDOM_QUERY_POOL else None
         print(f"Random slice: {published_after}..{published_before} | region={region_choice or REGION} | query={query_choice!r}")
     else:
-        published_after = (now - timedelta(minutes=LOOKBACK_MINUTES)).isoformat()
+        if   SINCE_MODE == "now":
+            published_after = now_utc.isoformat()
+        elif SINCE_MODE == "minutes":
+            published_after = (now_utc - timedelta(minutes=SINCE_MINUTES)).isoformat()
+        elif SINCE_MODE == "local_midnight" and LOCAL_TZ:
+            now_local = datetime.now(ZoneInfo(LOCAL_TZ))
+            midnight_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+            published_after = midnight_local.astimezone(timezone.utc).isoformat()
+        else:
+            published_after = (now_utc - timedelta(minutes=LOOKBACK_MINUTES)).isoformat()
+
         published_before = None
         region_choice = None; query_choice = None
+        print(f"Deterministic slice: {published_after}..(now) | region={REGION} | query={QUERY!r} | SINCE_MODE={SINCE_MODE}")
 
     page_token = None; total_found = 0; total_upserted = 0; page = 0
     try:
@@ -195,6 +217,7 @@ def main() -> int:
                 print(f"[page {page}] found={found}")
 
             upserted = upsert_videos(items, db); total_upserted += upserted
+            print(f"[page {page}] upserted={upserted}")
             for it in items[:5]:
                 vid = it["id"]["videoId"]; title = it["snippet"]["title"]; published = it["snippet"]["publishedAt"]
                 print(f" - {vid} | {published} | {title}")
@@ -213,7 +236,7 @@ def main() -> int:
         print("Error:", e, file=sys.stderr); return 1
 
     print(f">>> DONE. total_found={total_found}, total_upserted={total_upserted}")
-    print("Tip: open http://127.0.0.1:8000/videos?limit=10 to verify."); return 0
+    print("Tip: open http://127.0.0.1:8000/videos?sort=discovered&order=desc&limit=10"); return 0
 
 if __name__ == "__main__":
     raise SystemExit(main())
