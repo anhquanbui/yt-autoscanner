@@ -1,136 +1,137 @@
+
 <#
- run_discover_loop.ps1
- ---------------------
- Runs the YouTube discover worker in a loop (default every 30s).
- Edit the "CONFIG" section below (or pass parameters) — each line says what you can change.
-
- USAGE (PowerShell):
-   .\run_discover_loop.ps1                         # uses defaults
-   .\run_discover_loop.ps1 -IntervalSeconds 60     # override interval
-   .\run_discover_loop.ps1 -RandomMode $true       # enable random mode
-   .\run_discover_loop.ps1 -ProjectRoot "D:\PROJECT\yt-autoscanner"
-
- Tip: Keep a separate terminal open for the API (uvicorn).
+  run_discover_loop.ps1 (v3 - no log locking)
+  - Default ProjectRoot = folder of this script
+  - cd to ProjectRoot so python-dotenv sees .env
+  - Optional -ApiKey; otherwise rely on .env
+  - UTF-8 output
+  - Log to logs/discover-YYYYMMDD.log via StreamWriter (FileShare.ReadWrite)
+  - Calls worker\scheduler.py (loop that invokes discover_once.py)
 #>
 
 param(
-  # How often to run discover_once (seconds). CHANGE if you want less/more frequent.
+  [string]$ProjectRoot = $PSScriptRoot,
   [int]$IntervalSeconds = 30,
-
-  # Path to your project root (folder containing \worker and \venv). CHANGE if different.
-  [string]$ProjectRoot = "D:\PROJECT\yt-autoscanner",
-
-  # --- Random Mode toggles ---
-  # Enable random mode (pick random time slice/region/query each run). Toggle $true/$false.
-  [bool]$RandomMode = $true,
-  # How far back random can pick (minutes). Example: 43200 = 30 days.
-  [int]$RandomLookbackMinutes = 43200,
-  # Width of random time slice (minutes). Example: 30 = half-hour window.
-  [int]$RandomWindowMinutes = 30,
-
-  # Pools for random region/keyword. Comma-separated. Leave empty to disable.
-  [string]$RandomRegionPool = "US,GB,JP,VN",
-  [string]$RandomQueryPool  = "gaming,stream,highlights,,",
-
-  # --- Deterministic Search (used when RandomMode=$false) ---
-  # Default region and lookback window (minutes). CHANGE if you want a wider/narrower window.
-  [string]$Region = "US",
-  [int]$LookbackMinutes = 360,
-
-  # Optional fixed filters (leave blank to disable each one)
-  [string]$Query        = "",         # e.g. "gaming"
-  [string]$ChannelId    = "",         # e.g. "UCxxxxxxxxxxxx"
-  [string]$ChannelHandle= "",         # e.g. "@SomeChannel"
-  [string]$TopicId      = "",         # e.g. "/m/0bzvm2" for Gaming
-  [string]$CategoryId   = "",         # e.g. "20" for Gaming
-
-  # Mongo + API key. You can keep these empty to reuse global env already set in this session.
-  [string]$MongoUri     = "mongodb://localhost:27017/ytscan",
-  [string]$ApiKey       = ""          # Put your API key here if you don't have it in $env:YT_API_KEY
+  [string]$ApiKey,
+  # Optional overrides
+  [bool]$RandomMode,
+  [int]$RandomLookbackMinutes,
+  [int]$RandomWindowMinutes,
+  [string]$RandomRegionPool,
+  [string]$RandomQueryPool,
+  [string]$Region,
+  [int]$LookbackMinutes,
+  [string]$Query,
+  [string]$ChannelId,
+  [string]$ChannelHandle,
+  [string]$TopicId,
+  [string]$CategoryId,
+  [string]$MongoUri
 )
 
-# ===== CONFIG (what you can change) =====
-# - IntervalSeconds: change frequency for the loop
-# - ProjectRoot: point to your repo path
-# - RandomMode & its params: toggle and tune random behavior
-# - Region/Lookback/Query: tune default search when RandomMode is OFF
-# - ChannelId/ChannelHandle/TopicId/CategoryId: add/remove filters
-# - MongoUri/ApiKey: set if not using pre-set $env variables
-# =======================================
-
-# Move to project root
-Set-Location $ProjectRoot
-
-# Activate venv (edit this path if your venv lives elsewhere)
-$venv = Join-Path $ProjectRoot "venv\Scripts\Activate.ps1"
-if (Test-Path $venv) {
-  . $venv
-} else {
-  Write-Warning "Could not find venv at $venv. Make sure your virtualenv exists."
-}
-
-# Ensure UTF-8 output (prevents emoji logging issues)
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() } catch {}
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 
-# --- REQUIRED: YouTube API key ---
-if ([string]::IsNullOrWhiteSpace($env:YT_API_KEY)) {
-  if (-not [string]::IsNullOrWhiteSpace($ApiKey)) {
-    $env:YT_API_KEY = $ApiKey
-  } else {
-    Write-Error "YT_API_KEY is not set. Pass -ApiKey or set `$env:YT_API_KEY first."
-    exit 1
-  }
+if (-not (Test-Path $ProjectRoot)) {
+  Write-Error "ProjectRoot not found: $ProjectRoot"
+  exit 1
 }
+Set-Location $ProjectRoot
 
-# --- Mongo connection (can override here) ---
-if (-not [string]::IsNullOrWhiteSpace($MongoUri)) {
-  $env:MONGO_URI = $MongoUri
-}
+Write-Host "ProjectRoot = $ProjectRoot" -ForegroundColor Cyan
+Write-Host "IntervalSeconds = $IntervalSeconds" -ForegroundColor Cyan
 
-# --- Interval for the loop ---
-$env:DISCOVER_INTERVAL_SECONDS = [string]$IntervalSeconds
-
-# --- Random mode envs (used by v3 discover) ---
-if ($RandomMode) {
-  $env:YT_RANDOM_MODE = "1"
-  $env:YT_RANDOM_LOOKBACK_MINUTES = [string]$RandomLookbackMinutes
-  $env:YT_RANDOM_WINDOW_MINUTES   = [string]$RandomWindowMinutes
-
-  if (-not [string]::IsNullOrWhiteSpace($RandomRegionPool)) {
-    $env:YT_RANDOM_REGION_POOL = $RandomRegionPool
-  } else {
-    Remove-Item Env:YT_RANDOM_REGION_POOL -ErrorAction SilentlyContinue
-  }
-
-  if (-not [string]::IsNullOrWhiteSpace($RandomQueryPool)) {
-    $env:YT_RANDOM_QUERY_POOL = $RandomQueryPool
-  } else {
-    Remove-Item Env:YT_RANDOM_QUERY_POOL -ErrorAction SilentlyContinue
-  }
+# Activate venv if present
+$venvActivate = Join-Path $ProjectRoot "venv\Scripts\Activate.ps1"
+if (Test-Path $venvActivate) {
+  Write-Host "Activating venv..." -ForegroundColor DarkCyan
+  . $venvActivate
 } else {
-  # Deterministic mode
-  $env:YT_RANDOM_MODE = "0"
-  $env:YT_REGION = $Region
-  $env:YT_LOOKBACK_MINUTES = [string]$LookbackMinutes
-
-  if ([string]::IsNullOrWhiteSpace($Query))        { Remove-Item Env:YT_QUERY -ErrorAction SilentlyContinue }        else { $env:YT_QUERY = $Query }
-  if ([string]::IsNullOrWhiteSpace($ChannelId))    { Remove-Item Env:YT_CHANNEL_ID -ErrorAction SilentlyContinue }   else { $env:YT_CHANNEL_ID = $ChannelId }
-  if ([string]::IsNullOrWhiteSpace($ChannelHandle)){ Remove-Item Env:YT_CHANNEL_HANDLE -ErrorAction SilentlyContinue }else { $env:YT_CHANNEL_HANDLE = $ChannelHandle }
-  if ([string]::IsNullOrWhiteSpace($TopicId))      { Remove-Item Env:YT_TOPIC_ID -ErrorAction SilentlyContinue }      else { $env:YT_TOPIC_ID = $TopicId }
-  if ([string]::IsNullOrWhiteSpace($CategoryId))   { Remove-Item Env:YT_FILTER_CATEGORY_ID -ErrorAction SilentlyContinue } else { $env:YT_FILTER_CATEGORY_ID = $CategoryId }
+  Write-Host "venv not found, using system Python." -ForegroundColor Yellow
 }
 
-# Make sure logs dir exists (scheduler also ensures this)
+# Apply environment variables if provided
+if ($PSBoundParameters.ContainsKey('IntervalSeconds')) { $env:DISCOVER_INTERVAL_SECONDS = "$IntervalSeconds" }
+if ($PSBoundParameters.ContainsKey('ApiKey') -and $ApiKey) { $env:YT_API_KEY = $ApiKey }
+if ($PSBoundParameters.ContainsKey('MongoUri') -and $MongoUri) { $env:MONGO_URI = $MongoUri }
+
+if ($PSBoundParameters.ContainsKey('RandomMode')) { $env:YT_RANDOM_MODE = $(if($RandomMode){'1'}else{'0'}) }
+if ($PSBoundParameters.ContainsKey('RandomLookbackMinutes') -and $RandomLookbackMinutes) { $env:YT_RANDOM_LOOKBACK_MINUTES = "$RandomLookbackMinutes" }
+if ($PSBoundParameters.ContainsKey('RandomWindowMinutes') -and $RandomWindowMinutes) { $env:YT_RANDOM_WINDOW_MINUTES = "$RandomWindowMinutes" }
+if ($PSBoundParameters.ContainsKey('RandomRegionPool') -and $RandomRegionPool) { $env:YT_RANDOM_REGION_POOL = $RandomRegionPool }
+if ($PSBoundParameters.ContainsKey('RandomQueryPool') -and $RandomQueryPool) { $env:YT_RANDOM_QUERY_POOL = $RandomQueryPool }
+if ($PSBoundParameters.ContainsKey('Region') -and $Region) { $env:YT_REGION = $Region }
+if ($PSBoundParameters.ContainsKey('LookbackMinutes') -and $LookbackMinutes) { $env:YT_LOOKBACK_MINUTES = "$LookbackMinutes" }
+if ($PSBoundParameters.ContainsKey('Query') -and $Query) { $env:YT_QUERY = $Query }
+if ($PSBoundParameters.ContainsKey('ChannelId') -and $ChannelId) { $env:YT_CHANNEL_ID = $ChannelId }
+if ($PSBoundParameters.ContainsKey('ChannelHandle') -and $ChannelHandle) { $env:YT_CHANNEL_HANDLE = $ChannelHandle }
+if ($PSBoundParameters.ContainsKey('TopicId') -and $TopicId) { $env:YT_TOPIC_ID = $TopicId }
+if ($PSBoundParameters.ContainsKey('CategoryId') -and $CategoryId) { $env:YT_FILTER_CATEGORY_ID = $CategoryId }
+
+if (-not $env:YT_API_KEY) {
+  Write-Host "YT_API_KEY not set via env/param. Relying on .env (python-dotenv) if present." -ForegroundColor Yellow
+}
+
+# Prepare logs directory
 $logs = Join-Path $ProjectRoot "logs"
 if (-not (Test-Path $logs)) { New-Item -ItemType Directory -Path $logs | Out-Null }
+$logFile = Join-Path $logs ("discover-{0}.log" -f (Get-Date -Format yyyyMMdd))
+Write-Host "Log file: $logFile" -ForegroundColor DarkCyan
 
-# Run the scheduler loop (calls worker\discover_once.py repeatedly)
+# Open a StreamWriter with FileShare.ReadWrite to avoid locking
+$fs = [System.IO.File]::Open($logFile,
+  [System.IO.FileMode]::Append,
+  [System.IO.FileAccess]::Write,
+  [System.IO.FileShare]::ReadWrite)
+$utf8bom = New-Object System.Text.UTF8Encoding($true)  # BOM to keep editors happy
+$sw = New-Object System.IO.StreamWriter($fs, $utf8bom)
+$sw.AutoFlush = $true
+
+function Write-Log([string]$line) {
+  Write-Output $line
+  $sw.WriteLine($line)
+}
+
 $script = Join-Path $ProjectRoot "worker\scheduler.py"
 if (-not (Test-Path $script)) {
   Write-Error "Cannot find $script. Ensure worker\scheduler.py exists."
+  $sw.Dispose(); $fs.Dispose()
   exit 1
 }
+
+Write-Log ("[{0}] === RUN START ===" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"))
 Write-Host "Starting scheduler (interval=$IntervalSeconds s). Press Ctrl+C to stop." -ForegroundColor Cyan
-python -u $script
+
+# Start child process
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = "python"
+$psi.Arguments = "-u `"$script`""
+$psi.RedirectStandardOutput = $true
+$psi.RedirectStandardError = $true
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+
+$proc = New-Object System.Diagnostics.Process
+$proc.StartInfo = $psi
+$proc.Start() | Out-Null
+
+$stdOut = $proc.StandardOutput
+$stdErr = $proc.StandardError
+
+try {
+  while (-not $proc.HasExited) {
+    while (-not $stdOut.EndOfStream) { Write-Log ($stdOut.ReadLine()) }
+    while (-not $stdErr.EndOfStream) { Write-Log ($stdErr.ReadLine()) }
+    Start-Sleep -Milliseconds 100
+  }
+  while (-not $stdOut.EndOfStream) { Write-Log ($stdOut.ReadLine()) }
+  while (-not $stdErr.EndOfStream) { Write-Log ($stdErr.ReadLine()) }
+} finally {
+  $exitCode = $proc.ExitCode
+  Write-Log ("[{0}] === RUN END (code={1}) ===" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $exitCode)
+  $sw.Dispose()
+  $fs.Dispose()
+}
+
+exit $exitCode

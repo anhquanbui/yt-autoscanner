@@ -878,3 +878,444 @@ Random slice: 2025-09-05T16:21:13.549624+00:00..2025-09-05T16:51:13.549624+00:00
 >>> DONE. total_found=3, total_upserted=3
 Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
 [2025-10-02 12:25:14] === RUN END (code=0) ===
+
+
+[2025-10-02 14:13:17] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Missing YT_API_KEY
+[2025-10-02 14:13:19] === RUN END (code=2) ===
+
+
+[2025-10-02 14:13:47] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Missing YT_API_KEY
+[2025-10-02 14:13:48] === RUN END (code=2) ===
+
+
+[2025-10-02 14:14:17] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Missing YT_API_KEY
+[2025-10-02 14:14:18] === RUN END (code=2) ===
+
+
+[2025-10-02 14:14:47] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Missing YT_API_KEY
+[2025-10-02 14:14:48] === RUN END (code=2) ===
+
+
+[2025-10-02 14:15:17] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Missing YT_API_KEY
+[2025-10-02 14:15:18] === RUN END (code=2) ===
+
+
+[2025-10-02 14:15:47] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Missing YT_API_KEY
+[2025-10-02 14:15:48] === RUN END (code=2) ===
+
+
+[2025-10-02 14:16:17] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Missing YT_API_KEY
+[2025-10-02 14:16:18] === RUN END (code=2) ===
+
+
+[2025-10-02 14:16:47] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Missing YT_API_KEY
+[2025-10-02 14:16:48] === RUN END (code=2) ===
+
+
+[2025-10-02 14:17:17] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Missing YT_API_KEY
+[2025-10-02 14:17:18] === RUN END (code=2) ===
+
+
+[2025-10-02 14:17:47] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Missing YT_API_KEY
+[2025-10-02 14:17:48] === RUN END (code=2) ===
+
+
+[2025-10-02 14:19:02] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Missing YT_API_KEY
+[2025-10-02 14:19:03] === RUN END (code=2) ===
+
+
+[2025-10-02 14:31:31] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Random slice: 2025-09-10T01:15:31.849370+00:00..2025-09-10T01:45:31.849370+00:00 | region=VN | query='stream'
+[page 1] found=3
+[page 1] upserted=3
+ - qcEPr_cCV1Q | 2025-09-10T01:41:19Z | Headstart: Senator Jinggoy Estrada on flood control kickback allegations against him | ANC
+ - skgB5LbwWDs | 2025-09-10T01:28:31Z | Unang Hirit Livestream: September 10, 2025 - Replay
+ - K6WQIksS210 | 2025-09-10T01:15:47Z | Viko apps agency registration and all live streaming apps agency services  #hosting #agency
+>>> DONE. total_found=3, total_upserted=3
+Tip: open http://127.0.0.1:8000/videos?sort=discovered&order=desc&limit=10
+[2025-10-02 14:31:32] === RUN END (code=0) ===
+
+
+[2025-10-02 14:32:01] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Random slice: 2025-09-09T18:01:01.895801+00:00..2025-09-09T18:31:01.895801+00:00 | region=JP | query='stream'
+[page 1] found=4
+[page 1] upserted=4
+ - PM3iK3VU6Zo | 2025-09-09T18:21:29Z | Everything Announced at Apple&#39;s iPhone 17 Event in 7 Minutes
+ - H3KnMyojEQU | 2025-09-09T18:19:02Z | Apple Event — September 9
+ - LOwUFPGXUqU | 2025-09-09T18:16:08Z | BO6 MULTIPLAYER LIVE STREAM (REBIRTH ISLAND QUADS) playing CALL OF DUTY BLACK OPS 6 - NUKETOWN 24/7
+ - RE0Nfj4__y0 | 2025-09-09T18:10:31Z | INCREDIBLE FIGHTBACK! | Stream One Highlights | Players Championship 26
+>>> DONE. total_found=4, total_upserted=4
+Tip: open http://127.0.0.1:8000/videos?sort=discovered&order=desc&limit=10
+[2025-10-02 14:32:02] === RUN END (code=0) ===
+
+
+[2025-10-02 14:32:30] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Deterministic slice: 2025-10-02T14:32:30.981499+00:00..(now) | region=US | query=None | SINCE_MODE=lookback
+[page 1] found=0
+[page 1] upserted=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?sort=discovered&order=desc&limit=10
+[2025-10-02 14:32:31] === RUN END (code=0) ===
+
+
+[2025-10-02 14:32:53] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Deterministic slice: 2025-10-02T14:32:54.386836+00:00..(now) | region=US | query=None | SINCE_MODE=lookback
+[page 1] found=0
+[page 1] upserted=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?sort=discovered&order=desc&limit=10
+[2025-10-02 14:32:54] === RUN END (code=0) ===
+
+
+[2025-10-02 14:33:23] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Deterministic slice: 2025-10-02T14:33:24.496174+00:00..(now) | region=US | query=None | SINCE_MODE=lookback
+[page 1] found=0
+[page 1] upserted=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?sort=discovered&order=desc&limit=10
+[2025-10-02 14:33:25] === RUN END (code=0) ===
+
+
+[2025-10-02 14:33:53] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Deterministic slice: 2025-10-02T14:33:54.445779+00:00..(now) | region=US | query=None | SINCE_MODE=lookback
+[page 1] found=0
+[page 1] upserted=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?sort=discovered&order=desc&limit=10
+[2025-10-02 14:33:55] === RUN END (code=0) ===
+
+
+[2025-10-02 14:34:23] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Deterministic slice: 2025-10-02T14:34:24.533910+00:00..(now) | region=US | query=None | SINCE_MODE=lookback
+[page 1] found=0
+[page 1] upserted=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?sort=discovered&order=desc&limit=10
+[2025-10-02 14:34:25] === RUN END (code=0) ===
+
+
+[2025-10-02 14:34:53] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Deterministic slice: 2025-10-02T14:34:54.504828+00:00..(now) | region=US | query=None | SINCE_MODE=lookback
+[page 1] found=0
+[page 1] upserted=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?sort=discovered&order=desc&limit=10
+[2025-10-02 14:34:55] === RUN END (code=0) ===
+
+
+[2025-10-02 14:35:23] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Deterministic slice: 2025-10-02T14:35:24.470441+00:00..(now) | region=US | query=None | SINCE_MODE=lookback
+[page 1] found=0
+[page 1] upserted=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?sort=discovered&order=desc&limit=10
+[2025-10-02 14:35:25] === RUN END (code=0) ===
+
+
+[2025-10-02 14:35:53] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Deterministic slice: 2025-10-02T14:35:54.565676+00:00..(now) | region=US | query=None | SINCE_MODE=lookback
+[page 1] found=0
+[page 1] upserted=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?sort=discovered&order=desc&limit=10
+[2025-10-02 14:35:55] === RUN END (code=0) ===
+
+
+[2025-10-02 14:36:23] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Deterministic slice: 2025-10-02T14:36:24.410200+00:00..(now) | region=US | query=None | SINCE_MODE=lookback
+[page 1] found=0
+[page 1] upserted=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?sort=discovered&order=desc&limit=10
+[2025-10-02 14:36:24] === RUN END (code=0) ===
+[2025-10-02 14:36:54] === RUN START ===
+[2025-10-02 14:36:54] Running: ['D:\\PROJECT\\yt-autoscanner\\venv\\Scripts\\python.exe', '-u', 'D:\\PROJECT\\yt-autoscanner\\worker\\discover_once.py'] (interval=30s)
+[2025-10-02 14:37:24] Running: ['D:\\PROJECT\\yt-autoscanner\\venv\\Scripts\\python.exe', '-u', 'D:\\PROJECT\\yt-autoscanner\\worker\\discover_once.py'] (interval=30s)
+[2025-10-02 14:37:54] Running: ['D:\\PROJECT\\yt-autoscanner\\venv\\Scripts\\python.exe', '-u', 'D:\\PROJECT\\yt-autoscanner\\worker\\discover_once.py'] (interval=30s)
+[2025-10-02 14:38:24] Running: ['D:\\PROJECT\\yt-autoscanner\\venv\\Scripts\\python.exe', '-u', 'D:\\PROJECT\\yt-autoscanner\\worker\\discover_once.py'] (interval=30s)
+[2025-10-02 14:38:54] Running: ['D:\\PROJECT\\yt-autoscanner\\venv\\Scripts\\python.exe', '-u', 'D:\\PROJECT\\yt-autoscanner\\worker\\discover_once.py'] (interval=30s)
+[2025-10-02 14:39:24] Running: ['D:\\PROJECT\\yt-autoscanner\\venv\\Scripts\\python.exe', '-u', 'D:\\PROJECT\\yt-autoscanner\\worker\\discover_once.py'] (interval=30s)
+[2025-10-02 14:39:54] Running: ['D:\\PROJECT\\yt-autoscanner\\venv\\Scripts\\python.exe', '-u', 'D:\\PROJECT\\yt-autoscanner\\worker\\discover_once.py'] (interval=30s)
+[2025-10-02 14:40:24] Running: ['D:\\PROJECT\\yt-autoscanner\\venv\\Scripts\\python.exe', '-u', 'D:\\PROJECT\\yt-autoscanner\\worker\\discover_once.py'] (interval=30s)
+[2025-10-02 14:40:54] Running: ['D:\\PROJECT\\yt-autoscanner\\venv\\Scripts\\python.exe', '-u', 'D:\\PROJECT\\yt-autoscanner\\worker\\discover_once.py'] (interval=30s)
+| query=None
+[page 1] found=0
+[page 1] upserted=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?sort=discovered&order=desc&limit=10
+[2025-10-02 14:37:55] === RUN END (code=0) ===
+
+
+[2025-10-02 14:38:24] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Random slice: 2025-09-29T12:30:25.131750+00:00..2025-09-29T13:00:25.131750+00:00 | region=US | query=None
+YouTube API error: {'error': {'code': 403, 'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'errors': [{'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'domain': 'youtube.quota', 'reason': 'quotaExceeded'}]}}
+[2025-10-02 14:38:25] === RUN END (code=2) ===
+
+
+[2025-10-02 14:38:54] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Random slice: 2025-09-23T18:11:55.060924+00:00..2025-09-23T18:41:55.060924+00:00 | region=US | query=None
+YouTube API error: {'error': {'code': 403, 'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'errors': [{'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'domain': 'youtube.quota', 'reason': 'quotaExceeded'}]}}
+[2025-10-02 14:38:55] === RUN END (code=2) ===
+
+
+[2025-10-02 14:39:24] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Random slice: 2025-09-20T23:01:25.788950+00:00..2025-09-20T23:31:25.788950+00:00 | region=US | query=None
+YouTube API error: {'error': {'code': 403, 'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'errors': [{'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'domain': 'youtube.quota', 'reason': 'quotaExceeded'}]}}
+[2025-10-02 14:39:26] === RUN END (code=2) ===
+
+
+[2025-10-02 14:39:54] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Random slice: 2025-09-20T23:35:55.955838+00:00..2025-09-21T00:05:55.955838+00:00 | region=US | query=None
+YouTube API error: {'error': {'code': 403, 'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'errors': [{'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'domain': 'youtube.quota', 'reason': 'quotaExceeded'}]}}
+[2025-10-02 14:39:56] === RUN END (code=2) ===
+
+
+[2025-10-02 14:40:24] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Random slice: 2025-09-22T07:15:25.121803+00:00..2025-09-22T07:45:25.121803+00:00 | region=US | query=None
+YouTube API error: {'error': {'code': 403, 'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'errors': [{'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'domain': 'youtube.quota', 'reason': 'quotaExceeded'}]}}
+[2025-10-02 14:40:25] === RUN END (code=2) ===
+
+
+[2025-10-02 14:40:54] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Random slice: 2025-09-13T14:06:55.154487+00:00..2025-09-13T14:36:55.154487+00:00 | region=US | query=None
+YouTube API error: {'error': {'code': 403, 'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'errors': [{'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'domain': 'youtube.quota', 'reason': 'quotaExceeded'}]}}
+[2025-10-02 14:40:55] === RUN END (code=2) ===
+
+
+[2025-10-02 14:41:24] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Random slice: 2025-09-10T16:43:25.157179+00:00..2025-09-10T17:13:25.157179+00:00 | region=US | query=None
+YouTube API error: {'error': {'code': 403, 'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'errors': [{'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'domain': 'youtube.quota', 'reason': 'quotaExceeded'}]}}
+[2025-10-02 14:41:25] === RUN END (code=2) ===
+
+
+[2025-10-02 14:41:54] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Random slice: 2025-09-09T08:37:55.139910+00:00..2025-09-09T09:07:55.139910+00:00 | region=US | query=None
+YouTube API error: {'error': {'code': 403, 'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'errors': [{'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'domain': 'youtube.quota', 'reason': 'quotaExceeded'}]}}
+[2025-10-02 14:41:56] === RUN END (code=2) ===
+
+
+[2025-10-02 14:42:24] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Random slice: 2025-09-12T06:08:25.148361+00:00..2025-09-12T06:38:25.148361+00:00 | region=US | query=None
+YouTube API error: {'error': {'code': 403, 'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'errors': [{'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'domain': 'youtube.quota', 'reason': 'quotaExceeded'}]}}
+[2025-10-02 14:42:25] === RUN END (code=2) ===
+
+
+[2025-10-02 14:42:54] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Random slice: 2025-09-08T06:30:55.158266+00:00..2025-09-08T07:00:55.158266+00:00 | region=US | query=None
+YouTube API error: {'error': {'code': 403, 'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'errors': [{'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'domain': 'youtube.quota', 'reason': 'quotaExceeded'}]}}
+[2025-10-02 14:42:55] === RUN END (code=2) ===
+
+
+[2025-10-02 14:43:24] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Random slice: 2025-09-04T01:21:25.208397+00:00..2025-09-04T01:51:25.208397+00:00 | region=US | query=None
+YouTube API error: {'error': {'code': 403, 'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'errors': [{'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'domain': 'youtube.quota', 'reason': 'quotaExceeded'}]}}
+[2025-10-02 14:43:25] === RUN END (code=2) ===
+
+
+[2025-10-02 14:43:54] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Random slice: 2025-09-11T04:32:55.226081+00:00..2025-09-11T05:02:55.226081+00:00 | region=US | query=None
+YouTube API error: {'error': {'code': 403, 'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'errors': [{'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'domain': 'youtube.quota', 'reason': 'quotaExceeded'}]}}
+[2025-10-02 14:43:55] === RUN END (code=2) ===
+
+
+[2025-10-02 14:44:24] === RUN START ===
+>>> discover_once v4 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60
+Random slice: 2025-09-13T18:40:25.256433+00:00..2025-09-13T19:10:25.256433+00:00 | region=US | query=None
+YouTube API error: {'error': {'code': 403, 'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'errors': [{'message': 'The request cannot be completed because you have exceeded your <a href="/youtube/v3/getting-started#quota">quota</a>.', 'domain': 'youtube.quota', 'reason': 'quotaExceeded'}]}}
+[2025-10-02 14:44:25] === RUN END (code=2) ===
+
+
+[2025-10-02 14:44:54] === RUN START ===
+>>> discover_once v4.1 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60, YT_MAX_PAGES=None
+Random slice: 2025-09-11T03:19:55.329132+00:00..2025-09-11T03:49:55.329132+00:00 | region=US | query=None
+YouTube quota exhausted — stopping so you can update YT_API_KEY.
+[2025-10-02 14:44:55] === RUN END (code=88) ===
+
+
+[2025-10-02 14:45:24] === RUN START ===
+>>> discover_once v4.1 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60, YT_MAX_PAGES=None
+Random slice: 2025-09-30T00:29:25.154158+00:00..2025-09-30T00:59:25.154158+00:00 | region=US | query=None
+YouTube quota exhausted — stopping so you can update YT_API_KEY.
+[2025-10-02 14:45:25] === RUN END (code=88) ===
+
+
+[2025-10-02 14:45:54] === RUN START ===
+>>> discover_once v4.1 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60, YT_MAX_PAGES=None
+Random slice: 2025-09-19T09:47:55.281395+00:00..2025-09-19T10:17:55.281395+00:00 | region=US | query=None
+YouTube quota exhausted — stopping so you can update YT_API_KEY.
+[2025-10-02 14:45:55] === RUN END (code=88) ===
+[2025-10-02 14:46:15] === RUN START ===
+[scheduler] interval=30s
+>>> discover_once v4.1 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60, YT_MAX_PAGES=None
+Random slice: 2025-09-23T04:49:16.067946+00:00..2025-09-23T05:19:16.067946+00:00 | region=US | query=None
+[scheduler] Quota exhausted. Stop loop. Update YT_API_KEY and restart.
+YouTube quota exhausted — stopping so you can update YT_API_KEY.
+[2025-10-02 14:46:16] === RUN END (code=88) ===
+
+
+[2025-10-02 14:46:24] === RUN START ===
+>>> discover_once v4.1 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60, YT_MAX_PAGES=None
+Random slice: 2025-10-02T03:44:25.057464+00:00..2025-10-02T04:14:25.057464+00:00 | region=US | query=None
+YouTube quota exhausted — stopping so you can update YT_API_KEY.
+[2025-10-02 14:46:25] === RUN END (code=88) ===
+
+
+[2025-10-02 14:46:54] === RUN START ===
+>>> discover_once v4.1 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60, YT_MAX_PAGES=None
+Random slice: 2025-09-06T03:12:55.060876+00:00..2025-09-06T03:42:55.060876+00:00 | region=US | query=None
+YouTube quota exhausted — stopping so you can update YT_API_KEY.
+[2025-10-02 14:46:55] === RUN END (code=88) ===
+
+
+[2025-10-02 14:47:24] === RUN START ===
+>>> discover_once v4.1 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60, YT_MAX_PAGES=None
+Random slice: 2025-09-12T17:12:25.088923+00:00..2025-09-12T17:42:25.088923+00:00 | region=US | query=None
+YouTube quota exhausted — stopping so you can update YT_API_KEY.
+[2025-10-02 14:47:25] === RUN END (code=88) ===
+
+
+[2025-10-02 14:47:54] === RUN START ===
+>>> discover_once v4.1 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60, YT_MAX_PAGES=None
+Random slice: 2025-09-13T15:39:55.290367+00:00..2025-09-13T16:09:55.290367+00:00 | region=US | query=None
+YouTube quota exhausted — stopping so you can update YT_API_KEY.
+[2025-10-02 14:47:55] === RUN END (code=88) ===
+
+
+[2025-10-02 14:48:24] === RUN START ===
+>>> discover_once v4.1 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+SINCE_MODE=lookback, YT_LOCAL_TZ=None, YT_SINCE_MINUTES=60, YT_MAX_PAGES=None
+Random slice: 2025-09-18T05:01:25.294242+00:00..2025-09-18T05:31:25.294242+00:00 | region=US | query=None
+YouTube quota exhausted — stopping so you can update YT_API_KEY.
+[2025-10-02 14:48:25] === RUN END (code=88) ===
