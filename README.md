@@ -1,7 +1,30 @@
 # yt-autoscanner — Local Dev (API + MongoDB + YouTube Worker + Scheduler)
 
 A minimal starter to ingest YouTube videos into **MongoDB** and expose them via a **FastAPI** API.  
-This README covers: running the API, connecting MongoDB, seeding demo data, pulling real videos from YouTube (with @handle / topic / category filters), and scheduling the worker.
+This version includes: extended API filters/sorting, a **v4 discover worker** (random mode + since‑mode by local time, UTF‑8 safe, `.env` support), and a **PowerShell loop runner** with optional Windows Task Scheduler autorun.
+
+---
+
+## What's new (since your last README)
+- **API**
+  - New: `GET /videos/count` (count with same filters as `/videos`)
+  - New: `GET /stats` (totals by status + latest discovered timestamp)
+  - `/videos` now supports: `q`, `channel_id`, `since`, `before`, `sort=published|discovered`, `order=asc|desc`
+- **Worker `discover_once.py` (v4)**
+  - **Random Mode** with region/keyword pools and random time slice
+  - **SINCE_MODE**: `lookback` (default) / `now` / `minutes` / `local_midnight` (uses `YT_LOCAL_TZ`)
+  - Auto‑resolve `@handle` → `channelId`
+  - Category filter + graceful fallback to `mostPopular` when using a category
+  - UTF‑8 safe logging (no emoji crashes), `.env` support (`python-dotenv`)
+- **Runner**
+  - `run_discover_loop.ps1`: activate venv, set env, ensure UTF‑8, create `logs/`, and call `worker/scheduler.py` every N seconds
+  - Optional autorun via **Scheduled Task** (install/uninstall scripts)
+  - Note: **use only one runner** (`run_discover_loop.ps1` *or* a simple `run_scheduler.ps1`) to avoid duplicate loops
+
+> **Important**
+> - Keep your **API key out of git** — prefer `.env`.  
+> - Run **only one** discover loop at a time (to avoid wasting API quota).  
+> - If Windows blocks scripts, use `Unblock-File` or `-ExecutionPolicy Bypass` once.
 
 ---
 
@@ -9,188 +32,218 @@ This README covers: running the API, connecting MongoDB, seeding demo data, pull
 ```
 yt-autoscanner/
 ├─ api/
-│  ├─ main.py                  # FastAPI app: list videos, get by id
-│  └─ requirements.txt         # fastapi, uvicorn, pymongo
+│  ├─ main.py                   # FastAPI app
+│  └─ requirements.txt
 ├─ worker/
-│  ├─ discover_once.py         # YouTube fetcher (v2: topic/category/@handle, fallback mostPopular)
-│  └─ scheduler.py             # loop runner to call discover on an interval
-├─ run_scheduler.ps1           # PowerShell helper to start scheduler
-├─ venv/                       # Python virtual environment (local)
+│  ├─ discover_once.py          # v4: random mode, since-mode, @handle resolve, category filter + fallback
+│  └─ scheduler.py              # simple loop; called by run_discover_loop.ps1
+├─ run_discover_loop.ps1        # main runner (venv + env + UTF‑8 + logs + scheduler)
+├─ (optional) run_scheduler.ps1 # minimal runner; don't use together with run_discover_loop.ps1
+├─ venv/
 └─ README.md
 ```
 
-**API endpoints (current):**
+---
+
+## API
+
+### Endpoints
 - `GET /health`
-- `GET /videos?status=&limit=`
+- `GET /videos`
 - `GET /video/{id}`
 - `GET /tracking`
 - `GET /complete`
+- `GET /videos/count`  ← **new**
+- `GET /stats`         ← **new**
 
----
+### `/videos` query params
+- `status`: `tracking` | `complete`
+- `q`: case‑insensitive substring on `snippet.title` / `snippet.channelTitle`
+- `channel_id`: filter by `snippet.channelId`
+- `since`: ISO 8601 or relative (e.g. `PT2H`, `30m`) → `publishedAt >= since`
+- `before`: ISO 8601 → `publishedAt < before`
+- `sort`: `published` (default) | `discovered`
+- `order`: `desc` (default) | `asc`
+- `limit`: default 50 (1–200)
 
-## Prerequisites
-- **Python 3.11+**
-- **MongoDB** running locally  
-  - Windows: `winget install -e --id MongoDB.Server` (service **MongoDB** on `27017`)  
-  - or Docker: `docker run -d --name mongo -p 27017:27017 mongo:7`
-- A **YouTube Data API v3** key (Google Cloud Console)
-
-> Security tip: never commit your API key. Rotate it if it was exposed.
+**Examples**
+```
+/videos?sort=discovered&order=desc&limit=20
+/videos?status=tracking&limit=100
+/videos?q=gaming&limit=50
+/videos?channel_id=UCxxxxxxxx&limit=50
+/videos?since=PT2H&limit=100
+```
+**Counts & Stats**
+```
+/videos/count
+/videos/count?status=tracking&q=gaming
+/stats
+```
 
 ---
 
 ## Setup
-### 1) Create & activate a virtual environment
-PowerShell:
-```powershell
-# from project root
-python -m venv venv
 
-# If PowerShell blocks scripts, run once as Admin:
-#   Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-.venv\Scripts\Activate.ps1
-```
-Verify:
+### 1) Virtual environment (PowerShell)
 ```powershell
-python --version
+python -m venv venv
+# If blocked: Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+.\venv\Scripts\Activate.ps1
 ```
 
 ### 2) Install dependencies
 ```powershell
-pip install -r api
-equirements.txt
-# If worker has a separate requirements file, also:
-# pip install -r worker
-equirements.txt
+pip install -r api/requirements.txt
+# (add worker requirements here if you split them)
 ```
 
-### 3) Configure Mongo connection
-Set `MONGO_URI` **in the same terminal** that runs the API:
+### 3) MongoDB
 ```powershell
+# Local MongoDB service or Docker (mongo:7)
 $env:MONGO_URI="mongodb://localhost:27017/ytscan"
 ```
 
 ### 4) Run the API
-From the `api/` folder:
 ```powershell
+cd api
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
+# Swagger: http://127.0.0.1:8000/docs
 ```
-Open:
-- Swagger: http://127.0.0.1:8000/docs  
-- Health:  http://127.0.0.1:8000/health
 
 ---
 
-## Seed Demo Data (optional)
-Open a **second terminal**, activate the same `venv`, set `MONGO_URI` again, then:
+## Environment (.env recommended)
+Create `.env` in project root (and add `.env` to `.gitignore`):
+```
+YT_API_KEY=YOUR_YOUTUBE_API_KEY
+MONGO_URI=mongodb://localhost:27017/ytscan
+YT_REGION=US
+# optional:
+# YT_LOOKBACK_MINUTES=360
+# YT_FILTER_CATEGORY_ID=20
+# --- random mode ---
+# YT_RANDOM_MODE=1
+# YT_RANDOM_LOOKBACK_MINUTES=43200
+# YT_RANDOM_WINDOW_MINUTES=30
+# YT_RANDOM_REGION_POOL=US,GB,JP,VN
+# YT_RANDOM_QUERY_POOL=gaming,stream,highlights,,
+# --- since-mode (non-random) ---
+# YT_SINCE_MODE=local_midnight
+# YT_LOCAL_TZ=America/Toronto
+# YT_SINCE_MINUTES=10
+```
+
+---
+
+## Worker — `worker/discover_once.py` (v4)
+
+### Random Mode
 ```powershell
+$env:YT_API_KEY="<KEY>"
 $env:MONGO_URI="mongodb://localhost:27017/ytscan"
-$code = @'
-import os
-from pymongo import MongoClient
-
-db = MongoClient(os.environ.get("MONGO_URI")).get_database()
-docs = [
-  {"_id":"DEMO123","snippet":{"title":"Demo video 1","publishedAt":"2025-09-30T12:00:00Z"},"tracking":{"status":"tracking","discovered_at":"2025-10-01T00:00:00Z","next_poll_after":"2025-10-01T00:00:00Z","poll_count":0},"stats_snapshots":[],"ml_flags":{"likely_viral":False,"viral_confirmed":False,"score":0.0}},
-  {"_id":"DEMO456","snippet":{"title":"Old video","publishedAt":"2025-09-29T12:00:00Z"},"tracking":{"status":"complete","discovered_at":"2025-09-29T13:00:00Z","next_poll_after":None,"poll_count":5,"stop_reason":"age>=24h"},"stats_snapshots":[{"ts":"2025-09-29T13:00:00Z","viewCount":100,"likeCount":3,"commentCount":0}],"ml_flags":{"likely_viral":False,"viral_confirmed":False,"score":0.0}}
-]
-db.videos.insert_many(docs, ordered=False)
-print("seeded", len(docs), "docs")
-'@
-Set-Content -Path .\seed.py -Value $code -Encoding UTF8
-python .\seed.py
+$env:YT_RANDOM_MODE="1"
+$env:YT_RANDOM_LOOKBACK_MINUTES="43200"   # 30 days
+$env:YT_RANDOM_WINDOW_MINUTES="30"
+$env:YT_RANDOM_REGION_POOL="US,GB,JP,VN"
+$env:YT_RANDOM_QUERY_POOL="gaming,stream,highlights,,"
+python .\worker\discover_once.py
 ```
-Check: `GET /videos?limit=5`
 
----
-
-## YouTube Worker — `worker/discover_once.py` (v2)
-Pulls recent videos via `search.list` and upserts them into MongoDB (idempotent by `videoId`).
-
-**Features**
-- Filters: `YT_QUERY`, `YT_CHANNEL_ID`, **`YT_CHANNEL_HANDLE`** (auto resolves to channelId), `YT_TOPIC_ID` (e.g. Gaming `/m/0bzvm2`).
-- **Category filtering**: after search, fetch details with `videos.list` and keep only `snippet.categoryId == YT_FILTER_CATEGORY_ID` (e.g. `20`).
-- **Fallback**: if search returns 0 and a category is set, fetch `videos.list?chart=mostPopular` to ensure data.
-- `YT_LOOKBACK_MINUTES`: only include videos published after `now - minutes`.
-
-**Environment variables**
-- `YT_API_KEY` *(required)* — YouTube Data API v3 key
-- `MONGO_URI` *(default `mongodb://localhost:27017/ytscan`)*
-- `YT_REGION` *(default `US`)*
-- `YT_QUERY` *(optional)* — text query, e.g. `gaming`
-- `YT_CHANNEL_ID` *(optional)*
-- `YT_CHANNEL_HANDLE` *(optional)* — `@handle`
-- `YT_TOPIC_ID` *(optional)* — e.g. `/m/0bzvm2` for Gaming
-- `YT_FILTER_CATEGORY_ID` *(optional)* — e.g. `20` for Gaming
-- `YT_LOOKBACK_MINUTES` *(default `360`)* — minutes to look back for recent uploads
-
-**Examples (PowerShell)**
-- Wide 24h pull by keyword:
-  ```powershell
-  $env:YT_API_KEY="<YOUR_KEY>"
-  $env:MONGO_URI="mongodb://localhost:27017/ytscan"
-  $env:YT_REGION="US"
-  $env:YT_LOOKBACK_MINUTES="1440"
-  $env:YT_QUERY="gaming"
-  Remove-Item Env:YT_CHANNEL_HANDLE,Env:YT_CHANNEL_ID,Env:YT_FILTER_CATEGORY_ID,Env:YT_TOPIC_ID -ErrorAction SilentlyContinue
-  python .\worker\discover_once.py
-  ```
-- Single channel via @handle (no category filter):
-  ```powershell
-  $env:YT_CHANNEL_HANDLE="@SomeChannel"
-  Remove-Item Env:YT_FILTER_CATEGORY_ID,Env:YT_QUERY,Env:YT_TOPIC_ID -ErrorAction SilentlyContinue
-  $env:YT_REGION="US"
-  $env:YT_LOOKBACK_MINUTES="10080"
-  python .\worker\discover_once.py
-  ```
-- Strict Gaming category (20) with fallback to mostPopular:
-  ```powershell
-  $env:YT_REGION="GB"
-  $env:YT_FILTER_CATEGORY_ID="20"
-  $env:YT_LOOKBACK_MINUTES="43200"
-  Remove-Item Env:YT_QUERY,Env:YT_CHANNEL_ID,Env:YT_CHANNEL_HANDLE,Env:YT_TOPIC_ID -ErrorAction SilentlyContinue
-  python .\worker\discover_once.py
-  ```
-
-Open: `http://127.0.0.1:8000/videos?limit=20` or `/video/<videoId>`.
-
----
-
-## Simple Scheduler (every 30s for testing)
-Run the worker on a fixed interval and store logs.
-
-**Inline**
+### Since‑Mode (non‑random)
+**Canada from local midnight (Toronto):**
 ```powershell
-# ensure env (API key, Mongo, etc.) is set in this terminal
+$env:YT_REGION="CA"
+$env:YT_SINCE_MODE="local_midnight"
+$env:YT_LOCAL_TZ="America/Toronto"
+python .\worker\discover_once.py
+```
+
+**From the moment you press run (use with loop):**
+```powershell
+$env:YT_REGION="CA"
+$env:YT_SINCE_MODE="now"
 $env:DISCOVER_INTERVAL_SECONDS="30"
 python .\worker\scheduler.py
-# logs: .\logs\discover-YYYYMMDD.log
 ```
 
-**PowerShell helper**
+**Safer window "last 10 minutes":**
 ```powershell
-# From project root
-.
-un_scheduler.ps1 -IntervalSeconds 30
+$env:YT_SINCE_MODE="minutes"
+$env:YT_SINCE_MINUTES="10"
+python .\worker\discover_once.py
 ```
-> Windows Task Scheduler minimum trigger is 1 minute; `run_scheduler.ps1` keeps a 30s internal loop.
 
-**Quota note:** 30s is only for testing. For production, consider a 5–10 minute interval and a smaller `YT_LOOKBACK_MINUTES` (e.g., `90–180`).
+> **Important**: Upserts by `_id` (videoId) make repeated runs idempotent; using a small, overlapping window while looping helps you not miss fresh videos due to API indexing delays.
+
+---
+
+## Runner Scripts
+
+### `run_discover_loop.ps1` (recommended)
+Runs the discover loop every **N seconds**:
+```powershell
+# If script is blocked:
+# powershell -NoProfile -ExecutionPolicy Bypass -File .\run_discover_loop.ps1 -IntervalSeconds 30 -RandomMode $true
+
+.\run_discover_loop.ps1 -IntervalSeconds 30 -RandomMode $true
+# Params you can change:
+# -ProjectRoot, -IntervalSeconds
+# -RandomMode/-RandomLookbackMinutes/-RandomWindowMinutes
+# -RandomRegionPool/-RandomQueryPool
+# -Region/-LookbackMinutes/-Query/-ChannelId/-ChannelHandle/-TopicId/-CategoryId
+# -MongoUri/-ApiKey
+```
+> **Do not** run this together with a separate `run_scheduler.ps1` — pick one.
+
+### Autorun (Windows Scheduled Task)
+Use the provided installer script to start the loop automatically:
+```powershell
+.\install_autorun_task.ps1       # installs a task “YT Discover Loop” (AtLogOn)
+# To remove:
+.\uninstall_autorun_task.ps1
+```
+**Run on boot (no login)**: create an AtStartup task with the **SYSTEM** account (see script comments).  
+Place your API key in `.env` so the SYSTEM account can load it without relying on user env vars.
+
+---
+
+## Verify & Inspect
+- Latest discovered:
+  - `http://127.0.0.1:8000/videos?sort=discovered&order=desc&limit=20`
+- Counts:
+  - `http://127.0.0.1:8000/videos/count`
+  - `http://127.0.0.1:8000/videos/count?status=tracking`
+- Stats:
+  - `http://127.0.0.1:8000/stats`
+- Mongo quick check (PowerShell):
+```powershell
+$env:MONGO_URI="mongodb://localhost:27017/ytscan"
+python - << 'PY'
+import os
+from pymongo import MongoClient
+db = MongoClient(os.environ["MONGO_URI"]).get_database()
+print("total:", db.videos.count_documents({}))
+for d in db.videos.find({}, {"_id":1}).sort([("tracking.discovered_at",-1)]).limit(5):
+    print("-", d["_id"])
+PY
+```
 
 ---
 
 ## Troubleshooting
-- **Swagger “Failed to fetch”**: ensure MongoDB is running; set `MONGO_URI` in the same terminal; restart Uvicorn.
-- **PowerShell cannot run `Activate.ps1`**: run once as Admin  
-  `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`  
-  or use `venv\Scripts\activate.bat` from CMD.
-- **`found=0` with search**: region/filters too tight or lookback too small. Increase `YT_LOOKBACK_MINUTES`, remove filters, or rely on fallback `mostPopular`.
-- **`upserted=0` with `found>0`**: those videos were already present (upsert skips duplicates).
-- **Key security**: rotate your API key if it was exposed.
+- **“not digitally signed” script error**:  
+  `Unblock-File .\run_discover_loop.ps1` *or* `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`
+- **Emoji / charmap crash**: v4 already forces UTF‑8; ensure console is UTF‑8 if needed:
+  ```powershell
+  [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+  $env:PYTHONUTF8="1"; $env:PYTHONIOENCODING="utf-8"
+  ```
+- **No results**: start with broader `YT_REGION`, add a small lookback, avoid too many filters, and confirm your API quota.
 
 ---
 
-## Next
-- Add `track_once.py` to snapshot `statistics` (views/likes/comments) periodically until 24h, then mark `complete`.
-- Docker Compose (`api + worker + mongo`) with `.env` configuration.
-- Mongo indexes for faster queries.
+## Next Steps
+- Implement `track_once.py` to record view/like/comment snapshots until age ≥ 24h
+- Docker Compose (api + worker + mongo)
+- Indexes & score rules (e.g., basic “likely_viral” heuristics)
