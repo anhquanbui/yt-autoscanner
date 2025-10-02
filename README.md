@@ -1,45 +1,52 @@
+
 # yt-autoscanner — Local Dev (API + MongoDB + YouTube Worker + Scheduler)
 
-A minimal starter to ingest YouTube videos into **MongoDB** and expose them via a **FastAPI** API.  
-This version includes: extended API filters/sorting, a **v4 discover worker** (random mode + since‑mode by local time, UTF‑8 safe, `.env` support), and a **PowerShell loop runner** with optional Windows Task Scheduler autorun.
+A minimal starter to ingest **YouTube** videos into **MongoDB** and expose them via a **FastAPI** API.
+This README covers local development, environment config, the discover worker (v4.1), and the Windows loop runner.
+
+> **Quick links**
+> - API (local): `http://127.0.0.1:8000/docs`
+> - Mongo (local): `mongodb://localhost:27017/ytscan` (`videos` collection)
+> - Logs (local): `./logs/discover-YYYYMMDD.log`
 
 ---
 
-## What's new (since your last README)
-- **API**
-  - New: `GET /videos/count` (count with same filters as `/videos`)
-  - New: `GET /stats` (totals by status + latest discovered timestamp)
-  - `/videos` now supports: `q`, `channel_id`, `since`, `before`, `sort=published|discovered`, `order=asc|desc`
-- **Worker `discover_once.py` (v4)**
-  - **Random Mode** with region/keyword pools and random time slice
-  - **SINCE_MODE**: `lookback` (default) / `now` / `minutes` / `local_midnight` (uses `YT_LOCAL_TZ`)
-  - Auto‑resolve `@handle` → `channelId`
-  - Category filter + graceful fallback to `mostPopular` when using a category
-  - UTF‑8 safe logging (no emoji crashes), `.env` support (`python-dotenv`)
-- **Runner**
-  - `run_discover_loop.ps1`: activate venv, set env, ensure UTF‑8, create `logs/`, and call `worker/scheduler.py` every N seconds
-  - Optional autorun via **Scheduled Task** (install/uninstall scripts)
-  - Note: **use only one runner** (`run_discover_loop.ps1` *or* a simple `run_scheduler.ps1`) to avoid duplicate loops
+## What's new (since previous README)
+
+### Worker (`discover_once.py`) — **v4.1**
+- **Quota-aware:** returns **exit code 88** on `quotaExceeded/dailyLimitExceeded/rateLimitExceeded` → the scheduler stops cleanly.
+- **`YT_MAX_PAGES`**: hard cap number of `search.list` pages per run to save quota.
+- Kept from v4: Random Mode (regions/queries, random time slice), SINCE_MODE (`lookback`/`now`/`minutes`/`local_midnight`), `.env` support, UTF‑8 safe logging, `@handle → channelId`, category filter (+ fallback to `mostPopular`).
+
+### Scheduler (`worker/scheduler.py`) — **v2**
+- Loops `discover_once.py` every `DISCOVER_INTERVAL_SECONDS` seconds.
+- **Stops** when worker exits with **code 88** (quota exhausted).
+
+### Windows Runner (`run_discover_loop.ps1`) — **v4**
+- **Single‑instance lock** (prevents duplicate loops).
+- Logs via **StreamWriter** with `FileShare.ReadWrite` (no file‑locking error while tailing).
+- Auto‑activate `venv`, force UTF‑8, create `./logs/`, start `worker/scheduler.py` (unbuffered).
+- You can pass overrides via parameters or rely on `.env`.
 
 > **Important**
-> - Keep your **API key out of git** — prefer `.env`.  
-> - Run **only one** discover loop at a time (to avoid wasting API quota).  
-> - If Windows blocks scripts, use `Unblock-File` or `-ExecutionPolicy Bypass` once.
+> - Keep your **API key out of git** — store it in `.env` at project root.
+> - Run **only one** discover loop at a time to avoid burning quota.
+> - If you deploy with Docker or cron/systemd, **don’t** run the PowerShell loop in parallel.
 
 ---
 
-## Project Structure
+## Project structure
+
 ```
 yt-autoscanner/
 ├─ api/
 │  ├─ main.py                   # FastAPI app
 │  └─ requirements.txt
 ├─ worker/
-│  ├─ discover_once.py          # v4: random mode, since-mode, @handle resolve, category filter + fallback
-│  └─ scheduler.py              # simple loop; called by run_discover_loop.ps1
-├─ run_discover_loop.ps1        # main runner (venv + env + UTF‑8 + logs + scheduler)
-├─ (optional) run_scheduler.ps1 # minimal runner; don't use together with run_discover_loop.ps1
-├─ venv/
+│  ├─ discover_once.py          # v4.1 (quota-aware + YT_MAX_PAGES)
+│  └─ scheduler.py              # v2 (stop on exit code 88)
+├─ run_discover_loop.ps1        # v4 (single-instance + safe logging)
+├─ venv/                        # local Python virtual env (optional)
 └─ README.md
 ```
 
@@ -53,14 +60,14 @@ yt-autoscanner/
 - `GET /video/{id}`
 - `GET /tracking`
 - `GET /complete`
-- `GET /videos/count`  ← **new**
-- `GET /stats`         ← **new**
+- `GET /videos/count`
+- `GET /stats`
 
 ### `/videos` query params
 - `status`: `tracking` | `complete`
-- `q`: case‑insensitive substring on `snippet.title` / `snippet.channelTitle`
+- `q`: case-insensitive substring on `snippet.title` / `snippet.channelTitle`
 - `channel_id`: filter by `snippet.channelId`
-- `since`: ISO 8601 or relative (e.g. `PT2H`, `30m`) → `publishedAt >= since`
+- `since`: ISO 8601 or relative (`PT2H`, `30m`) → `publishedAt >= since`
 - `before`: ISO 8601 → `publishedAt < before`
 - `sort`: `published` (default) | `discovered`
 - `order`: `desc` (default) | `asc`
@@ -73,38 +80,34 @@ yt-autoscanner/
 /videos?q=gaming&limit=50
 /videos?channel_id=UCxxxxxxxx&limit=50
 /videos?since=PT2H&limit=100
-```
-**Counts & Stats**
-```
-/videos/count
 /videos/count?status=tracking&q=gaming
 /stats
 ```
 
 ---
 
-## Setup
+## Local setup
 
-### 1) Virtual environment (PowerShell)
+### 1) Python & venv (Windows PowerShell)
 ```powershell
 python -m venv venv
-# If blocked: Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-.\venv\Scripts\Activate.ps1
+# If blocked once:
+#   Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+.env\Scripts\Activate.ps1
 ```
 
 ### 2) Install dependencies
 ```powershell
 pip install -r api/requirements.txt
-# (add worker requirements here if you split them)
+# If worker has its own file, also: pip install -r worker/requirements.txt
 ```
 
 ### 3) MongoDB
-```powershell
-# Local MongoDB service or Docker (mongo:7)
-$env:MONGO_URI="mongodb://localhost:27017/ytscan"
-```
+- Install local **MongoDB Community** OR
+- Use Docker: `docker run -d --name mongo -p 27017:27017 mongo:7`
+- Connection string (local): `mongodb://localhost:27017/ytscan`
 
-### 4) Run the API
+### 4) Run API
 ```powershell
 cd api
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
@@ -113,110 +116,99 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ---
 
-## Environment (.env recommended)
-Create `.env` in project root (and add `.env` to `.gitignore`):
+## Environment (`.env` at project root)
+
+Create `.env` (and add `.env` to `.gitignore`):
+
 ```
+# --- Required ---
 YT_API_KEY=YOUR_YOUTUBE_API_KEY
 MONGO_URI=mongodb://localhost:27017/ytscan
+
+# --- Common ---
 YT_REGION=US
-# optional:
-# YT_LOOKBACK_MINUTES=360
-# YT_FILTER_CATEGORY_ID=20
-# --- random mode ---
+YT_LOOKBACK_MINUTES=360
+
+# --- Random mode ---
 # YT_RANDOM_MODE=1
 # YT_RANDOM_LOOKBACK_MINUTES=43200
 # YT_RANDOM_WINDOW_MINUTES=30
 # YT_RANDOM_REGION_POOL=US,GB,JP,VN
 # YT_RANDOM_QUERY_POOL=gaming,stream,highlights,,
-# --- since-mode (non-random) ---
-# YT_SINCE_MODE=local_midnight
-# YT_LOCAL_TZ=America/Toronto
+
+# --- Since-mode (non-random) ---
+# YT_SINCE_MODE=lookback        # lookback | now | minutes | local_midnight
 # YT_SINCE_MINUTES=10
+# YT_LOCAL_TZ=America/Toronto   # required if using local_midnight
+
+# --- Quota safety ---
+# YT_MAX_PAGES=2                # cap pages per run; 1–3 recommended in loops
+# DISCOVER_INTERVAL_SECONDS=60  # loop interval for scheduler / PS runner
 ```
 
 ---
 
-## Worker — `worker/discover_once.py` (v4)
+## Worker usage
 
-### Random Mode
+### One‑shot (manual)
 ```powershell
-$env:YT_API_KEY="<KEY>"
-$env:MONGO_URI="mongodb://localhost:27017/ytscan"
-$env:YT_RANDOM_MODE="1"
-$env:YT_RANDOM_LOOKBACK_MINUTES="43200"   # 30 days
-$env:YT_RANDOM_WINDOW_MINUTES="30"
-$env:YT_RANDOM_REGION_POOL="US,GB,JP,VN"
-$env:YT_RANDOM_QUERY_POOL="gaming,stream,highlights,,"
+# rely on .env
 python .\worker\discover_once.py
 ```
 
-### Since‑Mode (non‑random)
-**Canada from local midnight (Toronto):**
+### Loop (PowerShell runner, recommended on Windows)
 ```powershell
-$env:YT_REGION="CA"
-$env:YT_SINCE_MODE="local_midnight"
-$env:YT_LOCAL_TZ="America/Toronto"
-python .\worker\discover_once.py
+# Run from project root:
+.
+un_discover_loop.ps1 -IntervalSeconds 60 -RandomMode $true
+# Notes:
+# - Single-instance lock prevents duplicates
+# - Logs at .\logs\discover-YYYYMMDD.log
+# - Uses venv automatically if present
 ```
 
-**From the moment you press run (use with loop):**
+### Loop (Python scheduler directly)
 ```powershell
-$env:YT_REGION="CA"
-$env:YT_SINCE_MODE="now"
-$env:DISCOVER_INTERVAL_SECONDS="30"
+$env:DISCOVER_INTERVAL_SECONDS="60"
 python .\worker\scheduler.py
 ```
 
-**Safer window "last 10 minutes":**
-```powershell
-$env:YT_SINCE_MODE="minutes"
-$env:YT_SINCE_MINUTES="10"
-python .\worker\discover_once.py
-```
+### Quota exhaustion behavior
+- When the worker hits quota, it prints a message and exits with **code 88**.
+- The scheduler detects code 88 and **stops** the loop.
+- To continue: update `YT_API_KEY` in `.env` and **start the loop again**.
 
-> **Important**: Upserts by `_id` (videoId) make repeated runs idempotent; using a small, overlapping window while looping helps you not miss fresh videos due to API indexing delays.
+*(Alternative: change scheduler to sleep until Pacific midnight and resume.)*
 
 ---
 
-## Runner Scripts
+## Logs & monitoring
 
-### `run_discover_loop.ps1` (recommended)
-Runs the discover loop every **N seconds**:
+**Tail log (PowerShell):**
 ```powershell
-# If script is blocked:
-# powershell -NoProfile -ExecutionPolicy Bypass -File .\run_discover_loop.ps1 -IntervalSeconds 30 -RandomMode $true
-
-.\run_discover_loop.ps1 -IntervalSeconds 30 -RandomMode $true
-# Params you can change:
-# -ProjectRoot, -IntervalSeconds
-# -RandomMode/-RandomLookbackMinutes/-RandomWindowMinutes
-# -RandomRegionPool/-RandomQueryPool
-# -Region/-LookbackMinutes/-Query/-ChannelId/-ChannelHandle/-TopicId/-CategoryId
-# -MongoUri/-ApiKey
+$log = Join-Path (Get-Location) "logs\discover-$(Get-Date -Format yyyyMMdd).log"
+Get-Content $log -Wait -Tail 200
 ```
-> **Do not** run this together with a separate `run_scheduler.ps1` — pick one.
 
-### Autorun (Windows Scheduled Task)
-Use the provided installer script to start the loop automatically:
+**Check running loops (avoid duplicates):**
 ```powershell
-.\install_autorun_task.ps1       # installs a task “YT Discover Loop” (AtLogOn)
-# To remove:
-.\uninstall_autorun_task.ps1
+Get-CimInstance Win32_Process |
+  ? { $_.CommandLine -match 'yt-autoscanner.*(scheduler\.py|discover_once\.py)' } |
+  select ProcessId, CommandLine
 ```
-**Run on boot (no login)**: create an AtStartup task with the **SYSTEM** account (see script comments).  
-Place your API key in `.env` so the SYSTEM account can load it without relying on user env vars.
+
+**Stop stray loops:**
+```powershell
+Stop-Process -Id <PID1>,<PID2> -Force
+```
 
 ---
 
-## Verify & Inspect
-- Latest discovered:
-  - `http://127.0.0.1:8000/videos?sort=discovered&order=desc&limit=20`
-- Counts:
-  - `http://127.0.0.1:8000/videos/count`
-  - `http://127.0.0.1:8000/videos/count?status=tracking`
-- Stats:
-  - `http://127.0.0.1:8000/stats`
-- Mongo quick check (PowerShell):
+## MongoDB quick look
+
+**Compass:** connect to `mongodb://localhost:27017/ytscan`, open `videos` collection.
+
+**Count & sample (PowerShell):**
 ```powershell
 $env:MONGO_URI="mongodb://localhost:27017/ytscan"
 python - << 'PY'
@@ -229,21 +221,44 @@ for d in db.videos.find({}, {"_id":1}).sort([("tracking.discovered_at",-1)]).lim
 PY
 ```
 
----
-
-## Troubleshooting
-- **“not digitally signed” script error**:  
-  `Unblock-File .\run_discover_loop.ps1` *or* `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`
-- **Emoji / charmap crash**: v4 already forces UTF‑8; ensure console is UTF‑8 if needed:
-  ```powershell
-  [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
-  $env:PYTHONUTF8="1"; $env:PYTHONIOENCODING="utf-8"
-  ```
-- **No results**: start with broader `YT_REGION`, add a small lookback, avoid too many filters, and confirm your API quota.
+Filters in Compass:
+- Tracking only: `{"tracking.status":"tracking"}`
+- Latest discovered: sort by `{"tracking.discovered_at": -1}`
+- Latest published: sort by `{"snippet.publishedAt": -1}`
 
 ---
 
-## Next Steps
-- Implement `track_once.py` to record view/like/comment snapshots until age ≥ 24h
-- Docker Compose (api + worker + mongo)
-- Indexes & score rules (e.g., basic “likely_viral” heuristics)
+## Domain & reverse proxy (prod)
+
+With `youtube.example.com` on a separate VPS from your main WordPress site:
+- DNS: `A youtube → <VPS IP>` (specific record overrides wildcard).
+- Reverse proxy (Nginx/Caddy) forwards `youtube.example.com` → `127.0.0.1:8000`.
+- If you want the API under `/api`, run uvicorn with `--root-path /api` and proxy `/api/`.
+
+**CORS (if calling from another site):**
+```python
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://example.com", "https://youtube.example.com"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+---
+
+## Quota best practices
+
+- Prefer **small overlapping windows** in loops (`SINCE_MODE=minutes`, `YT_SINCE_MINUTES=10`).
+- Keep `YT_MAX_PAGES` low (1–3) to reduce `search.list` calls (100 units each).
+- Narrow results with `YT_REGION`, `YT_QUERY`, `YT_CHANNEL_ID/handle`, `YT_TOPIC_ID`.
+- Avoid running multiple loops at once (PowerShell + cron + Docker).
+
+---
+
+## Next steps
+
+- Implement `track_once.py` to collect stats until age ≥ 24h, then mark `tracking.status="complete"`.
+- Add Docker Compose (api + worker + mongo) for Ubuntu VPS.
+- Add indexes and ML heuristics (e.g., `likely_viral`).

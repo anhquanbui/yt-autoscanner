@@ -1,19 +1,20 @@
 
 <#
-  run_discover_loop.ps1 (v3 - no log locking)
+  run_discover_loop.ps1 (v4)
   - Default ProjectRoot = folder of this script
-  - cd to ProjectRoot so python-dotenv sees .env
-  - Optional -ApiKey; otherwise rely on .env
-  - UTF-8 output
-  - Log to logs/discover-YYYYMMDD.log via StreamWriter (FileShare.ReadWrite)
-  - Calls worker\scheduler.py (loop that invokes discover_once.py)
+  - Single-instance lock to prevent duplicate loops
+  - cd to ProjectRoot so python-dotenv can load .env
+  - Optional -ApiKey; if not set, rely on .env
+  - UTF-8 console
+  - Logs to logs/discover-YYYYMMDD.log via StreamWriter (FileShare.ReadWrite)
+  - Starts worker\scheduler.py (loop that invokes discover_once.py)
 #>
 
 param(
   [string]$ProjectRoot = $PSScriptRoot,
   [int]$IntervalSeconds = 30,
   [string]$ApiKey,
-  # Optional overrides
+  # Optional overrides (only applied if provided)
   [bool]$RandomMode,
   [int]$RandomLookbackMinutes,
   [int]$RandomWindowMinutes,
@@ -29,10 +30,12 @@ param(
   [string]$MongoUri
 )
 
+# --- UTF-8 console / Python ---
 try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() } catch {}
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 
+# --- Validate & cd ---
 if (-not (Test-Path $ProjectRoot)) {
   Write-Error "ProjectRoot not found: $ProjectRoot"
   exit 1
@@ -42,7 +45,43 @@ Set-Location $ProjectRoot
 Write-Host "ProjectRoot = $ProjectRoot" -ForegroundColor Cyan
 Write-Host "IntervalSeconds = $IntervalSeconds" -ForegroundColor Cyan
 
-# Activate venv if present
+# --- Single-instance lock ---
+$lockPath = Join-Path $ProjectRoot ".run.lock"
+try {
+  $global:lockStream = [System.IO.File]::Open(
+    $lockPath,
+    [System.IO.FileMode]::OpenOrCreate,
+    [System.IO.FileAccess]::ReadWrite,
+    [System.IO.FileShare]::None
+  )
+} catch {
+  Write-Error "Another instance is already running ($lockPath)."
+  exit 1
+}
+
+# --- Ensure cleanup on exit ---
+$script:cleanupDone = $false
+function Cleanup {
+  if ($script:cleanupDone) { return }
+  $script:cleanupDone = $true
+  try { if ($global:sw) { $global:sw.Dispose() } } catch {}
+  try { if ($global:fs) { $global:fs.Dispose() } } catch {}
+  try {
+    if (Test-Path $lockPath) {
+      $global:lockStream.Close()
+      Remove-Item $lockPath -ErrorAction SilentlyContinue
+    }
+  } catch {}
+}
+
+# Trap Ctrl+C and script end
+$OnCancel = {
+  Write-Host "Stopping..." -ForegroundColor Yellow
+  Cleanup
+}
+Register-EngineEvent PowerShell.Exiting -Action $OnCancel | Out-Null
+
+# --- Activate venv if present ---
 $venvActivate = Join-Path $ProjectRoot "venv\Scripts\Activate.ps1"
 if (Test-Path $venvActivate) {
   Write-Host "Activating venv..." -ForegroundColor DarkCyan
@@ -51,7 +90,7 @@ if (Test-Path $venvActivate) {
   Write-Host "venv not found, using system Python." -ForegroundColor Yellow
 }
 
-# Apply environment variables if provided
+# --- Apply environment variables if provided ---
 if ($PSBoundParameters.ContainsKey('IntervalSeconds')) { $env:DISCOVER_INTERVAL_SECONDS = "$IntervalSeconds" }
 if ($PSBoundParameters.ContainsKey('ApiKey') -and $ApiKey) { $env:YT_API_KEY = $ApiKey }
 if ($PSBoundParameters.ContainsKey('MongoUri') -and $MongoUri) { $env:MONGO_URI = $MongoUri }
@@ -73,40 +112,40 @@ if (-not $env:YT_API_KEY) {
   Write-Host "YT_API_KEY not set via env/param. Relying on .env (python-dotenv) if present." -ForegroundColor Yellow
 }
 
-# Prepare logs directory
+# --- Logs (safe writer) ---
 $logs = Join-Path $ProjectRoot "logs"
 if (-not (Test-Path $logs)) { New-Item -ItemType Directory -Path $logs | Out-Null }
 $logFile = Join-Path $logs ("discover-{0}.log" -f (Get-Date -Format yyyyMMdd))
 Write-Host "Log file: $logFile" -ForegroundColor DarkCyan
 
-# Open a StreamWriter with FileShare.ReadWrite to avoid locking
-$fs = [System.IO.File]::Open($logFile,
+$global:fs = [System.IO.File]::Open($logFile,
   [System.IO.FileMode]::Append,
   [System.IO.FileAccess]::Write,
   [System.IO.FileShare]::ReadWrite)
-$utf8bom = New-Object System.Text.UTF8Encoding($true)  # BOM to keep editors happy
-$sw = New-Object System.IO.StreamWriter($fs, $utf8bom)
-$sw.AutoFlush = $true
+$utf8bom = New-Object System.Text.UTF8Encoding($true)
+$global:sw = New-Object System.IO.StreamWriter($fs, $utf8bom)
+$global:sw.AutoFlush = $true
 
 function Write-Log([string]$line) {
   Write-Output $line
-  $sw.WriteLine($line)
+  $global:sw.WriteLine($line)
 }
 
-$script = Join-Path $ProjectRoot "worker\scheduler.py"
-if (-not (Test-Path $script)) {
-  Write-Error "Cannot find $script. Ensure worker\scheduler.py exists."
-  $sw.Dispose(); $fs.Dispose()
+# --- Check scheduler exists ---
+$scriptPath = Join-Path $ProjectRoot "worker\scheduler.py"
+if (-not (Test-Path $scriptPath)) {
+  Write-Error "Cannot find $scriptPath. Ensure worker\scheduler.py exists."
+  Cleanup
   exit 1
 }
 
 Write-Log ("[{0}] === RUN START ===" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"))
 Write-Host "Starting scheduler (interval=$IntervalSeconds s). Press Ctrl+C to stop." -ForegroundColor Cyan
 
-# Start child process
+# --- Start child process (unbuffered) ---
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = "python"
-$psi.Arguments = "-u `"$script`""
+$psi.Arguments = "-u `"$scriptPath`""
 $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true
 $psi.UseShellExecute = $false
@@ -130,8 +169,7 @@ try {
 } finally {
   $exitCode = $proc.ExitCode
   Write-Log ("[{0}] === RUN END (code={1}) ===" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $exitCode)
-  $sw.Dispose()
-  $fs.Dispose()
+  Cleanup
 }
 
 exit $exitCode
