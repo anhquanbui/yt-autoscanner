@@ -394,3 +394,378 @@ fallback mostPopular: upserted=0
 >>> DONE. total_found=0, total_upserted=0
 Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
 [2025-10-02 03:55:57] === RUN END (code=0) ===
+
+
+[2025-10-02 11:12:22] === RUN START ===
+>>> discover_once starting
+MONGO_URI            = mongodb://localhost:27017/ytscan
+REGION               = US
+QUERY                = None
+CHANNEL_ID           = None
+CHANNEL_HANDLE       = None
+TOPIC_ID             = None
+LOOKBACK_MINUTES     = 360
+FILTER_CATEGORY_ID   = None
+Missing YT_API_KEY
+[2025-10-02 11:12:23] === RUN END (code=2) ===
+
+
+[2025-10-02 11:12:52] === RUN START ===
+>>> discover_once starting
+MONGO_URI            = mongodb://localhost:27017/ytscan
+REGION               = US
+QUERY                = None
+CHANNEL_ID           = None
+CHANNEL_HANDLE       = None
+TOPIC_ID             = None
+LOOKBACK_MINUTES     = 360
+FILTER_CATEGORY_ID   = None
+Missing YT_API_KEY
+[2025-10-02 11:12:52] === RUN END (code=2) ===
+
+
+[2025-10-02 11:13:22] === RUN START ===
+>>> discover_once starting
+MONGO_URI            = mongodb://localhost:27017/ytscan
+REGION               = US
+QUERY                = None
+CHANNEL_ID           = None
+CHANNEL_HANDLE       = None
+TOPIC_ID             = None
+LOOKBACK_MINUTES     = 360
+FILTER_CATEGORY_ID   = None
+Missing YT_API_KEY
+[2025-10-02 11:13:23] === RUN END (code=2) ===
+
+
+[2025-10-02 11:13:52] === RUN START ===
+>>> discover_once starting
+MONGO_URI            = mongodb://localhost:27017/ytscan
+REGION               = US
+QUERY                = None
+CHANNEL_ID           = None
+CHANNEL_HANDLE       = None
+TOPIC_ID             = None
+LOOKBACK_MINUTES     = 360
+FILTER_CATEGORY_ID   = None
+Missing YT_API_KEY
+[2025-10-02 11:13:52] === RUN END (code=2) ===
+
+
+[2025-10-02 11:14:22] === RUN START ===
+>>> discover_once starting
+MONGO_URI            = mongodb://localhost:27017/ytscan
+REGION               = US
+QUERY                = None
+CHANNEL_ID           = None
+CHANNEL_HANDLE       = None
+TOPIC_ID             = None
+LOOKBACK_MINUTES     = 360
+FILTER_CATEGORY_ID   = None
+Missing YT_API_KEY
+[2025-10-02 11:14:22] === RUN END (code=2) ===
+
+
+[2025-10-02 11:14:52] === RUN START ===
+>>> discover_once starting
+MONGO_URI            = mongodb://localhost:27017/ytscan
+REGION               = US
+QUERY                = None
+CHANNEL_ID           = None
+CHANNEL_HANDLE       = None
+TOPIC_ID             = None
+LOOKBACK_MINUTES     = 360
+FILTER_CATEGORY_ID   = None
+Missing YT_API_KEY
+[2025-10-02 11:14:52] === RUN END (code=2) ===
+
+
+[2025-10-02 11:15:22] === RUN START ===
+>>> discover_once starting
+MONGO_URI            = mongodb://localhost:27017/ytscan
+REGION               = US
+QUERY                = None
+CHANNEL_ID           = None
+CHANNEL_HANDLE       = None
+TOPIC_ID             = None
+LOOKBACK_MINUTES     = 360
+FILTER_CATEGORY_ID   = None
+Missing YT_API_KEY
+[2025-10-02 11:15:22] === RUN END (code=2) ===
+
+
+[2025-10-02 11:15:52] === RUN START ===
+>>> discover_once starting
+MONGO_URI            = mongodb://localhost:27017/ytscan
+REGION               = US
+QUERY                = None
+CHANNEL_ID           = None
+CHANNEL_HANDLE       = None
+TOPIC_ID             = None
+LOOKBACK_MINUTES     = 360
+FILTER_CATEGORY_ID   = None
+Missing YT_API_KEY
+[2025-10-02 11:15:53] === RUN END (code=2) ===
+
+
+[2025-10-02 11:16:22] === RUN START ===
+>>> discover_once starting
+MONGO_URI            = mongodb://localhost:27017/ytscan
+REGION               = US
+QUERY                = None
+CHANNEL_ID           = None
+CHANNEL_HANDLE       = None
+TOPIC_ID             = None
+LOOKBACK_MINUTES     = 360
+FILTER_CATEGORY_ID   = None
+Missing YT_API_KEY
+[2025-10-02 11:16:23] === RUN END (code=2) ===
+
+
+[2025-10-02 11:25:27] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+[page 1] found=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
+[2025-10-02 11:25:28] === RUN END (code=0) ===
+
+
+[2025-10-02 11:25:57] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+[page 1] found=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
+[2025-10-02 11:25:58] === RUN END (code=0) ===
+
+
+[2025-10-02 11:26:27] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+[page 1] found=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
+[2025-10-02 11:26:28] === RUN END (code=0) ===
+
+
+[2025-10-02 11:26:57] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+[page 1] found=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
+[2025-10-02 11:26:58] === RUN END (code=0) ===
+
+
+[2025-10-02 11:27:27] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+[page 1] found=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
+[2025-10-02 11:27:28] === RUN END (code=0) ===
+
+
+[2025-10-02 11:27:57] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+[page 1] found=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
+[2025-10-02 11:27:58] === RUN END (code=0) ===
+
+
+[2025-10-02 11:28:27] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+[page 1] found=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
+[2025-10-02 11:28:28] === RUN END (code=0) ===
+
+
+[2025-10-02 11:28:57] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+[page 1] found=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
+[2025-10-02 11:28:58] === RUN END (code=0) ===
+
+
+[2025-10-02 11:29:27] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+[page 1] found=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
+[2025-10-02 11:29:28] === RUN END (code=0) ===
+
+
+[2025-10-02 11:29:57] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+[page 1] found=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
+[2025-10-02 11:29:58] === RUN END (code=0) ===
+
+
+[2025-10-02 11:30:27] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+[page 1] found=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
+[2025-10-02 11:30:28] === RUN END (code=0) ===
+
+
+[2025-10-02 11:30:57] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+[page 1] found=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
+[2025-10-02 11:30:58] === RUN END (code=0) ===
+
+
+[2025-10-02 11:31:27] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+[page 1] found=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
+[2025-10-02 11:31:28] === RUN END (code=0) ===
+
+
+[2025-10-02 11:31:57] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+[page 1] found=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
+[2025-10-02 11:31:58] === RUN END (code=0) ===
+
+
+[2025-10-02 11:32:27] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=False, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+[page 1] found=0
+>>> DONE. total_found=0, total_upserted=0
+Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
+[2025-10-02 11:32:28] === RUN END (code=0) ===
+
+
+[2025-10-02 11:32:47] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+Random slice: 2025-09-18T02:17:47.879643+00:00..2025-09-18T02:47:47.879643+00:00 | region=US | query='gaming'
+[page 1] found=26
+ - QvFj7XyYWTI | 2025-09-18T02:47:22Z | Recomendado Juegos Indie #indiegame
+Error: 'charmap' codec can't encode characters in position 76-78: character maps to <undefined>
+[2025-10-02 11:32:48] === RUN END (code=1) ===
+
+
+[2025-10-02 11:33:17] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+Random slice: 2025-09-15T13:16:17.898590+00:00..2025-09-15T13:46:17.898590+00:00 | region=VN | query='highlights'
+[page 1] found=31
+Error: 'charmap' codec can't encode characters in position 40-44: character maps to <undefined>
+[2025-10-02 11:33:18] === RUN END (code=1) ===
+
+
+[2025-10-02 11:33:47] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+Random slice: 2025-09-22T23:52:47.889983+00:00..2025-09-23T00:22:47.889983+00:00 | region=VN | query='stream'
+[page 1] found=30
+ - BUDyD-nUCwc | 2025-09-23T00:22:46Z | War Thunder, Monday stream
+ - zwT3fNkiBJ8 | 2025-09-23T00:22:27Z | live stream 2 finger | New Live streaming of RRMislive | #bgmi
+Error: 'charmap' codec can't encode characters in position 63-66: character maps to <undefined>
+[2025-10-02 11:33:48] === RUN END (code=1) ===
+
+
+[2025-10-02 11:34:17] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+Random slice: 2025-09-11T08:47:17.819657+00:00..2025-09-11T09:17:17.819657+00:00 | region=US | query='stream'
+[page 1] found=31
+Error: 'charmap' codec can't encode character '\U0001f60d' in position 58: character maps to <undefined>
+[2025-10-02 11:34:18] === RUN END (code=1) ===
+
+
+[2025-10-02 11:34:47] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+Random slice: 2025-09-28T15:41:47.867818+00:00..2025-09-28T16:11:47.867818+00:00 | region=VN | query='stream'
+[page 1] found=50
+Error: 'charmap' codec can't encode characters in position 45-50: character maps to <undefined>
+[2025-10-02 11:34:48] === RUN END (code=1) ===
+
+
+[2025-10-02 11:35:17] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+Random slice: 2025-09-15T12:44:17.876795+00:00..2025-09-15T13:14:17.876795+00:00 | region=US | query='gaming'
+[page 1] found=39
+Error: 'charmap' codec can't encode character '\U0001f621' in position 64: character maps to <undefined>
+[2025-10-02 11:35:18] === RUN END (code=1) ===
+
+
+[2025-10-02 11:35:47] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+Random slice: 2025-09-08T05:06:48.051624+00:00..2025-09-08T05:36:48.051624+00:00 | region=VN | query='stream'
+[page 1] found=2
+Error: 'charmap' codec can't encode characters in position 63-65: character maps to <undefined>
+[2025-10-02 11:35:48] === RUN END (code=1) ===
+
+
+[2025-10-02 11:36:17] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+Random slice: 2025-09-22T10:01:18.023450+00:00..2025-09-22T10:31:18.023450+00:00 | region=GB | query='stream'
+[page 1] found=30
+ - YdGW7O2GRFk | 2025-09-22T10:28:49Z | Working art entertainment live stream #live #livestream #shorts #viralvideo  #youtubeshorts
+ - R1nTSSbAhY0 | 2025-09-22T10:28:42Z | Solving 1500 Rated Questions | Competitive Programming Reaching 2000 Rating | Part-85 | STREAM #192
+ - a6fgxVFlwm4 | 2025-09-22T10:26:22Z | LIVE STREAMING TVRI ACEH 22 SEPTEMBER 2025
+ - L5o8zeRL8dw | 2025-09-22T10:27:22Z | Alnahsha Run  40k Coin  stream Is Back  | Playing Solo | Streaming With Chalange
+ - m7HE5UG4ZUw | 2025-09-22T10:24:50Z | GRANNY LIVE GAMEPLAY || HORROR LIVE STREAM ||#granny #grannylivegameplay #shortslive #funny #shorts
+>>> DONE. total_found=30, total_upserted=30
+Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.
+[2025-10-02 11:36:18] === RUN END (code=0) ===
+
+
+[2025-10-02 11:36:47] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+Random slice: 2025-09-12T09:30:47.879300+00:00..2025-09-12T10:00:47.879300+00:00 | region=GB | query='stream'
+[page 1] found=23
+ - jBUOcMbNuRw | 2025-09-12T09:59:02Z | JasonTheWeen &amp; Ludwig FULL Stream!
+ - 18ZlqcYW2Gg | 2025-09-12T10:00:06Z | Stream Of Passion - Into The Black Hole / Cold Metal (Ayreon) (LIVE) (Bass Cover) TAB
+Error: 'charmap' codec can't encode characters in position 66-67: character maps to <undefined>
+[2025-10-02 11:36:48] === RUN END (code=1) ===
+
+
+[2025-10-02 11:37:17] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+Random slice: 2025-09-08T22:57:17.976036+00:00..2025-09-08T23:27:17.976036+00:00 | region=GB | query='highlights'
+[page 1] found=2
+ - xcMHt_KBRaQ | 2025-09-08T23:06:58Z | what a way to open in foxborough.
+Error: 'charmap' codec can't encode character '\U0001f525' in position 87: character maps to <undefined>
+[2025-10-02 11:37:18] === RUN END (code=1) ===
+
+
+[2025-10-02 11:37:47] === RUN START ===
+>>> discover_once v3 starting
+RANDOM_MODE=True, RANDOM_LOOKBACK_MINUTES=43200, RANDOM_WINDOW_MINUTES=30
+Random slice: 2025-09-11T20:03:47.980510+00:00..2025-09-11T20:33:47.980510+00:00 | region=US | query='highlights'
+[page 1] found=20
+ - dpwdFeLKTVg | 2025-09-11T20:32:10Z | North Carolina A&amp;T vs UCF College Football Highlights Full Game 2025
+ - lJKSZKc0R8w | 2025-09-11T20:30:06Z | LEFT 4 DEAD 2 - HIGHLIGHTS @PART 137 | INFECTED TEAMWORKS
+ - rHwiaRsrgZs | 2025-09-11T20:30:24Z | ff mobile pro player gamplay #freefire #freestyle #highlights #freestylemasterseries #gaming
+Error: 'charmap' codec can't encode character '\U0001f60d' in position 73: character maps to <undefined>
+[2025-10-02 11:37:48] === RUN END (code=1) ===

@@ -1,36 +1,19 @@
 
-# discover_once.py
-# v2: Supports @handle -> channelId, category filtering via videos.list,
-#     and adjustable lookback window. Falls back to mostPopular if search returns 0.
-#
-# Env vars:
-#   YT_API_KEY (required)
-#   MONGO_URI (default: mongodb://localhost:27017/ytscan)
-#   YT_REGION (default: US)
-#   YT_QUERY (optional)
-#   YT_CHANNEL_ID (optional)
-#   YT_CHANNEL_HANDLE (optional, e.g., "@MrBeastGaming")
-#   YT_TOPIC_ID (optional, e.g., "/m/0bzvm2" for Gaming)
-#   YT_LOOKBACK_MINUTES (default: 360)
-#   YT_FILTER_CATEGORY_ID (optional, e.g., "20" for Gaming). Alias: YT_VIDEO_CATEGORY_ID
-#
-# Usage (PowerShell example):
-#   $env:YT_API_KEY="..."
-#   $env:MONGO_URI="mongodb://localhost:27017/ytscan"
-#   $env:YT_REGION="US"
-#   $env:YT_CHANNEL_HANDLE="@SomeChannel"
-#   $env:YT_FILTER_CATEGORY_ID="20"
-#   $env:YT_LOOKBACK_MINUTES="1440"
-#   Remove-Item Env:YT_QUERY -ErrorAction SilentlyContinue
-#   python .\worker\discover_once.py
-
-import os
-import sys
+# discover_once.py (v3 with RANDOM MODE)
+from dotenv import load_dotenv
+load_dotenv()  # load .env nếu có
+import os, sys, random
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
-
 import requests
 from pymongo import MongoClient, UpdateOne
+import sys, io
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 API_KEY  = os.getenv("YT_API_KEY")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/ytscan")
@@ -42,19 +25,19 @@ TOPIC_ID = os.getenv("YT_TOPIC_ID")
 LOOKBACK_MINUTES = int(os.getenv("YT_LOOKBACK_MINUTES", "360"))
 FILTER_CATEGORY_ID = os.getenv("YT_FILTER_CATEGORY_ID") or os.getenv("YT_VIDEO_CATEGORY_ID")
 
+RANDOM_MODE = os.getenv("YT_RANDOM_MODE", "0").lower() in ("1","true","yes")
+RANDOM_LOOKBACK_MINUTES = int(os.getenv("YT_RANDOM_LOOKBACK_MINUTES", "43200"))
+RANDOM_WINDOW_MINUTES = int(os.getenv("YT_RANDOM_WINDOW_MINUTES", "30"))
+RANDOM_REGION_POOL = [x.strip().upper() for x in os.getenv("YT_RANDOM_REGION_POOL","").split(",") if x.strip()]
+RANDOM_QUERY_POOL = [x.strip() for x in os.getenv("YT_RANDOM_QUERY_POOL","").split(",") if x.strip()]
+
 SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 
-
 def resolve_channel_id_from_handle(handle: str) -> str:
-    """Resolve @handle -> UC... channelId via channels.list; fallback to search if needed."""
-    if not handle:
-        raise ValueError("Empty handle")
     if not handle.startswith("@"):
         handle = "@" + handle
-
-    # Try channels.list with forHandle (newer param)
     try:
         params = {"key": API_KEY, "part": "id", "forHandle": handle}
         r = requests.get(CHANNELS_URL, params=params, timeout=30)
@@ -64,14 +47,8 @@ def resolve_channel_id_from_handle(handle: str) -> str:
         if items:
             return items[0]["id"]
     except requests.HTTPError:
-        # continue to fallback
         pass
-
-    # Fallback: search for the channel by text, type=channel
-    params = {
-        "key": API_KEY, "part": "snippet", "type": "channel",
-        "q": handle.lstrip("@"), "maxResults": 1,
-    }
+    params = {"key": API_KEY, "part": "snippet", "type": "channel", "q": handle.lstrip("@"), "maxResults": 1}
     r = requests.get(SEARCH_URL, params=params, timeout=30)
     r.raise_for_status()
     data = r.json()
@@ -80,30 +57,33 @@ def resolve_channel_id_from_handle(handle: str) -> str:
         raise ValueError(f"Cannot resolve handle: {handle}")
     return items[0]["id"]["channelId"]
 
-
-def search_page(published_after_iso: str, page_token: Optional[str] = None) -> Dict[str, Any]:
+def search_page(published_after_iso: str, page_token: Optional[str] = None, published_before_iso: Optional[str] = None,
+                region_override: Optional[str] = None, query_override: Optional[str] = None) -> Dict[str, Any]:
     if not API_KEY:
         raise RuntimeError("Missing YT_API_KEY")
     params = {
         "key": API_KEY, "part": "snippet", "type": "video",
         "order": "date", "maxResults": 50, "publishedAfter": published_after_iso,
-        "regionCode": REGION,
+        "regionCode": region_override or REGION,
     }
-    if QUERY:
+    if published_before_iso:
+        params["publishedBefore"] = published_before_iso
+    if query_override is not None:
+        if query_override:
+            params["q"] = query_override
+    elif QUERY:
         params["q"] = QUERY
     if CHANNEL_ID:
         params["channelId"] = CHANNEL_ID
     if TOPIC_ID:
-        params["topicId"] = TOPIC_ID  # optional topic filter
+        params["topicId"] = TOPIC_ID
     if page_token:
         params["pageToken"] = page_token
     r = requests.get(SEARCH_URL, params=params, timeout=30)
     r.raise_for_status()
     return r.json()
 
-
 def videos_details(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Return mapping id -> video resource with 'snippet' (for categoryId)."""
     out: Dict[str, Dict[str, Any]] = {}
     if not video_ids:
         return out
@@ -118,21 +98,14 @@ def videos_details(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
             out[vid] = it
     return out
 
-
 def most_popular(region: str, category_id: str, max_results: int = 50) -> List[Dict[str, Any]]:
-    """Fallback to trending list to ensure we have some data. Normalize to search-like items."""
-    params = {
-        "key": API_KEY, "part": "snippet", "chart": "mostPopular",
-        "regionCode": region, "videoCategoryId": category_id, "maxResults": max_results
-    }
+    params = {"key": API_KEY, "part": "snippet", "chart": "mostPopular",
+              "regionCode": region, "videoCategoryId": category_id, "maxResults": max_results}
     r = requests.get(VIDEOS_URL, params=params, timeout=30)
     r.raise_for_status()
     data = r.json()
-    items = []
-    for it in data.get("items", []):
-        items.append({"id": {"videoId": it["id"]}, "snippet": it["snippet"]})
+    items = [{"id": {"videoId": it["id"]}, "snippet": it["snippet"]} for it in data.get("items", [])]
     return items
-
 
 def upsert_videos(items: List[Dict[str, Any]], db):
     ops = []
@@ -147,7 +120,7 @@ def upsert_videos(items: List[Dict[str, Any]], db):
             "source": {
                 "query": QUERY, "regionCode": REGION, "channelId": CHANNEL_ID,
                 "channelHandle": CHANNEL_HANDLE, "topicId": TOPIC_ID,
-                "filteredByCategoryId": FILTER_CATEGORY_ID
+                "filteredByCategoryId": FILTER_CATEGORY_ID, "randomMode": RANDOM_MODE,
             },
             "snippet": {
                 "title": sn.get("title"),
@@ -169,100 +142,78 @@ def upsert_videos(items: List[Dict[str, Any]], db):
         return result.upserted_count or 0
     return 0
 
-
 def main() -> int:
-    global CHANNEL_ID
-    print(">>> discover_once starting")
-    print(f"MONGO_URI            = {MONGO_URI}")
-    print(f"REGION               = {REGION}")
-    print(f"QUERY                = {QUERY!r}")
-    print(f"CHANNEL_ID           = {CHANNEL_ID!r}")
-    print(f"CHANNEL_HANDLE       = {CHANNEL_HANDLE!r}")
-    print(f"TOPIC_ID             = {TOPIC_ID!r}")
-    print(f"LOOKBACK_MINUTES     = {LOOKBACK_MINUTES}")
-    print(f"FILTER_CATEGORY_ID   = {FILTER_CATEGORY_ID!r}")
-
+    global CHANNEL_ID, REGION, QUERY
+    print(">>> discover_once v3 starting")
+    print(f"RANDOM_MODE={RANDOM_MODE}, RANDOM_LOOKBACK_MINUTES={RANDOM_LOOKBACK_MINUTES}, RANDOM_WINDOW_MINUTES={RANDOM_WINDOW_MINUTES}")
     if not API_KEY:
-        print("Missing YT_API_KEY", file=sys.stderr)
-        return 2
+        print("Missing YT_API_KEY", file=sys.stderr); return 2
 
-    # Resolve handle -> channelId if needed
     if not CHANNEL_ID and CHANNEL_HANDLE:
         try:
             CHANNEL_ID = resolve_channel_id_from_handle(CHANNEL_HANDLE)
             print(f"Resolved handle {CHANNEL_HANDLE} -> CHANNEL_ID={CHANNEL_ID}")
         except Exception as e:
-            print(f"Failed to resolve handle {CHANNEL_HANDLE}: {e}", file=sys.stderr)
-            return 1
+            print(f"Failed to resolve handle {CHANNEL_HANDLE}: {e}", file=sys.stderr); return 1
 
-    client = MongoClient(MONGO_URI)
-    db = client.get_database()
+    client = MongoClient(MONGO_URI); db = client.get_database()
+    now = datetime.now(timezone.utc)
 
-    published_after = (datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES)).isoformat()
+    if RANDOM_MODE:
+        offset = random.randint(0, max(1, RANDOM_LOOKBACK_MINUTES))
+        end = now - timedelta(minutes=offset)
+        start = end - timedelta(minutes=RANDOM_WINDOW_MINUTES)
+        published_after = start.isoformat()
+        published_before = end.isoformat()
+        region_choice = random.choice(RANDOM_REGION_POOL) if RANDOM_REGION_POOL else None
+        query_choice = random.choice(RANDOM_QUERY_POOL) if RANDOM_QUERY_POOL else None
+        print(f"Random slice: {published_after}..{published_before} | region={region_choice or REGION} | query={query_choice!r}")
+    else:
+        published_after = (now - timedelta(minutes=LOOKBACK_MINUTES)).isoformat()
+        published_before = None
+        region_choice = None; query_choice = None
 
-    page_token = None
-    total_found = 0
-    total_upserted = 0
-    page = 0
+    page_token = None; total_found = 0; total_upserted = 0; page = 0
     try:
         while True:
             page += 1
-            data = search_page(published_after, page_token)
-            items = data.get("items", [])
-            found = len(items)
-            total_found += found
+            data = search_page(published_after, page_token, published_before_iso=published_before,
+                               region_override=region_choice, query_override=query_choice)
+            items = data.get("items", []); found = len(items); total_found += found
 
             if FILTER_CATEGORY_ID and found > 0:
                 ids = [it.get("id", {}).get("videoId") for it in items if it.get("id", {}).get("videoId")]
-                details = videos_details(ids)
-                filtered = []
+                details = videos_details(ids); filtered = []
                 for it in items:
-                    vid = it.get("id", {}).get("videoId")
-                    if not vid:
-                        continue
+                    vid = it.get("id", {}).get("videoId"); 
+                    if not vid: continue
                     cat = details.get(vid, {}).get("snippet", {}).get("categoryId")
-                    if cat == FILTER_CATEGORY_ID:
-                        filtered.append(it)
+                    if cat == FILTER_CATEGORY_ID: filtered.append(it)
                 print(f"[page {page}] found={found}, after category filter({FILTER_CATEGORY_ID}) -> {len(filtered)}")
                 items = filtered
             else:
                 print(f"[page {page}] found={found}")
 
-            upserted = upsert_videos(items, db)
-            total_upserted += upserted
-
+            upserted = upsert_videos(items, db); total_upserted += upserted
             for it in items[:5]:
-                vid = it["id"]["videoId"]
-                title = it["snippet"]["title"]
-                published = it["snippet"]["publishedAt"]
+                vid = it["id"]["videoId"]; title = it["snippet"]["title"]; published = it["snippet"]["publishedAt"]
                 print(f" - {vid} | {published} | {title}")
-
             page_token = data.get("nextPageToken")
-            if not page_token:
-                break
+            if not page_token: break
 
-        # Fallback to mostPopular if we found nothing but want a category
-        if total_found == 0 and FILTER_CATEGORY_ID and REGION:
+        if total_found == 0 and FILTER_CATEGORY_ID and (region_choice or REGION):
             print("No recent results. Falling back to mostPopular…")
-            items = most_popular(REGION, FILTER_CATEGORY_ID)
-            up = upsert_videos(items, db)
-            print(f"fallback mostPopular: upserted={up}")
-
+            items = most_popular(region_choice or REGION, FILTER_CATEGORY_ID)
+            up = upsert_videos(items, db); print(f"fallback mostPopular: upserted={up}")
     except requests.HTTPError as e:
-        try:
-            body = e.response.json()
-        except Exception:
-            body = {"error": str(e)}
-        print("YouTube API error:", body, file=sys.stderr)
-        return 2
+        try: body = e.response.json()
+        except Exception: body = {"error": str(e)}
+        print("YouTube API error:", body, file=sys.stderr); return 2
     except Exception as e:
-        print("Error:", e, file=sys.stderr)
-        return 1
+        print("Error:", e, file=sys.stderr); return 1
 
     print(f">>> DONE. total_found={total_found}, total_upserted={total_upserted}")
-    print("Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.")
-    return 0
-
+    print("Tip: open http://127.0.0.1:8000/videos?limit=10 to verify."); return 0
 
 if __name__ == "__main__":
     raise SystemExit(main())
