@@ -5,7 +5,7 @@
 # - All other v4 features preserved (Random Mode, SINCE_MODE, UTF‑8, .env, category filter, @handle, fallback)
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=False)
 
 import os, sys, io, random
 from datetime import datetime, timedelta, timezone
