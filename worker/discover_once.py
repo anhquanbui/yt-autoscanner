@@ -1,17 +1,100 @@
-
-# worker/discover_once.py — SCAN-ONLY (near-now + categoryId) with RANDOM region + weighted hot keywords
+# worker/discover_once.py — VIDEO DISCOVERY (Near-now scan with categoryId)
 # ---------------------------------------------------------------------------------
-# Design:
-#   - Purpose: discover newly published videos in a *near-now* window only.
-#   - API calls per page (50 results): search.list (100) + videos.list?part=snippet (1) ≈ 101 quota.
-#   - Enrich ONLY categoryId (from videos.list snippet). No handle/topic/details enrichment or filtering.
-#   - RANDOM picker:
-#       • Pick region from YT_RANDOM_REGION_POOL
-#       • Pick keyword from a weighted pool (global or per-region), e.g. "live:5, trailer:2, music:1"
-#       • Falls back to YT_QUERY if pool empty
-#   - Insert minimal docs into MongoDB; tracker will do the rest.
+# PURPOSE:
+#   Discover newly published YouTube videos (within a near-now window)
+#   and insert them into MongoDB for later tracking by track_once.py.
+#   It supports both deterministic time-slice (SINCE_MODE) and randomized
+#   discovery (RANDOM_MODE) with region and query pools.
 #
-# Exit codes: 0 success | 88 quota exhausted | 2 missing API key | 1 other errors
+# ---------------------------------------------------------------------------------
+# OPERATING MODES
+#
+# 1️⃣ Random Mode (Exploratory / Weighted Sampling)
+#     Enabled when:  YT_RANDOM_MODE=1
+#
+#     Variables:
+#       - YT_RANDOM_LOOKBACK_MINUTES  : how far back to pick the random slice (default: 43200 = 30 days)
+#       - YT_RANDOM_WINDOW_MINUTES    : window length for that slice (default: 30)
+#       - YT_RANDOM_REGION_POOL       : comma-separated region list (e.g. "US,GB,JP,VN")
+#       - YT_RANDOM_QUERY_POOL        : weighted keyword list (e.g. "live:5,news:3,gaming:4,music:2")
+#
+#     Example:
+#       YT_RANDOM_MODE=1
+#       YT_RANDOM_REGION_POOL=US,GB,JP,VN
+#       YT_RANDOM_QUERY_POOL=live:5,news:3,gaming:4,music:2,trailer:1
+#
+#     Behavior:
+#       - Randomly selects a region from REGION_POOL
+#       - Randomly selects a keyword based on weighted probability
+#       - Picks a random time slice (e.g. 20–30 minutes window)
+#       - Quota use: ~101 units per page (50 results + category lookup)
+#
+# 2️⃣ Since Mode (Deterministic Near-now)
+#     Enabled when:  YT_RANDOM_MODE=0 or not set
+#
+#     Variables:
+#       - YT_SINCE_MODE        : "minutes" (default) | "lookback" | "local_midnight"
+#       - YT_SINCE_MINUTES     : how many minutes to look back (default: 20)
+#       - YT_REGION            : fixed region (default: US)
+#       - YT_QUERY             : fixed keyword (optional)
+#       - YT_LOCAL_TZ          : required only for local_midnight
+#
+#     Example:
+#       YT_SINCE_MODE=minutes
+#       YT_SINCE_MINUTES=10
+#       YT_REGION=US
+#       YT_QUERY=live
+#
+# ---------------------------------------------------------------------------------
+# QUOTA SAFETY
+#   - YT_MAX_PAGES limits the number of search pages (default: 1).
+#     Each page = 50 results (100 quota units for search + 1 for category lookup).
+#   - Recommended for scheduled runs: 1–3 pages per call.
+#
+# ---------------------------------------------------------------------------------
+# DATABASE STRUCTURE
+#   Each discovered video is inserted (upsert) into MongoDB:
+#     {
+#       _id: <videoId>,
+#       source: { query, regionCode, randomMode, filteredByCategoryId },
+#       snippet: { title, publishedAt, thumbnails, channelId, channelTitle, categoryId },
+#       tracking: { status, discovered_at, next_poll_after, poll_count },
+#       stats_snapshots: [],
+#       ml_flags: { likely_viral, viral_confirmed, score }
+#     }
+#
+# ---------------------------------------------------------------------------------
+# EXIT CODES
+#   0  = success
+#   88 = YouTube quota exhausted (quotaExceeded / rateLimitExceeded)
+#   2  = missing API key
+#   1  = other errors
+#
+# ---------------------------------------------------------------------------------
+# RECOMMENDED ENV CONFIG (example .env)
+#
+#   YT_API_KEY=<your_youtube_api_key>
+#   MONGO_URI=mongodb://localhost:27017/ytscan
+#
+#   # --- Random mode (global weighted pool) ---
+#   YT_RANDOM_MODE=1
+#   YT_RANDOM_LOOKBACK_MINUTES=43200
+#   YT_RANDOM_WINDOW_MINUTES=30
+#   YT_RANDOM_REGION_POOL=US,GB,JP,VN,KR,IN,BR,CA,DE,FR
+#   YT_RANDOM_QUERY_POOL=live:5,news:3,gaming:4,music:3,highlights:4,shorts:2,trailer:2,stream:3,review:3,performance:2
+#
+#   # --- Quota & interval ---
+#   YT_MAX_PAGES=1
+#   DISCOVER_INTERVAL_SECONDS=1800
+#
+# ---------------------------------------------------------------------------------
+# NOTE:
+#   - The script intentionally avoids collecting statistics or full video details
+#     to keep discovery lightweight and cheap in quota.
+#   - Detailed updates (stats, engagement, ML flags) are handled later by track_once.py.
+#
+# ---------------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import os, sys, io, random
