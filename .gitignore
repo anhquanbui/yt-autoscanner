@@ -30,7 +30,8 @@ docker_data/
 *.sqlite
 
 # =========================
-# System / temporary files
+# System / temporary files/folers
 # =========================
 .DS_Store
 Thumbs.db
+logs/
