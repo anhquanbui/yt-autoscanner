@@ -93,7 +93,7 @@ yt-autoscanner/
 python -m venv venv
 # If blocked once:
 #   Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-.env\Scripts\Activate.ps1
+.\venv\Scripts\Activate.ps1
 ```
 
 ### 2) Install dependencies
