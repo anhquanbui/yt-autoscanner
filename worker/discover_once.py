@@ -1,234 +1,193 @@
-# worker/discover_once.py  — SIMPLE SCAN & INSERT (no statistics snapshot)
+
+# worker/discover_once.py — SCAN-ONLY (near-now + categoryId) with RANDOM region + weighted hot keywords
 # ---------------------------------------------------------------------------------
-# What it does:
-#   - Query YouTube Search API for newly published videos.
-#   - (Optional) Filter by category (via a cheap videos.list?part=snippet call).
-#   - Upsert each video into MongoDB with tracking.status="tracking" and
-#     tracking.next_poll_after=now (so a separate tracker can handle re-polls).
-#   - No statistics snapshot here (views/likes/comments are collected by track_once.py).
+# Design:
+#   - Purpose: discover newly published videos in a *near-now* window only.
+#   - API calls per page (50 results): search.list (100) + videos.list?part=snippet (1) ≈ 101 quota.
+#   - Enrich ONLY categoryId (from videos.list snippet). No handle/topic/details enrichment or filtering.
+#   - RANDOM picker:
+#       • Pick region from YT_RANDOM_REGION_POOL
+#       • Pick keyword from a weighted pool (global or per-region), e.g. "live:5, trailer:2, music:1"
+#       • Falls back to YT_QUERY if pool empty
+#   - Insert minimal docs into MongoDB; tracker will do the rest.
 #
-# Quota notes:
-#   - search.list costs 100 units per page (maxResults=50).
-#   - videos.list?part=snippet for category check costs 1 unit per request (up to 50 IDs).
-#   - This script is intentionally minimal to keep "discover" cheap and simple.
-#
-# Exit codes:
-#   - 0  : success
-#   - 88 : YouTube quota exhausted (quotaExceeded/dailyLimitExceeded/...)
-#   - 1/2: other errors
-#
-# Environment (secrets kept in .env; runtime config via ENV):
-#   Required:
-#     - YT_API_KEY
-#     - MONGO_URI (e.g., mongodb://localhost:27017/ytscan)
-#   Optional scope filters:
-#     - YT_REGION (default: US), YT_QUERY
-#     - YT_CHANNEL_ID or YT_CHANNEL_HANDLE (e.g. @SomeChannel)
-#     - YT_TOPIC_ID
-#     - YT_FILTER_CATEGORY_ID (== YT_VIDEO_CATEGORY_ID)
-#   Time window (non-random mode):
-#     - YT_SINCE_MODE   : now | minutes | lookback | local_midnight   (default: minutes)
-#     - YT_SINCE_MINUTES: 10..N (default: 60)
-#     - YT_LOOKBACK_MINUTES (default: 360)
-#     - YT_LOCAL_TZ     : e.g. America/Toronto (only for local_midnight)
-#     - YT_MAX_PAGES    : cap search pages per run (int; reduce quota)
-#   Random mode (optional exploratory scanning, expensive if abused):
-#     - YT_RANDOM_MODE=1
-#     - YT_RANDOM_LOOKBACK_MINUTES (default: 43200, i.e. 30 days pool)
-#     - YT_RANDOM_WINDOW_MINUTES   (default: 30)
-#     - YT_RANDOM_REGION_POOL      (e.g. "US,GB,JP,VN")
-#     - YT_RANDOM_QUERY_POOL       (e.g. "gaming,stream,highlights")
-#
-# Tips:
-#   - Keep YT_MAX_PAGES low (1–2) for periodic cron runs.
-#   - Let track_once.py do the re-polls (1h .. 24h milestones), batching 50 IDs/request.
-#   - Add Mongo indexes:
-#       db.videos.createIndex({ "snippet.publishedAt": -1 })
-#       db.videos.createIndex({ "tracking.status": 1, "tracking.next_poll_after": 1 })
-#       db.videos.createIndex({ "source.regionCode": 1 })
-#
+# Exit codes: 0 success | 88 quota exhausted | 2 missing API key | 1 other errors
 from __future__ import annotations
 
 import os, sys, io, random
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict, Any, List
-from zoneinfo import ZoneInfo
+from typing import Optional, Dict, Any, List, Tuple
 
 import requests
 from pymongo import MongoClient, UpdateOne
 from dotenv import load_dotenv
-from dateutil import parser as dtp
 
-# Ensure UTF‑8 console (Windows PowerShell can throw charmap errors otherwise)
+# ----- Console UTF-8 (Windows-safe) -----
 try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 except Exception:
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
-# Load .env but DO NOT override existing ENV (so server/cron ENV wins)
 load_dotenv(override=False)
 
-# ---- Config (read once at import) ----
-API_KEY   = os.getenv("YT_API_KEY")
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/ytscan")
+# ----- Config -----
+API_KEY   = os.getenv('YT_API_KEY')
+MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017/ytscan')
 
-REGION         = os.getenv("YT_REGION", "US")
-QUERY          = os.getenv("YT_QUERY")
-CHANNEL_ID     = os.getenv("YT_CHANNEL_ID")
-CHANNEL_HANDLE = os.getenv("YT_CHANNEL_HANDLE")
-TOPIC_ID       = os.getenv("YT_TOPIC_ID")
+REGION = os.getenv('YT_REGION', 'US')
+QUERY  = os.getenv('YT_QUERY')  # optional fallback keyword
 
-# Optional category filter (requires an extra cheap videos.list call)
-FILTER_CATEGORY_ID = os.getenv("YT_FILTER_CATEGORY_ID") or os.getenv("YT_VIDEO_CATEGORY_ID")
+# RANDOM picker (region/query) — near-now window always
+RANDOM_PICK        = os.getenv('YT_RANDOM_PICK', '0').lower() in ('1','true','yes')
+RANDOM_REGION_POOL = [x.strip().upper() for x in os.getenv('YT_RANDOM_REGION_POOL', '').split(',') if x.strip()]
 
-# Random mode knobs
-RANDOM_MODE              = os.getenv("YT_RANDOM_MODE", "0").lower() in ("1","true","yes")
-RANDOM_LOOKBACK_MINUTES  = int(os.getenv("YT_RANDOM_LOOKBACK_MINUTES", "43200"))
-RANDOM_WINDOW_MINUTES    = int(os.getenv("YT_RANDOM_WINDOW_MINUTES", "30"))
-RANDOM_REGION_POOL       = [x.strip().upper() for x in os.getenv("YT_RANDOM_REGION_POOL","").split(",") if x.strip()]
-RANDOM_QUERY_POOL        = [x.strip() for x in os.getenv("YT_RANDOM_QUERY_POOL","").split(",") if x.strip()]
+# Weighted keyword pools (global or region-specific)
+# Examples:
+#   YT_RANDOM_QUERY_POOL="live:5, news:3, music:1"
+#   YT_RANDOM_QUERY_POOL_US="nfl:4, nba:3, mlb:2, highlights:5"
+#   YT_RANDOM_QUERY_POOL_JP="vtuber:5, anime:4, jpop:3"
+GLOBAL_QUERY_POOL = os.getenv('YT_RANDOM_QUERY_POOL', '')
 
-# Deterministic (non-random) time window
-SINCE_MODE        = os.getenv("YT_SINCE_MODE", "minutes")  # now|minutes|lookback|local_midnight
-SINCE_MINUTES     = int(os.getenv("YT_SINCE_MINUTES", "60"))
-LOOKBACK_MINUTES  = int(os.getenv("YT_LOOKBACK_MINUTES", "360"))
-LOCAL_TZ          = os.getenv("YT_LOCAL_TZ")               # e.g. America/Toronto
+# Near-now window (minutes)
+SINCE_MINUTES = int(os.getenv('YT_SINCE_MINUTES', '20'))  # default 20
 
-# Safety: cap number of pages (each page=50 results, 100 quota units)
-MAX_PAGES = os.getenv("YT_MAX_PAGES")
-MAX_PAGES = int(MAX_PAGES) if (MAX_PAGES and MAX_PAGES.isdigit()) else None
+# Quota safety: cap number of pages (each page=50 results)
+MAX_PAGES_ENV = os.getenv('YT_MAX_PAGES', '1')  # default 1 page
+try:
+    MAX_PAGES = int(MAX_PAGES_ENV)
+except Exception:
+    MAX_PAGES = 1
 
 # API endpoints
-SEARCH_URL   = "https://www.googleapis.com/youtube/v3/search"
-VIDEOS_URL   = "https://www.googleapis.com/youtube/v3/videos"
-CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
+SEARCH_URL = 'https://www.googleapis.com/youtube/v3/search'
+VIDEOS_URL = 'https://www.googleapis.com/youtube/v3/videos'
 
-# Exit code for quota exhaustion
 EXIT_QUOTA = 88
 
 
-def resolve_channel_id_from_handle(handle: str) -> str:
-    """Resolve a @handle to channelId using channels.list(forHandle), then fallback to search."""
-    if not handle:
-        raise ValueError("Empty handle")
-    if not handle.startswith("@"):
-        handle = "@" + handle
-    # Try channels.list with forHandle
-    try:
-        params = {"key": API_KEY, "part": "id", "forHandle": handle}
-        r = requests.get(CHANNELS_URL, params=params, timeout=30)
-        r.raise_for_status()
-        items = r.json().get("items", [])
-        if items:
-            return items[0]["id"]
-    except requests.HTTPError:
-        pass
-    # Fallback: search channel by text
-    params = {"key": API_KEY, "part": "snippet", "type": "channel", "q": handle.lstrip("@"), "maxResults": 1}
-    r = requests.get(SEARCH_URL, params=params, timeout=30)
-    r.raise_for_status()
-    items = r.json().get("items", [])
-    if not items:
-        raise ValueError(f"Cannot resolve handle: {handle}")
-    return items[0]["id"]["channelId"]
+def parse_weighted_pool(val: str) -> Tuple[List[str], List[float]]:
+    """
+    Parse a weighted CSV string into (choices, weights).
+    - Input format: "termA:5, termB:2, term C:1"  (weight defaults to 1 if omitted)
+    - Trims whitespace; ignores empty items and zero/negative weights.
+    """
+    if not val:
+        return [], []
+    choices: List[str] = []
+    weights: List[float] = []
+    for raw in val.split(','):
+        item = raw.strip()
+        if not item:
+            continue
+        if ':' in item:
+            term, w = item.split(':', 1)
+            term = term.strip()
+            try:
+                weight = float(w.strip())
+            except Exception:
+                weight = 1.0
+        else:
+            term = item
+            weight = 1.0
+        if term and weight > 0:
+            choices.append(term)
+            weights.append(weight)
+    return choices, weights
 
 
-def search_page(published_after_iso: str,
-                page_token: Optional[str] = None,
-                published_before_iso: Optional[str] = None,
-                region_override: Optional[str] = None,
-                query_override: Optional[str] = None) -> Dict[str, Any]:
-    """Call search.list for a single page (50 results)."""
+def pick_query_for_region(region_code: str) -> Optional[str]:
+    """
+    Choose a keyword for the given region using region-specific pool if present,
+    else fall back to global pool, else None (which means 'no q' param).
+    Region-specific env name: YT_RANDOM_QUERY_POOL_<REGION>, e.g., YT_RANDOM_QUERY_POOL_US
+    """
+    env_name = f'YT_RANDOM_QUERY_POOL_{region_code.upper()}'
+    val = os.getenv(env_name, '').strip()
+    if not val:
+        val = GLOBAL_QUERY_POOL.strip()
+    choices, weights = parse_weighted_pool(val)
+    if choices:
+        try:
+            return random.choices(choices, weights=weights, k=1)[0]
+        except Exception:
+            return random.choice(choices)
+    return None
+
+
+def search_page(published_after_iso: str, region_code: str, query_str: Optional[str], page_token: Optional[str] = None) -> Dict[str, Any]:
     if not API_KEY:
-        raise RuntimeError("Missing YT_API_KEY")
+        raise RuntimeError('Missing YT_API_KEY')
     params = {
-        "key": API_KEY,
-        "part": "snippet",
-        "type": "video",
-        "order": "date",
-        "maxResults": 50,
-        "publishedAfter": published_after_iso,
-        "regionCode": region_override or REGION,
+        'key': API_KEY,
+        'part': 'snippet',
+        'type': 'video',
+        'order': 'date',
+        'maxResults': 50,
+        'regionCode': region_code,
+        'publishedAfter': published_after_iso,
     }
-    if published_before_iso:
-        params["publishedBefore"] = published_before_iso
-    if query_override is not None:
-        if query_override:
-            params["q"] = query_override
-    elif QUERY:
-        params["q"] = QUERY
-    if CHANNEL_ID:
-        params["channelId"] = CHANNEL_ID
-    if TOPIC_ID:
-        params["topicId"] = TOPIC_ID
+    if query_str:
+        params['q'] = query_str
     if page_token:
-        params["pageToken"] = page_token
-
+        params['pageToken'] = page_token
     r = requests.get(SEARCH_URL, params=params, timeout=30)
     r.raise_for_status()
     return r.json()
 
 
-def videos_details(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Fetch snippet for multiple IDs to read snippet.categoryId for filtering (cheap: 1 unit)."""
+def videos_snippet(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Return {videoId: snippet} to enrich categoryId (cheap: 1 quota per 50 IDs)."""
     out: Dict[str, Dict[str, Any]] = {}
     if not video_ids:
         return out
-    params = {"key": API_KEY, "part": "snippet", "id": ",".join(video_ids[:50])}
+    params = {'key': API_KEY, 'part': 'snippet', 'id': ','.join(video_ids[:50])}
     r = requests.get(VIDEOS_URL, params=params, timeout=30)
     r.raise_for_status()
-    for it in r.json().get("items", []):
-        vid = it.get("id")
+    for it in r.json().get('items', []):
+        vid = it.get('id')
         if vid:
-            out[vid] = it
+            out[vid] = it.get('snippet', {})
     return out
 
 
-def upsert_videos(items: List[Dict[str, Any]], db, region_used, query_used) -> int:
-    """Insert-only (setOnInsert). No statistics snapshot; tracker will handle later."""
+def upsert_minimal(items: List[Dict[str, Any]], db, region_used: str, query_used: Optional[str]) -> int:
+    """Insert minimal video docs; tracker will enrich/track later."""
     ops = []
     now_iso = datetime.now(timezone.utc).isoformat()
     for it in items:
-        vid = it.get("id", {}).get("videoId")
-        sn  = it.get("snippet", {})
+        vid = it.get('id', {}).get('videoId')
+        sn  = it.get('snippet', {}) or {}
         if not vid or not sn:
             continue
         doc = {
-            "_id": vid,
-            "source": {
-                "query": query_used,
-                "regionCode": region_used,
-                "channelId": CHANNEL_ID,
-                "channelHandle": CHANNEL_HANDLE,
-                "topicId": TOPIC_ID,
-                "filteredByCategoryId": FILTER_CATEGORY_ID,
-                "randomMode": RANDOM_MODE,
+            '_id': vid,
+            'source': {
+                'query': query_used,
+                'regionCode': region_used,
+                'randomMode': bool(RANDOM_PICK),
             },
-            "snippet": {
-                "title": sn.get("title"),
-                "publishedAt": sn.get("publishedAt"),
-                "thumbnails": sn.get("thumbnails", {}),
-                "channelId": sn.get("channelId"),
-                "channelTitle": sn.get("channelTitle"),
-                # If we already looked up categoryId via videos_details, keep it
-                "categoryId": sn.get("categoryId"),
+            'snippet': {
+                'title': sn.get('title'),
+                'publishedAt': sn.get('publishedAt'),
+                'thumbnails': sn.get('thumbnails', {}),
+                'channelId': sn.get('channelId'),
+                'channelTitle': sn.get('channelTitle'),
+                'categoryId': sn.get('categoryId'),  # set by enrichment below
             },
-            "tracking": {
-                "status": "tracking",
-                "discovered_at": now_iso,
-                "last_polled_at": None,
-                # Start tracking immediately; track_once.py will align to publish-based milestones
-                "next_poll_after": now_iso,
-                "poll_count": 0,
-                "stop_reason": None
+            'tracking': {
+                'status': 'tracking',
+                'discovered_at': now_iso,
+                'last_polled_at': None,
+                'next_poll_after': now_iso,
+                'poll_count': 0,
+                'stop_reason': None,
             },
-            "stats_snapshots": [],
-            "ml_flags": {"likely_viral": False, "viral_confirmed": False, "score": 0.0}
+            'stats_snapshots': [],
+            'ml_flags': {'likely_viral': False, 'viral_confirmed': False, 'score': 0.0},
         }
-        ops.append(UpdateOne({"_id": vid}, {"$setOnInsert": doc}, upsert=True))
-
+        ops.append(UpdateOne({'_id': vid}, {'$setOnInsert': doc}, upsert=True))
     if not ops:
         return 0
     res = db.videos.bulk_write(ops, ordered=False)
@@ -236,144 +195,96 @@ def upsert_videos(items: List[Dict[str, Any]], db, region_used, query_used) -> i
 
 
 def main() -> int:
-    print(">>> discover_once SIMPLE starting")
+    print('>>> discover_once SCAN-ONLY (near-now + categoryId + RANDOM weighted pick) starting')
     if not API_KEY:
-        print("Missing YT_API_KEY", file=sys.stderr)
+        print('Missing YT_API_KEY', file=sys.stderr)
         return 2
 
-    # Resolve @handle to channelId if provided
-    global CHANNEL_ID
-    if not CHANNEL_ID and CHANNEL_HANDLE:
-        try:
-            CHANNEL_ID = resolve_channel_id_from_handle(CHANNEL_HANDLE)
-            print(f"Resolved handle {CHANNEL_HANDLE} -> CHANNEL_ID={CHANNEL_ID}")
-        except Exception as e:
-            print(f"Failed to resolve handle {CHANNEL_HANDLE}: {e}", file=sys.stderr)
-            return 1
+    # region pick
+    region_used = (random.choice(RANDOM_REGION_POOL) if RANDOM_PICK and RANDOM_REGION_POOL else REGION)
+
+    # query pick (region-specific weighted)
+    query_used = None
+    if RANDOM_PICK:
+        query_used = pick_query_for_region(region_used)
+    if not query_used:
+        query_used = QUERY  # may be None/empty → omit q
 
     client = MongoClient(MONGO_URI)
     db = client.get_database()
-    now_utc = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    published_after = (now - timedelta(minutes=SINCE_MINUTES)).isoformat()
+    print(f'Near-now slice: {published_after}..(now) | region={region_used} | query={query_used!r} | random={RANDOM_PICK}')
 
-    # Build the time slice
-    region_choice = None
-    query_choice  = None
-    published_before = None
-
-    region_used = REGION
-    query_used = QUERY
-    if RANDOM_MODE:
-        offset_min = 0 if RANDOM_LOOKBACK_MINUTES <= 0 else random.randint(0, RANDOM_LOOKBACK_MINUTES)
-        end = now_utc - timedelta(minutes=offset_min)
-        start = end - timedelta(minutes=RANDOM_WINDOW_MINUTES)
-        published_after = start.isoformat()
-        published_before = end.isoformat()
-        region_choice = random.choice(RANDOM_REGION_POOL) if RANDOM_REGION_POOL else None
-        query_choice  = random.choice(RANDOM_QUERY_POOL)  if RANDOM_QUERY_POOL  else None
-        print(f"Random slice: {published_after}..{published_before} | region={region_choice or REGION} | query={query_choice!r}")
-    else:
-        if   SINCE_MODE == "now":
-            published_after = now_utc.isoformat()
-        elif SINCE_MODE == "minutes":
-            published_after = (now_utc - timedelta(minutes=SINCE_MINUTES)).isoformat()
-        elif SINCE_MODE == "local_midnight" and LOCAL_TZ:
-            now_local = datetime.now(ZoneInfo(LOCAL_TZ))
-            midnight_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-            published_after = midnight_local.astimezone(timezone.utc).isoformat()
-        else:  # lookback (default fallback)
-            published_after = (now_utc - timedelta(minutes=LOOKBACK_MINUTES)).isoformat()
-
-        print(f"Deterministic slice: {published_after}..(now) | region={REGION} | query={QUERY!r} | SINCE_MODE={SINCE_MODE}")
-    region_used = (region_choice or REGION)
-    query_used = (query_choice if query_choice is not None else QUERY)
-
-    # Iterate pages (each page = 50 results)
     page_token = None
+    pages = 0
     total_found = 0
     total_upserted = 0
-    pages = 0
 
     try:
         while True:
-            if MAX_PAGES and pages >= MAX_PAGES:
-                print(f"Reached YT_MAX_PAGES={MAX_PAGES}, stopping to save quota.")
+            if pages >= MAX_PAGES:
+                print(f'Reached YT_MAX_PAGES={MAX_PAGES}, stop.')
                 break
-
             pages += 1
-            data = search_page(
-                published_after_iso=published_after,
-                page_token=page_token,
-                published_before_iso=published_before,
-                region_override=region_choice,
-                query_override=query_choice,
-            )
-            items = data.get("items", [])
+
+            data = search_page(published_after, region_used, query_used, page_token)
+            items = data.get('items', [])
             found = len(items)
             total_found += found
 
-            # Optional: filter by category using videos.list (cheap 1 unit per 50 IDs)
-            if FILTER_CATEGORY_ID and found > 0:
-                ids = [it.get("id", {}).get("videoId") for it in items if it.get("id", {}).get("videoId")]
-                det = videos_details(ids)
-                filtered = []
+            # Enrich categoryId for ALL items (1 quota per 50)
+            if found > 0:
+                ids = [it.get('id', {}).get('videoId') for it in items if it.get('id', {}).get('videoId')]
+                sn_map = videos_snippet(ids)
+                enriched = 0
                 for it in items:
-                    vid = it.get("id", {}).get("videoId")
-                    if not vid:
-                        continue
-                    cat = det.get(vid, {}).get("snippet", {}).get("categoryId")
-                    if cat == FILTER_CATEGORY_ID:
-                        it.setdefault("snippet", {})["categoryId"] = cat  # keep for Mongo
-                        filtered.append(it)
-                print(f"[page {pages}] found={found}, category({FILTER_CATEGORY_ID}) -> {len(filtered)}")
-                items = filtered
-            else:
-                print(f"[page {pages}] found={found}")
+                    vid = it.get('id', {}).get('videoId')
+                    sn = it.get('snippet', {}) or {}
+                    cate = (sn_map.get(vid) or {}).get('categoryId')
+                    if cate:
+                        sn['categoryId'] = cate
+                        it['snippet'] = sn
+                        enriched += 1
+                print(f'[page {pages}] found={found}, enriched_category={enriched}')
 
-            up = upsert_videos(items, db, region_used, query_used)
+            up = upsert_minimal(items, db, region_used, query_used)
             total_upserted += up
 
-            # Print a few sample rows for visibility
             for it in items[:5]:
-                vid = it.get("id", {}).get("videoId")
-                sn  = it.get("snippet", {})
-                print(f" - {vid} | {sn.get('publishedAt')} | {sn.get('title')}")
+                vid = it.get('id', {}).get('videoId')
+                sn  = it.get('snippet', {})
+                print(f' - {vid} | {sn.get("publishedAt")} | cate={sn.get("categoryId")} | {sn.get("title")}')
 
-            page_token = data.get("nextPageToken")
+            page_token = data.get('nextPageToken')
             if not page_token:
                 break
 
-        print(f">>> DONE. pages={pages}, total_found={total_found}, total_upserted={total_upserted}")
-        print("Tip: open http://127.0.0.1:8000/videos?limit=10 to verify.")
+        print(f'>>> DONE. pages={pages}, total_found={total_found}, total_upserted={total_upserted}')
         return 0
 
     except requests.HTTPError as e:
-        # Parse API error to detect quota exhaustion
-        status = getattr(e.response, "status_code", None)
+        # Detect quota exhaustion
         try:
             body = e.response.json()
         except Exception:
-            body = {"error": str(e)}
-
+            body = {'error': str(e)}
         reason = None
-        err = body.get("error") if isinstance(body, dict) else None
+        err = body.get('error') if isinstance(body, dict) else None
         if isinstance(err, dict):
-            errs = err.get("errors") or []
+            errs = err.get('errors') or []
             if isinstance(errs, list) and errs:
-                reason = errs[0].get("reason")
-            reason = reason or err.get("status") or err.get("message")
-
-        quota_reasons = {"quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded", "userRateLimitExceeded"}
-        if status == 403 and str(reason) in quota_reasons:
-            print("YouTube quota exhausted — stopping so you can update YT_API_KEY.", file=sys.stderr)
+                reason = errs[0].get('reason')
+            reason = reason or err.get('status') or err.get('message')
+        if getattr(e.response, 'status_code', None) == 403 and str(reason) in {'quotaExceeded','dailyLimitExceeded','rateLimitExceeded','userRateLimitExceeded'}:
+            print('YouTube quota exhausted — update YT_API_KEY.', file=sys.stderr)
             return EXIT_QUOTA
-
-        print("YouTube API error:", body, file=sys.stderr)
-        return 2
-
+        print('YouTube API error:', body, file=sys.stderr)
+        return 1
     except Exception as e:
-        print("Error:", e, file=sys.stderr)
+        print('Error:', e, file=sys.stderr)
         return 1
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())
