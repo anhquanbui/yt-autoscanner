@@ -57,6 +57,7 @@ from zoneinfo import ZoneInfo
 import requests
 from pymongo import MongoClient, UpdateOne
 from dotenv import load_dotenv
+from dateutil import parser as dtp
 
 # Ensure UTF‑8 console (Windows PowerShell can throw charmap errors otherwise)
 try:
@@ -185,7 +186,7 @@ def videos_details(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def upsert_videos(items: List[Dict[str, Any]], db) -> int:
+def upsert_videos(items: List[Dict[str, Any]], db, region_used, query_used) -> int:
     """Insert-only (setOnInsert). No statistics snapshot; tracker will handle later."""
     ops = []
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -197,8 +198,8 @@ def upsert_videos(items: List[Dict[str, Any]], db) -> int:
         doc = {
             "_id": vid,
             "source": {
-                "query": QUERY,
-                "regionCode": REGION,
+                "query": query_used,
+                "regionCode": region_used,
                 "channelId": CHANNEL_ID,
                 "channelHandle": CHANNEL_HANDLE,
                 "topicId": TOPIC_ID,
@@ -259,8 +260,10 @@ def main() -> int:
     query_choice  = None
     published_before = None
 
+    region_used = REGION
+    query_used = QUERY
     if RANDOM_MODE:
-        offset_min = random.randint(0, max(1, RANDOM_LOOKBACK_MINUTES))
+        offset_min = 0 if RANDOM_LOOKBACK_MINUTES <= 0 else random.randint(0, RANDOM_LOOKBACK_MINUTES)
         end = now_utc - timedelta(minutes=offset_min)
         start = end - timedelta(minutes=RANDOM_WINDOW_MINUTES)
         published_after = start.isoformat()
@@ -281,6 +284,8 @@ def main() -> int:
             published_after = (now_utc - timedelta(minutes=LOOKBACK_MINUTES)).isoformat()
 
         print(f"Deterministic slice: {published_after}..(now) | region={REGION} | query={QUERY!r} | SINCE_MODE={SINCE_MODE}")
+    region_used = (region_choice or REGION)
+    query_used = (query_choice if query_choice is not None else QUERY)
 
     # Iterate pages (each page = 50 results)
     page_token = None
@@ -324,7 +329,7 @@ def main() -> int:
             else:
                 print(f"[page {pages}] found={found}")
 
-            up = upsert_videos(items, db)
+            up = upsert_videos(items, db, region_used, query_used)
             total_upserted += up
 
             # Print a few sample rows for visibility

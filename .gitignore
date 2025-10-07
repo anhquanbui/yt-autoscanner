@@ -1,15 +1,36 @@
-﻿# VSCode
+﻿# =========================
+# VSCode
+# =========================
 .vscode/
 *.code-workspace
 
+# =========================
 # Python cache
+# =========================
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+*.pycache/
+*.log
 
-# Env
+# =========================
+# Virtual environment
+# =========================
 .env
 venv/
 .venv/
 
-# Docker volumes
+# =========================
+# Docker volumes / data
+# =========================
 mongo_data/
+docker_data/
+*.db
+*.sqlite
+
+# =========================
+# System / temporary files
+# =========================
+.DS_Store
+Thumbs.db
