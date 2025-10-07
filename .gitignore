@@ -34,4 +34,5 @@ docker_data/
 # =========================
 .DS_Store
 Thumbs.db
-logs/
+logs/*
+!logs/.gitkeep
