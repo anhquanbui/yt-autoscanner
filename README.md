@@ -2,11 +2,17 @@
 
 
 **Name:** Anh Quan Bui
+
 **Email:** bui8334@saskpolytech.ca
+
 **Affiliation:** Saskatchewan Polytechnic – School of ICT
+
 **Program:** Post-Graduate Certificate in Data Analytics & AI
+
 **Research Project:** *YouTube Video Virality Prediction Using Early Engagement Signals*
+
 **Summary:** This project investigates how early metrics (views, likes, comments) from YouTube Data API v3 can be used to predict the long-term popularity of videos. It combines data ingestion (via FastAPI and MongoDB) with machine learning modeling (XGBoost) to identify viral potential within the first 24 hours after upload.
+
 **Purpose:** To contribute an academic framework and prototype system supporting data-driven content marketing and social media analysis.
 
 ---
