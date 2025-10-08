@@ -1,11 +1,11 @@
 # Milestones test
 $env:YT_TRACK_PLAN_MINUTES = "5,10,15,20,25,30"
 
-# File log
+# File log (please change this path if needed, this is my own path)
 $logPath = "D:\PYTHON\PROJECT\yt-autoscanner\logs\track_log.txt"
 New-Item -ItemType Directory -Force -Path (Split-Path $logPath) | Out-Null
 
-# Loop 30 giây/lần
+# Loop 30s interval
 while ($true) {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     Write-Host ">>> Running tracker at $timestamp"
