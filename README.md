@@ -11,6 +11,7 @@
 
 ---
 
+
 # yt-autoscanner — Local Dev (API + MongoDB + YouTube Worker + Scheduler)
 
 A minimal starter to ingest **YouTube** videos into **MongoDB** and expose them via a **FastAPI** API.
