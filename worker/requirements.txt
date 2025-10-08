@@ -1,24 +1,9 @@
-git config --global user.name "Anhquanbui"
-git config --global user.email "banhquan2021@gmail.com"
+# Worker dependencies (discover_once.py, track_once.py)
+# Python 3.11+ recommended
 
-ssh-keygen -t ed25519 -C "banhquan2021@gmail.com"
+requests>=2.31.0
+pymongo>=4.6.0
+python-dotenv>=1.0.1
 
-it remote set-url origin git@github.com:anhquanbui/https://github.com/anhquanbui/yt-autoscanner.git
-
-94.100.26.157
-
-curl http://94.100.26.157:8080/health
-
-docker exec -it ytscan-mongo mongosh --username admin --password 453%%&$racdh[][zxcDFGtrDd?><';'] --authenticationDatabase admin
-
-# Đăng nhập bằng admin (root)
-docker exec -it ytscan-mongo mongosh \
-  --username admin --password "453%%&$racdh[][zxcDFGtrDd?><';']" \
-  --authenticationDatabase admin \
-  --eval 'db.runCommand({ ping: 1 })'
-
-docker exec -it ytscan-mongo mongosh \
-  "mongodb://admin:"453%%&$racdh[][zxcDFGtrDd?><';']"@localhost:27017/admin?authSource=admin" \
-  --eval 'db.getSiblingDB("ytscan").getUsers()'
-
-http://94.100.26.157:8000/videos?limit=10 
+# Optional: only needed if you run worker/scheduler.py (Python scheduler)
+schedule>=1.2.0
