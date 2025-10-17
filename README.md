@@ -1,26 +1,18 @@
 # Researcher Profile — Saskatchewan Polytechnic (Post-Graduate Certificate in Data Analytics & AI)
 
-
-**Name:** Anh Quan Bui
-
-**Email:** bui8334@saskpolytech.ca
-
-**Affiliation:** Saskatchewan Polytechnic – School of ICT
-
-**Program:** Post-Graduate Certificate in Data Analytics & AI
-
-**Research Project:** *YouTube Video Virality Prediction Using Early Engagement Signals*
-
-**Summary:** This project investigates how early metrics (views, likes, comments) from YouTube Data API v3 can be used to predict the long-term popularity of videos. It combines data ingestion (via FastAPI and MongoDB) with machine learning modeling (XGBoost) to identify viral potential within the first 24 hours after upload.
-
+**Name:** Anh Quan Bui  
+**Email:** bui8334@saskpolytech.ca  
+**Affiliation:** Saskatchewan Polytechnic – School of ICT  
+**Program:** Post-Graduate Certificate in Data Analytics & AI  
+**Research Project:** *YouTube Video Virality Prediction Using Early Engagement Signals*  
+**Summary:** This project investigates how early metrics (views, likes, comments) from YouTube Data API v3 can be used to predict the long-term popularity of videos. It combines data ingestion (via FastAPI and MongoDB) with machine learning modeling (XGBoost) to identify viral potential within the first 24 hours after upload.  
 **Purpose:** To contribute an academic framework and prototype system supporting data-driven content marketing and social media analysis.
 
 ---
 
-
 # yt-autoscanner — Local Dev (API + MongoDB + YouTube Worker + Scheduler)
 
-A minimal starter to ingest **YouTube** videos into **MongoDB** and expose them via a **FastAPI** API.
+A minimal starter to ingest **YouTube** videos into **MongoDB** and expose them via a **FastAPI** API.  
 This README covers local development, environment config, the discover worker (v4.1), the tracker, backfill utilities, and the unified PowerShell runner.
 
 > **Quick links**
@@ -30,7 +22,34 @@ This README covers local development, environment config, the discover worker (v
 
 ---
 
-## What's new (2025‑10‑07)
+## What's new (2025‑10‑17)
+
+### 🆕 `process_data.py` — **v1.0**
+- New CLI script for **processing local JSON data** and **pushing results to MongoDB** automatically.
+- Loads `.env` for `MONGO_URI` and uses the `videos` collection by default.
+- Supports optional `--query` filter or JSON file input.
+- Automatically creates missing collections and indexes if not found.
+- Default behavior: pushes data directly to MongoDB (`insert_many`).
+
+#### Example usage
+```bash
+# Basic usage (auto push)
+python process_data.py
+
+# Custom Mongo URI or collection
+python process_data.py --mongo-uri "mongodb://localhost:27017" --db ytscan --collection videos
+
+# Optional query mode
+python process_data.py --query "{'region': 'US'}"
+```
+
+#### Environment variables (`.env`)
+```
+YT_API_KEY=YOUR_YOUTUBE_API_KEY
+MONGO_URI=mongodb://localhost:27017/ytscan
+```
+
+---
 
 ### Worker (`discover_once.py`) — **v4.2**
 - Refactored for **lightweight near-now scan** (no lookback > 24h).
@@ -70,7 +89,8 @@ yt-autoscanner/
 │  └─ requirements.txt
 ├─ tools/
 │  ├─ make_indexes.py
-│  └─ backfill_channels_v2.py
+│  ├─ backfill_channels_v2.py
+│  └─ process_data.py   ← NEW
 ├─ run_both_local.ps1
 ├─ .env
 ├─ logs/
@@ -101,7 +121,7 @@ yt-autoscanner/
 python -m venv venv
 # If blocked once:
 #   Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-.\venv\Scripts\Activate.ps1
+.env\Scripts\Activate.ps1
 ```
 
 ### 2️⃣ Install dependencies
@@ -159,8 +179,7 @@ TRACK_INTERVAL_SECONDS=30        # 30s
 python worker/discover_once.py
 ```
 Discovers recent videos (within last 20 minutes).  
-Saves `categoryId`, region, query, timestamp.
-
+Saves `categoryId`, region, query, timestamp.  
 Quota usage: ~101 units per 50 videos.
 
 ---
@@ -169,9 +188,24 @@ Quota usage: ~101 units per 50 videos.
 ```powershell
 python worker/track_once.py
 ```
-Tracks stats per milestone → snapshots every few minutes up to 24h.
-
+Tracks stats per milestone → snapshots every few minutes up to 24h.  
 Quota: ~1 unit per 50 videos.
+
+---
+
+### 🔹 Process Data
+```powershell
+python tools/process_data.py
+```
+Processes local JSON data and automatically inserts it into MongoDB.  
+- Loads `.env` for default `MONGO_URI`.  
+- Supports manual overrides via CLI args.  
+- Pushes directly to MongoDB unless `--dry-run` specified.  
+
+Example:
+```powershell
+python tools/process_data.py --mongo-uri "mongodb://localhost:27017" --db ytscan --collection videos
+```
 
 ---
 
@@ -179,8 +213,7 @@ Quota: ~1 unit per 50 videos.
 ```powershell
 python tools/backfill_channels_v2.py --stale-hours 24
 ```
-Refreshes missing or outdated channel stats.
-
+Refreshes missing or outdated channel stats.  
 Dry-run mode:
 ```powershell
 python tools/backfill_channels_v2.py --dry-run
@@ -194,7 +227,8 @@ python tools/backfill_channels_v2.py --dry-run
 ```powershell
 # If blocked once:
 #   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\run_both_local.ps1
+.
+un_both_local.ps1
 ```
 - Loads `.env` automatically  
 - Writes logs to `/logs/`  
@@ -204,12 +238,12 @@ python tools/backfill_channels_v2.py --dry-run
 ---
 
 ## Logging
-- Logs are written to `logs/` with rotating daily filenames.
+- Logs are written to `logs/` with rotating daily filenames.  
 - Each run includes timestamped activity from both workers.
 
 **Tail logs live:**
 ```powershell
-Get-Content .\logs\transcript-$(Get-Date -Format yyyyMMdd).log -Tail 100 -Wait
+Get-Content .\logs	ranscript-$(Get-Date -Format yyyyMMdd).log -Tail 100 -Wait
 ```
 
 ---
@@ -237,4 +271,4 @@ Useful queries:
 
 ---
 
-📅 **Last updated:** 2025‑10‑07  
+📅 **Last updated:** 2025‑10‑17
