@@ -16,7 +16,7 @@ This document explains the meaning of each field in a sample entry from `process
     "60":   { "views": 1200, "likes": 70,  "comments": 4,  "value_method": "floor", "coverage_ratio": 0.62, "n_expected": 12, "n_available": 8 },
     "180":  { "views": 4200, "likes": 190, "comments": 21, "value_method": "floor", "coverage_ratio": 0.60, "n_expected": 28, "n_available": 17 },
     "360":  { "views": 9200, "likes": 440, "comments": 48, "value_method": "ceil",  "coverage_ratio": 0.51, "n_expected": 44, "n_available": 22 },
-    "1440": { "views": 56000,"likes": 2300,"comments": 380,"value_method": "floor", "coverage_ratio": 0.92, "n_expected": 80, "n_available": 74 }
+    "1440": { "views": 56000, "likes": 2300, "comments": 380, "value_method": "floor", "coverage_ratio": 0.92, "n_expected": 64, "n_available": 59 }
   }
 }
 ```
@@ -77,7 +77,7 @@ Each horizon contains detailed data and tracking coverage info.
 
 ### 🔸 Horizon Example (24 hours)
 ```json
-"1440": { "views": 56000, "likes": 2300, "comments": 380, "value_method": "floor", "coverage_ratio": 0.92, "n_expected": 80, "n_available": 74 }
+"1440": { "views": 56000, "likes": 2300, "comments": 380, "value_method": "floor", "coverage_ratio": 0.92, "n_expected": 64, "n_available": 59 }
 ```
 **Interpretation:**
 - After 24h, the video reached **56,000 views**, **2,300 likes**, **380 comments**.
@@ -93,7 +93,7 @@ Each horizon contains detailed data and tracking coverage info.
 | 60 min | 1h | 1,200 | 70 | 4 | floor | 0.62 | 12 | 8 |
 | 180 min | 3h | 4,200 | 190 | 21 | floor | 0.60 | 28 | 17 |
 | 360 min | 6h | 9,200 | 440 | 48 | ceil | 0.51 | 44 | 22 |
-| 1440 min | 24h | 56,000 | 2,300 | 380 | floor | 0.92 | 80 | 74 |
+| 1440 min | 24h | 56,000 | 2,300 | 380 | floor | 0.92 | 64 | 59 |
 
 ---
 

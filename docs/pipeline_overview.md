@@ -92,7 +92,7 @@ A single video document in `videos` typically looks like:
       "likeCount": 70,
       "commentCount": 4
     }
-    // ... ~80 entries max in 24h
+    // ... ≈64 entries in 24h (≈65 if including t=0)
   ]
 }
 ```
@@ -121,7 +121,7 @@ A single video document in `videos` typically looks like:
     "60":   { "views": 1200, "likes": 70,  "comments": 4,  "value_method": "floor", "coverage_ratio": 0.62, "n_expected": 12, "n_available": 8 },
     "180":  { "views": 4200, "likes": 190, "comments": 21, "value_method": "floor", "coverage_ratio": 0.60, "n_expected": 28, "n_available": 17 },
     "360":  { "views": 9200, "likes": 440, "comments": 48, "value_method": "ceil",  "coverage_ratio": 0.51, "n_expected": 44, "n_available": 22 },
-    "1440": { "views": 56000,"likes": 2300,"comments": 380,"value_method": "floor", "coverage_ratio": 0.92, "n_expected": 80, "n_available": 74 }
+    "1440": { "views": 56000,"likes": 2300,"comments": 380,"value_method": "floor", "coverage_ratio": 0.92, "n_expected": 64, "n_available": 59 }
   }
 }
 ```
