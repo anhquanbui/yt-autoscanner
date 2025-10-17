@@ -39,13 +39,21 @@ process_data.py         →  Clean + summarize + export JSON
 ---
 
 ## 2) Temporal Plan (Sampling Density)
-To capture early growth while saving quota later:
-- **0–2h**: every **5 minutes**
-- **2–6h**: every **15 minutes**
-- **6–12h**: every **30 minutes**
-- **12–24h**: every **60 minutes**
 
-Total expected timestamps in 24h ≈ **80** (if no gaps/errors).
+To capture early growth with higher temporal resolution while conserving API quota later, the sampling frequency is gradually reduced over the 24-hour tracking period as follows:
+
+| Time Range | Interval | Duration (minutes) | Samples |
+|-------------|-----------|--------------------|----------|
+| **0–2 h**   | Every **5 min**  | 120 | 120 ÷ 5 = **24** |
+| **2–6 h**   | Every **15 min** | 240 | 240 ÷ 15 = **16** |
+| **6–12 h**  | Every **30 min** | 360 | 360 ÷ 30 = **12** |
+| **12–24 h** | Every **60 min** | 720 | 720 ÷ 60 = **12** |
+
+**Total samples:**  
+`24 + 16 + 12 + 12 = 64 timestamps`  
+*(≈ 65 if including both the start and end points)*
+
+> ✅ This temporal plan provides fine-grained sampling in the early stage (first 2 hours) and reduces frequency later, balancing data resolution and quota efficiency across the full 24-hour observation window.
 
 ---
 
