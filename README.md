@@ -17,12 +17,23 @@ This README covers local development, environment config, the discover worker (v
 
 > **Quick links**
 > - API (local): `http://127.0.0.1:8000/docs`
-> - Mongo (local): `mongodb://localhost:27017/ytscan` (`videos`, `channels` collections)
+> - Mongo (local): `mongodb://localhost:27017/ytscan`
 > - Logs (local): `./logs/scanner-YYYYMMDD.log`
 
 ---
 
-## What's new (2025‑10‑17)
+## 📘 Docs Overview
+
+| File | Description |
+|------|--------------|
+| [`mongo_collections_overview.md`](docs/mongo_collections_overview.md) | Explains all MongoDB collections and their key fields |
+| [`pipeline_overview.md`](docs/pipeline_overview.md) | Describes end-to-end ingestion → tracking → processing pipeline |
+| [`process_data_readme.md`](docs/process_data_readme.md) | Detailed documentation for `process_data.py` usage and logic |
+| [`processed_videos_explanation.md`](docs/processed_videos_explanation.md) | Explains structure and meaning of `processed_videos.json` |
+
+---
+
+## What's new (2025-10-17)
 
 ### 🆕 `worker\process_data.py` — **v1.0**
 - New CLI script for **processing local JSON data** and **pushing results to MongoDB** automatically.
@@ -31,7 +42,7 @@ This README covers local development, environment config, the discover worker (v
 - Automatically creates missing collections and indexes if not found.
 - Default behavior: pushes data directly to MongoDB (`insert_many`).
 
-### Example usage
+#### Example usage
 ```bash
 # Basic usage (auto push)
 python process_data.py
@@ -43,7 +54,7 @@ python process_data.py --mongo-uri "mongodb://localhost:27017" --db ytscan --col
 python process_data.py --query "{'region': 'US'}"
 ```
 
-👉 See full guide: [process_data_readme.md](process_data_readme.md)
+👉 See full guide: [process_data_readme.md](docs/process_data_readme.md)
 
 ---
 
@@ -75,6 +86,11 @@ python process_data.py --query "{'region': 'US'}"
 
 ```
 yt-autoscanner/
+├─ docs/
+│  ├─ mongo_collections_overview.md
+│  ├─ pipeline_overview.md
+│  ├─ process_data_readme.md
+│  └─ processed_videos_explanation.md
 ├─ api/
 │  ├─ main.py
 │  └─ requirements.txt
@@ -86,12 +102,20 @@ yt-autoscanner/
 ├─ tools/
 │  ├─ make_indexes.py
 │  ├─ backfill_channels_v2.py
-│  └─ process_data.py   ← NEW
-├─ run_both_local.ps1
-├─ .env
+│  └─ process_data.py
 ├─ logs/
 │  └─ scanner-YYYY-MM-DD.log
-└─ README.md
+├─ .env
+├─ .gitignore
+├─ auto-track.ps1
+├─ dashboard_summary.json
+├─ processed_videos.json
+├─ README.md
+├─ requirements.txt
+├─ run_both_local.ps1
+├─ seed.py
+├─ ytscan.channels.json
+└─ ytscan.videos.json
 ```
 
 ---
@@ -125,7 +149,7 @@ python -m venv venv
 pip install -r requirements.txt
 pip install -r api/requirements.txt
 pip install -r worker/requirements.txt
-# pip install -r tools/requirements.txt # (if it is available)
+# pip install -r tools/requirements.txt  # (if available)
 ```
 
 ### 3️⃣ MongoDB
@@ -223,8 +247,7 @@ python tools/backfill_channels_v2.py --dry-run
 ```powershell
 # If blocked once:
 #   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.
-un_both_local.ps1
+.\run_both_local.ps1
 ```
 - Loads `.env` automatically  
 - Writes logs to `/logs/`  
@@ -239,7 +262,7 @@ un_both_local.ps1
 
 **Tail logs live:**
 ```powershell
-Get-Content .\logs	ranscript-$(Get-Date -Format yyyyMMdd).log -Tail 100 -Wait
+Get-Content .\logs\transcript-$(Get-Date -Format yyyyMMdd).log -Tail 100 -Wait
 ```
 
 ---
@@ -267,4 +290,4 @@ Useful queries:
 
 ---
 
-📅 **Last updated:** 2025‑10‑17
+📅 **Last updated:** 2025-10-17
