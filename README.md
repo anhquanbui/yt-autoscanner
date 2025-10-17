@@ -31,7 +31,7 @@ This README covers local development, environment config, the discover worker (v
 - Automatically creates missing collections and indexes if not found.
 - Default behavior: pushes data directly to MongoDB (`insert_many`).
 
-#### Example usage
+### Example usage
 ```bash
 # Basic usage (auto push)
 python process_data.py
@@ -43,11 +43,7 @@ python process_data.py --mongo-uri "mongodb://localhost:27017" --db ytscan --col
 python process_data.py --query "{'region': 'US'}"
 ```
 
-#### Environment variables (`.env`)
-```
-YT_API_KEY=YOUR_YOUTUBE_API_KEY
-MONGO_URI=mongodb://localhost:27017/ytscan
-```
+👉 See full guide: [process_data_README.md](process_data_README.md)
 
 ---
 
