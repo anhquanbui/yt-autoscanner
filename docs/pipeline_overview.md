@@ -31,7 +31,7 @@ process_data.py         →  Clean + summarize + export JSON
 - **process_data.py** (local):
   - Reads from `ytscan.videos` (or a local JSON dump)
   - Cleans/enforces monotonic views
-  - Computes horizon values at **1h, 3h, 6h, 24h** using **floor → ceil(+30m) → missing** rule
+  - Computes horizon values at **1h, 3h, 6h, 12h 24h** using **floor → ceil(+30m) → missing** rule
   - Computes **coverage_ratio** per horizon based on sampling plan (5’/15’/30’/60’)
   - **Exports JSON files** (local): `processed_videos.json`, `dashboard_summary.json`
   - **By default**, also upserts those results into Mongo collections with the same names

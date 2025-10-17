@@ -43,7 +43,7 @@ def default_plan_minutes() -> List[int]:
     return plan
 
 PLAN_MINUTES = default_plan_minutes()
-HORIZONS = [60, 180, 360, 1440]  # 1h,3h,6h,24h
+HORIZONS = [60, 180, 360, 720, 1440]  # 1h,3h,6h,12h,24h
 CEIL_TOLERANCE_MIN = 30
 
 def parse_iso(s: Optional[str]) -> Optional[datetime]:
@@ -149,10 +149,12 @@ def build_dashboard_summary(rows:List[Dict[str,Any]])->List[Dict[str,Any]]:
             "reached_h1":hz.get("60",{}).get("value_method") in ("floor","ceil"),
             "reached_h3":hz.get("180",{}).get("value_method") in ("floor","ceil"),
             "reached_h6":hz.get("360",{}).get("value_method") in ("floor","ceil"),
+            "reached_h12":hz.get("720",{}).get("value_method") in ("floor","ceil"),
             "reached_h24":hz.get("1440",{}).get("value_method") in ("floor","ceil"),
             "coverage_1h":hz.get("60",{}).get("coverage_ratio"),
             "coverage_3h":hz.get("180",{}).get("coverage_ratio"),
             "coverage_6h":hz.get("360",{}).get("coverage_ratio"),
+            "coverage_12h":hz.get("720",{}).get("coverage_ratio"),
             "coverage_24h":hz.get("1440",{}).get("coverage_ratio"),
         })
     return out
