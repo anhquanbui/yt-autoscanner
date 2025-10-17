@@ -10,6 +10,13 @@
 
 ---
 
+## 👥 Team Members
+- **Anh Quan Bui** — [GitHub](https://github.com/anhquanbui) *(Lead Researcher / System Architect)*  
+- **Eneyi Simeni** — [GitHub](https://github.com/Eneyi1403) *(Data Engineer / Pipeline Development)*  
+- **Nguyen Ha Dung** — [GitHub](https://github.com/HaDung-Nguyen-000526332) *(Machine Learning & Model Evaluation)*  
+
+---
+
 # yt-autoscanner — Local Dev (API + MongoDB + YouTube Worker + Scheduler)
 
 A minimal starter to ingest **YouTube** videos into **MongoDB** and expose them via a **FastAPI** API.  
