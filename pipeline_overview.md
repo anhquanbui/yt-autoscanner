@@ -166,15 +166,15 @@ A single video document in `videos` typically looks like:
   ```
 - Run the processor (default auto-upsert to Mongo):
   ```bash
-  python process_data.py
+  python .worker\process_data.py
   ```
 - Optional flags:
   ```bash
   # JSON only (skip Mongo upsert)
-  python process_data.py --no-mongo
+  python .worker\process_data.py --no-mongo
 
   # Filter a subset of videos
-  python process_data.py --query '{"tracking.status":"complete"}'
+  python .worker\process_data.py --query '{"tracking.status":"complete"}'
   ```
 
 **Generated files (local):**
