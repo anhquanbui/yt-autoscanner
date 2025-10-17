@@ -36,3 +36,9 @@ docker_data/
 Thumbs.db
 logs/*
 !logs/.gitkeep
+
+# =========================
+# Ignore processed data exports
+# =========================
+*.json
+!package.json
