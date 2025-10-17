@@ -63,6 +63,7 @@
     "60":   { "views": 1200, "likes": 70,  "comments": 4,  "value_method": "floor", "coverage_ratio": 0.62, "n_expected": 12, "n_available": 8 },
     "180":  { "views": 4200, "likes": 190, "comments": 21, "value_method": "floor", "coverage_ratio": 0.60, "n_expected": 28, "n_available": 17 },
     "360":  { "views": 9200, "likes": 440, "comments": 48, "value_method": "ceil",  "coverage_ratio": 0.51, "n_expected": 44, "n_available": 22 },
+    "720":  { "views": 22000, "likes": 900, "comments": 120, "value_method": "floor", "coverage_ratio": 0.80, "n_expected": 52, "n_available": 42 },
     "1440": { "views": 56000,"likes": 2300,"comments": 380,"value_method": "floor", "coverage_ratio": 0.92, "n_expected": 64, "n_available": 59 }
   }
 }
@@ -70,7 +71,7 @@
 
 **Notes:**
 - One row per video (aggregated).  
-- Stores metrics across key horizons: 1h, 3h, 6h, 24h.  
+- Stores metrics across key horizons: 1h, 3h, 6h, 12h, 24h.  
 - `"value_method"` = `floor` or `ceil` depending on how close the data was captured relative to horizon time.  
 - Coverage values show data completeness.  
 
@@ -92,10 +93,12 @@
   "reached_h1": true,
   "reached_h3": true,
   "reached_h6": true,
+  "reached_h12": true,
   "reached_h24": true,
   "coverage_1h": 0.62,
   "coverage_3h": 0.60,
   "coverage_6h": 0.51,
+  "coverage_12h": 0.80,
   "coverage_24h": 0.92
 }
 ```

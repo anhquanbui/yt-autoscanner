@@ -15,7 +15,8 @@ This document explains the meaning of each field in a sample entry from `process
   "horizons": {
     "60":   { "views": 1200, "likes": 70,  "comments": 4,  "value_method": "floor", "coverage_ratio": 0.62, "n_expected": 12, "n_available": 8 },
     "180":  { "views": 4200, "likes": 190, "comments": 21, "value_method": "floor", "coverage_ratio": 0.60, "n_expected": 28, "n_available": 17 },
-    "360":  { "views": 9200, "likes": 440, "comments": 48, "value_method": "ceil",  "coverage_ratio": 0.51, "n_expected": 44, "n_available": 22 },
+    "360": { "views": 9200, "likes": 440, "comments": 48, "value_method": "ceil",  "coverage_ratio": 0.51, "n_expected": 44, "n_available": 22 },
+    "720":  { "views": 22000, "likes": 900, "comments": 120, "value_method": "floor", "coverage_ratio": 0.80, "n_expected": 52, "n_available": 42 },
     "1440": { "views": 56000, "likes": 2300, "comments": 380, "value_method": "floor", "coverage_ratio": 0.92, "n_expected": 64, "n_available": 59 }
   }
 }
@@ -44,6 +45,7 @@ Each key inside `horizons` corresponds to a **time horizon in minutes** after pu
 | `60` | 1 hour | Early stage metrics |
 | `180` | 3 hours | Short-term trend |
 | `360` | 6 hours | Mid-term growth |
+| `720` | 12 hours | Late mid-term checkpoint |
 | `1440` | 24 hours | Full-day performance |
 
 Each horizon contains detailed data and tracking coverage info.
@@ -93,6 +95,7 @@ Each horizon contains detailed data and tracking coverage info.
 | 60 min | 1h | 1,200 | 70 | 4 | floor | 0.62 | 12 | 8 |
 | 180 min | 3h | 4,200 | 190 | 21 | floor | 0.60 | 28 | 17 |
 | 360 min | 6h | 9,200 | 440 | 48 | ceil | 0.51 | 44 | 22 |
+| 720 min | 12h | 22,000 | 900 | 120 | floor | 0.80 | 52 | 42 |
 | 1440 min | 24h | 56,000 | 2,300 | 380 | floor | 0.92 | 64 | 59 |
 
 ---

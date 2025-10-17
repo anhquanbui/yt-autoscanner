@@ -31,7 +31,7 @@ process_data.py         →  Clean + summarize + export JSON
 - **process_data.py** (local):
   - Reads from `ytscan.videos` (or a local JSON dump)
   - Cleans/enforces monotonic views
-  - Computes horizon values at **1h, 3h, 6h, 12h 24h** using **floor → ceil(+30m) → missing** rule
+  - Computes horizon values at **1h, 3h, 6h, 12h, 24h** using **floor → ceil(+30m) → missing** rule
   - Computes **coverage_ratio** per horizon based on sampling plan (5’/15’/30’/60’)
   - **Exports JSON files** (local): `processed_videos.json`, `dashboard_summary.json`
   - **By default**, also upserts those results into Mongo collections with the same names
@@ -121,6 +121,7 @@ A single video document in `videos` typically looks like:
     "60":   { "views": 1200, "likes": 70,  "comments": 4,  "value_method": "floor", "coverage_ratio": 0.62, "n_expected": 12, "n_available": 8 },
     "180":  { "views": 4200, "likes": 190, "comments": 21, "value_method": "floor", "coverage_ratio": 0.60, "n_expected": 28, "n_available": 17 },
     "360":  { "views": 9200, "likes": 440, "comments": 48, "value_method": "ceil",  "coverage_ratio": 0.51, "n_expected": 44, "n_available": 22 },
+    "720":   { "views": 22000,"likes": 900, "comments": 120,"value_method": "floor", "coverage_ratio": 0.80, "n_expected": 52, "n_available": 42 },
     "1440": { "views": 56000,"likes": 2300,"comments": 380,"value_method": "floor", "coverage_ratio": 0.92, "n_expected": 64, "n_available": 59 }
   }
 }
@@ -151,10 +152,12 @@ A single video document in `videos` typically looks like:
   "reached_h1":  true,
   "reached_h3":  true,
   "reached_h6":  true,
+  "reached_h12": true,
   "reached_h24": true,
   "coverage_1h": 0.62,
   "coverage_3h": 0.60,
   "coverage_6h": 0.51,
+  "coverage_12h": 0.80,
   "coverage_24h": 0.92
 }
 ```

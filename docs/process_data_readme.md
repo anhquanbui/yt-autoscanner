@@ -7,7 +7,7 @@ This document explains how to use the `process_data.py` script to process YouTub
 ## 🧩 Overview
 
 The script processes tracked YouTube video statistics (from `videos` collection) into two outputs:
-- `processed_videos.json` — Detailed per-video metrics including 1h, 3h, 6h, and 24h horizons.
+- `processed_videos.json` — Detailed per-video metrics including 1h, 3h, 6h, 12h, and 24h horizons.
 - `dashboard_summary.json` — Compact overview for dashboard visualization.
 
 Both files are automatically **upserted into MongoDB** by default.
