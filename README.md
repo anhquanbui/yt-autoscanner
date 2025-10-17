@@ -43,7 +43,7 @@ python process_data.py --mongo-uri "mongodb://localhost:27017" --db ytscan --col
 python process_data.py --query "{'region': 'US'}"
 ```
 
-👉 See full guide: [process_data_README.md](process_data_README.md)
+👉 See full guide: [process_data_README.md](process_data_readme.md)
 
 ---
 
