@@ -24,7 +24,7 @@ This README covers local development, environment config, the discover worker (v
 
 ## What's new (2025‑10‑17)
 
-### 🆕 `process_data.py` — **v1.0**
+### 🆕 `worker\process_data.py` — **v1.0**
 - New CLI script for **processing local JSON data** and **pushing results to MongoDB** automatically.
 - Loads `.env` for `MONGO_URI` and uses the `videos` collection by default.
 - Supports optional `--query` filter or JSON file input.
