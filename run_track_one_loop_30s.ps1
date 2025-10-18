@@ -1,17 +1,16 @@
 <#
-  run_track_once.ps1 - One-shot / Loop runner for worker/track_once.py
-  Stop codes (one-shot OR loop terminate case):
-    0  = success (only meaningful in one-shot)
-    88 = quota exhausted (one-shot: exit; loop: sleep cooldown & continue)
-    <>0,88 = error (exit with same code)
+  run_track_one_loop_30s.ps1 (v3)
+  - BOM-safe, inline-comment-safe .env loader with optional debug
+  - Loop runner for worker/track_once.py
 #>
 
 [CmdletBinding()]
 param(
-  [switch]$Loop = $false,              # Run repeatedly if set
-  [int]$IntervalSeconds = 30,          # Sleep between successful runs (Loop only)
-  [int]$CooldownSeconds = 900,         # Sleep when hit quota (code 88) then continue (Loop only)
-  [string]$PythonExe = "python"        # Or "py"
+  [switch]$Loop = $true,              # Continuous loop by default
+  [int]$IntervalSeconds = 30,         # Delay after success
+  [int]$CooldownSeconds = 900,        # Delay after quota (88)
+  [string]$PythonExe = "python",      # Or "py"
+  [switch]$DebugEnv = $false          # Print parsed values (masked) for debugging
 )
 
 # =======================
@@ -46,24 +45,86 @@ try {
 } catch { Write-Log "Start-Transcript failed: $($_.Exception.Message)" "WARN" }
 
 # =======================
-# Load .env (NO hardcoding)
+# Helpers
 # =======================
-function Load-DotEnv([string]$FilePath) {
-  if (-not (Test-Path $FilePath)) { return }
-  $lines = Get-Content -Raw -Path $FilePath -Encoding UTF8 -ErrorAction SilentlyContinue -ReadCount 0
-  foreach ($line in ($lines -split "`r?`n")) {
-    if ($line -match '^\s*#' -or $line -match '^\s*$') { continue }
-    $parts = $line -split '=', 2
-    if ($parts.Count -lt 2) { continue }
-    $k = $parts[0].Trim()
-    $v = $parts[1].Trim()
-    if ($v.StartsWith('"') -and $v.EndsWith('"')) { $v = $v.Substring(1, $v.Length-2) }
-    elseif ($v.StartsWith("'") -and $v.EndsWith("'")) { $v = $v.Substring(1, $v.Length-2) }
-    ${env:$k} = $v
+function Remove-BOM([string]$s) {
+  if ([string]::IsNullOrEmpty($s)) { return $s }
+  if ($s[0] -eq [char]0xFEFF) { return $s.Substring(1) }
+  return $s
+}
+
+# Return (key,value) or $null if not parseable
+function Parse-EnvLine([string]$line) {
+  $line = Remove-BOM($line)
+
+  # Ignore comments/blank
+  if ($line -match '^\s*#' -or $line -match '^\s*$') { return $null }
+
+  # Trim "export " prefix
+  $clean = $line -replace '^\s*export\s+', ''
+
+  # Regex: KEY = VALUE (captures whole VALUE including spaces)
+  $m = [regex]::Match($clean, '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$')
+  if (-not $m.Success) { return $null }
+  $k = $m.Groups[1].Value
+
+  $v = $m.Groups[2].Value
+
+  # Strip inline comments if value is NOT quoted
+  $isDoubleQuoted = ($v.StartsWith('"') -and $v.TrimEnd().EndsWith('"'))
+  $isSingleQuoted = ($v.StartsWith("'") -and $v.TrimEnd().EndsWith("'"))
+  if (-not ($isDoubleQuoted -or $isSingleQuoted)) {
+    # Remove inline comments starting with space+# or space+; or trailing commas
+    $v = ($v -split '\s+#',2)[0]
+    $v = ($v -split '\s+;',2)[0]
+    $v = $v.Trim()
+  } else {
+    $v = $v.Trim()
+  }
+
+  # Remove wrapping quotes
+  if ($v.StartsWith('"') -and $v.EndsWith('"')) { $v = $v.Substring(1, $v.Length-2) }
+  elseif ($v.StartsWith("'") -and $v.EndsWith("'")) { $v = $v.Substring(1, $v.Length-2) }
+
+  return @($k, $v)
+}
+
+# =======================
+# Load .env
+# =======================
+function Load-DotEnv([string]$FilePath, [switch]$Debug=$false) {
+  if (-not (Test-Path $FilePath)) {
+    Write-Log ".env file not found at $FilePath" "WARN"
+    return
+  }
+  try {
+    $raw = Get-Content -Path $FilePath -Encoding UTF8
+    $loaded = @()
+    foreach ($line in $raw) {
+      $parsed = Parse-EnvLine $line
+      if ($null -eq $parsed) { continue }
+      $k = $parsed[0]
+      $v = $parsed[1]
+
+      ${env:$k} = $v
+      $loaded += $k
+
+      if ($Debug) {
+        $mask = if ($v.Length -ge 10) { "{0}...{1}" -f $v.Substring(0,6), $v.Substring($v.Length-4) }
+                elseif ($v.Length -gt 0) { "(len={0})" -f $v.Length }
+                else { "(empty)" }
+        Write-Log ("  · loaded {0} = {1}" -f $k, $mask)
+      }
+    }
+    Write-Log (".env loaded from {0}. Keys: {1}" -f $FilePath, ($loaded -join ", "))
+  }
+  catch {
+    Write-Log ("Failed to load .env: {0}" -f $_.Exception.Message) "ERROR"
   }
 }
+
 $DotEnvPath = Join-Path $RepoRoot ".env"
-Load-DotEnv -FilePath $DotEnvPath
+Load-DotEnv -FilePath $DotEnvPath -Debug:$DebugEnv
 
 # Masked key logs (no secrets)
 if ($env:YT_API_KEY) {
@@ -77,7 +138,7 @@ if ($env:MONGO_URI) { Write-Log "MONGO_URI loaded from .env" }
 else { Write-Log "MONGO_URI is empty. Please set MONGO_URI=mongodb://..." "WARN" }
 
 # =======================
-# Helper: invoke once
+# Invoke once (clean exit code)
 # =======================
 function Invoke-TrackOnce {
   if (-not (Test-Path $TrackPath)) {
@@ -86,11 +147,11 @@ function Invoke-TrackOnce {
   }
   Write-Log "Running track_once ($TrackPath)"
   Push-Location $RepoRoot
-  & $PythonExe $TrackPath
+  & $PythonExe $TrackPath 2>&1 | Out-Host
   $code = $LASTEXITCODE
   Pop-Location
   Write-Log ("track_once exit code = {0}" -f $code)
-  return $code
+  return [int]$code
 }
 
 # =======================
