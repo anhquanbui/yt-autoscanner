@@ -28,14 +28,14 @@ Runs **both stages** in one continuous loop:
 
 **Usage:**
 ```powershell
-# 1. Open PowerShell in the repo root
+# 1. Open PowerShell in the repo root (replace your PATH)
 cd D:\PYTHON\PROJECT\yt-autoscanner
 
 # 2. Allow temporary execution of unsigned scripts
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 # 3. Run autorun
-.un_both_local.ps1
+.\run_both_local.ps1
 ```
 
 **Logs:**
@@ -59,11 +59,11 @@ Runs **only the tracker (`track_once.py`)** repeatedly at fixed intervals (defau
 
 **Usage:**
 ```powershell
-cd D:\PYTHON\PROJECT\yt-autoscanner
+cd D:\PYTHON\PROJECT\yt-autoscanner #replace with your PATH
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 # Default loop (every 30s, 15min cooldown on quota)
-.un_track_one_loop_30s.ps1
+.\run_track_one_loop_30s.ps1
 ```
 
 **Optional Parameters:**
@@ -78,7 +78,8 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 **Examples:**
 ```powershell
 # Run every 60s, 20min cooldown on quota exhaustion
-.un_track_one_loop_30s.ps1 -Loop -IntervalSeconds 60 -CooldownSeconds 1200
+.
+un_track_one_loop_30s.ps1 -Loop -IntervalSeconds 60 -CooldownSeconds 1200
 ```
 
 **Logs:**
