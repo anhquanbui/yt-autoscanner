@@ -82,14 +82,11 @@ yt-autoscanner/
 ├─ .env
 ├─ .gitignore
 ├─ auto-track.ps1
-├─ dashboard_summary.json
-├─ processed_videos.json
 ├─ README.md
+├─ CHANGELOG.md
 ├─ requirements.txt
 ├─ run_both_local.ps1
 ├─ seed.py
-├─ ytscan.channels.json
-└─ ytscan.videos.json
 ```
 
 ---
