@@ -65,6 +65,43 @@ python process_data.py --query "{'region': 'US'}"
 
 ---
 
+## What's new (2025-10-20)
+
+### ⚙️ `worker\discover_once.py` — **v4.3**
+- Added **automatic filtering** to exclude `live` and `upcoming` videos during discovery.
+- Maintains duration-based sampling (`short`, `medium`, `long`, `any`, `mix`) for flexible coverage.
+- Keeps full snippet enrichment (categoryId, durationISO, durationSec, lengthBucket).
+- Logs filtered counts for better visibility during scans.
+- Backward compatible with `.env` configuration from v4.2.
+
+### ⚙️ `worker\track_once.py` — **v3.1**
+- Introduced optimized **backfill handling** for missing duration or length buckets.
+- Automatically skips live/upcoming videos and ensures consistent milestone polling.
+- Improved error handling and quota recovery for `quotaExceeded` events.
+- Refactored backfill to trigger only when duration fields are missing.
+
+### 🧰 `tools/backfill_missing_fields.py` — **v1.0** (new)
+- New standalone script designed to backfill videos that are already `complete` or partially enriched.
+- Handles missing fields such as:
+  - `snippet.durationISO`, `snippet.durationSec`, `snippet.lengthBucket`
+  - `snippet.channelHandle` (via channel lookup)
+- Supports CLI arguments for batch size, dry-run, and limit filtering.
+- Keeps tracking and discovery independent from data repair tasks.
+
+### ⚡ `run_both_local.ps1` — **v5.1**
+- Enhanced compatibility with PowerShell 7+ (UTF-8 logs + color-safe output).
+- Improved log timestamping and error capture for both discover and track workers.
+- Automatically pauses between runs when API quota is exhausted.
+- Adds flag to optionally run `tools/backfill_missing_fields.py` once a day.
+
+### 📁 Documentation updates
+- README updated with new “What’s new (2025-10-20)” section.
+- Added internal reference in Docs to `backfill_missing_fields.py` under `tools/`.
+- Updated project progress table and `Last updated` timestamp.
+
+---
+
+
 ### Worker (`discover_once.py`) — **v4.2**
 - Refactored for **lightweight near-now scan** (no lookback > 24h).
 - Keeps **categoryId** enrichment (1 quota per 50 videos).
@@ -328,4 +365,4 @@ Useful queries:
 ---
 
 
-📅 **Last updated:** 2025-10-17
+📅 **Last updated:** 2025-10-20

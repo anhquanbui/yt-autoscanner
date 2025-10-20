@@ -1,14 +1,10 @@
-
-# worker/discover_once.py — VIDEO DISCOVERY (Near-now scan with categoryId + Duration Filter)
+# worker/discover_once.py — VIDEO DISCOVERY (Near-now scan with categoryId)
 # ---------------------------------------------------------------------------------
 # PURPOSE:
 #   Discover newly published YouTube videos (within a near-now window)
 #   and insert them into MongoDB for later tracking by track_once.py.
 #   It supports both deterministic time-slice (SINCE_MODE) and randomized
 #   discovery (RANDOM_MODE) with region and query pools.
-#
-#   ★ Update: Adds optional duration control (short/medium/long/any/mix) and
-#     enriches snippet with durationISO/durationSec/lengthBucket.
 #
 # ---------------------------------------------------------------------------------
 # OPERATING MODES
@@ -52,7 +48,7 @@
 # ---------------------------------------------------------------------------------
 # QUOTA SAFETY
 #   - YT_MAX_PAGES limits the number of search pages (default: 1).
-#     Each page = 50 results (100 quota units for search + 1 for details lookup).
+#     Each page = 50 results (100 quota units for search + 1 for category lookup).
 #   - Recommended for scheduled runs: 1–3 pages per call.
 #
 # ---------------------------------------------------------------------------------
@@ -61,10 +57,7 @@
 #     {
 #       _id: <videoId>,
 #       source: { query, regionCode, randomMode, filteredByCategoryId },
-#       snippet: {
-#         title, publishedAt, thumbnails, channelId, channelTitle, categoryId,
-#         durationISO, durationSec, lengthBucket
-#       },
+#       snippet: { title, publishedAt, thumbnails, channelId, channelTitle, categoryId },
 #       tracking: { status, discovered_at, next_poll_after, poll_count },
 #       stats_snapshots: [],
 #       ml_flags: { likely_viral, viral_confirmed, score }
@@ -90,25 +83,21 @@
 #   YT_RANDOM_REGION_POOL=US,GB,JP,VN,KR,IN,BR,CA,DE,FR
 #   YT_RANDOM_QUERY_POOL=live:5,news:3,gaming:4,music:3,highlights:4,shorts:2,trailer:2,stream:3,review:3,performance:2
 #
-#   # --- Duration control ---
-#   # any|short|medium|long|mix (mix randomly picks one per run using pool)
-#   YT_DURATION_MODE=any
-#   YT_DURATION_POOL="short:1,medium:2,long:2,any:0"
-#
 #   # --- Quota & interval ---
 #   YT_MAX_PAGES=1
 #   DISCOVER_INTERVAL_SECONDS=1800
 #
 # ---------------------------------------------------------------------------------
 # NOTE:
-#   - The script intentionally avoids collecting statistics to keep discovery cheap.
-#   - Detailed updates (stats, engagement, ML flags) are handled by track_once.py.
+#   - The script intentionally avoids collecting statistics or full video details
+#     to keep discovery lightweight and cheap in quota.
+#   - Detailed updates (stats, engagement, ML flags) are handled later by track_once.py.
 #
 # ---------------------------------------------------------------------------------
 
 from __future__ import annotations
 
-import os, sys, io, re, random
+import os, sys, io, random
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List, Tuple
 
@@ -138,6 +127,10 @@ RANDOM_PICK        = os.getenv('YT_RANDOM_PICK', '0').lower() in ('1','true','ye
 RANDOM_REGION_POOL = [x.strip().upper() for x in os.getenv('YT_RANDOM_REGION_POOL', '').split(',') if x.strip()]
 
 # Weighted keyword pools (global or region-specific)
+# Examples:
+#   YT_RANDOM_QUERY_POOL="live:5, news:3, music:1"
+#   YT_RANDOM_QUERY_POOL_US="nfl:4, nba:3, mlb:2, highlights:5"
+#   YT_RANDOM_QUERY_POOL_JP="vtuber:5, anime:4, jpop:3"
 GLOBAL_QUERY_POOL = os.getenv('YT_RANDOM_QUERY_POOL', '')
 
 # Near-now window (minutes)
@@ -149,13 +142,6 @@ try:
     MAX_PAGES = int(MAX_PAGES_ENV)
 except Exception:
     MAX_PAGES = 1
-
-# --- NEW: Duration controls ---
-DURATION_MODE = os.getenv('YT_DURATION_MODE', 'any').lower()  # any|short|medium|long|mix
-DURATION_POOL = os.getenv('YT_DURATION_POOL', 'short:1,medium:1,long:1,any:0')
-
-# --- NEW: Exclude live/upcoming (default ON for VOD-only scans)
-EXCLUDE_LIVE = os.getenv('YT_EXCLUDE_LIVE', '1').lower() in ('1','true','yes')
 
 # API endpoints
 SEARCH_URL = 'https://www.googleapis.com/youtube/v3/search'
@@ -212,47 +198,8 @@ def pick_query_for_region(region_code: str) -> Optional[str]:
             return random.choice(choices)
     return None
 
-# --- NEW: duration helpers ---
-_DUR_RE = re.compile(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$', re.I)
 
-def iso8601_to_seconds(s: Optional[str]) -> Optional[int]:
-    if not s:
-        return None
-    m = _DUR_RE.match(s)
-    if not m:
-        return None
-    h, mnt, sec = (int(x) if x else 0 for x in m.groups())
-    return h*3600 + mnt*60 + sec
-
-def bucket_from_seconds(secs: Optional[int]) -> Optional[str]:
-    if secs is None:
-        return None
-    if secs < 4*60:
-        return 'short'
-    if secs <= 20*60:
-        return 'medium'
-    return 'long'
-
-def pick_duration_param() -> Optional[str]:
-    """
-    Return short|medium|long|None (None means 'any') based on env YT_DURATION_MODE/POOL.
-    """
-    mode = DURATION_MODE
-    if mode == 'mix':
-        choices, weights = parse_weighted_pool(DURATION_POOL)
-        if not choices:
-            return None
-        try:
-            pick = random.choices(choices, weights=weights, k=1)[0]
-        except Exception:
-            pick = random.choice(choices)
-        return pick if pick in {'short','medium','long'} else None
-    if mode in {'short','medium','long'}:
-        return mode
-    return None
-
-
-def search_page(published_after_iso: str, region_code: str, query_str: Optional[str], page_token: Optional[str] = None, video_duration: Optional[str] = None) -> Dict[str, Any]:
+def search_page(published_after_iso: str, region_code: str, query_str: Optional[str], page_token: Optional[str] = None) -> Dict[str, Any]:
     if not API_KEY:
         raise RuntimeError('Missing YT_API_KEY')
     params = {
@@ -266,9 +213,6 @@ def search_page(published_after_iso: str, region_code: str, query_str: Optional[
     }
     if query_str:
         params['q'] = query_str
-    # --- NEW: pass duration filter to search ---
-    if video_duration in {'short','medium','long'}:
-        params['videoDuration'] = video_duration
     if page_token:
         params['pageToken'] = page_token
     r = requests.get(SEARCH_URL, params=params, timeout=30)
@@ -276,30 +220,23 @@ def search_page(published_after_iso: str, region_code: str, query_str: Optional[
     return r.json()
 
 
-def videos_details(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Return {videoId: {'snippet':..., 'contentDetails':...}} to enrich categoryId + duration (1 quota per 50 IDs)."""
+def videos_snippet(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Return {videoId: snippet} to enrich categoryId (cheap: 1 quota per 50 IDs)."""
     out: Dict[str, Dict[str, Any]] = {}
     if not video_ids:
         return out
-    batched = [video_ids[i:i+50] for i in range(0, len(video_ids), 50)]
-    for batch in batched:
-        params = {'key': API_KEY, 'part': 'snippet,contentDetails', 'id': ','.join(batch)}
-        r = requests.get(VIDEOS_URL, params=params, timeout=30)
-        r.raise_for_status()
-        for it in r.json().get('items', []):
-            vid = it.get('id')
-            if vid:
-                out[vid] = {
-                    'snippet': it.get('snippet', {}) or {},
-                    'contentDetails': it.get('contentDetails', {}) or {}
-                }
+    params = {'key': API_KEY, 'part': 'snippet', 'id': ','.join(video_ids[:50])}
+    r = requests.get(VIDEOS_URL, params=params, timeout=30)
+    r.raise_for_status()
+    for it in r.json().get('items', []):
+        vid = it.get('id')
+        if vid:
+            out[vid] = it.get('snippet', {})
     return out
 
 
 def upsert_minimal(items: List[Dict[str, Any]], db, region_used: str, query_used: Optional[str]) -> int:
-    """Insert minimal video docs; tracker will enrich/track later.
-    Fix: avoid MongoDB update path conflict on 'snippet' by NOT including it in $setOnInsert.
-    """
+    """Insert minimal video docs; tracker will enrich/track later."""
     ops = []
     now_iso = datetime.now(timezone.utc).isoformat()
     for it in items:
@@ -307,8 +244,7 @@ def upsert_minimal(items: List[Dict[str, Any]], db, region_used: str, query_used
         sn  = it.get('snippet', {}) or {}
         if not vid or not sn:
             continue
-        # Build full doc (for insert) then separate snippet into $set to prevent path conflict.
-        full_doc = {
+        doc = {
             '_id': vid,
             'source': {
                 'query': query_used,
@@ -321,10 +257,7 @@ def upsert_minimal(items: List[Dict[str, Any]], db, region_used: str, query_used
                 'thumbnails': sn.get('thumbnails', {}),
                 'channelId': sn.get('channelId'),
                 'channelTitle': sn.get('channelTitle'),
-                'categoryId': sn.get('categoryId'),   # set by enrichment above
-                'durationISO': sn.get('durationISO'),
-                'durationSec': sn.get('durationSec'),
-                'lengthBucket': sn.get('lengthBucket'),
+                'categoryId': sn.get('categoryId'),  # set by enrichment below
             },
             'tracking': {
                 'status': 'tracking',
@@ -335,15 +268,9 @@ def upsert_minimal(items: List[Dict[str, Any]], db, region_used: str, query_used
                 'stop_reason': None,
             },
             'stats_snapshots': [],
-            'ml_flags': {'likely_iral': False, 'viral_confirmed': False, 'score': 0.0},
+            'ml_flags': {'likely_viral': False, 'viral_confirmed': False, 'score': 0.0},
         }
-        insert_doc = full_doc.copy()
-        insert_doc.pop('snippet', None)  # <-- critical: do not duplicate 'snippet' path in $setOnInsert
-        update_doc = {
-            '$setOnInsert': insert_doc,
-            '$set': {'snippet': full_doc['snippet']},
-        }
-        ops.append(UpdateOne({'_id': vid}, update_doc, upsert=True))
+        ops.append(UpdateOne({'_id': vid}, {'$setOnInsert': doc}, upsert=True))
     if not ops:
         return 0
     res = db.videos.bulk_write(ops, ordered=False)
@@ -351,7 +278,7 @@ def upsert_minimal(items: List[Dict[str, Any]], db, region_used: str, query_used
 
 
 def main() -> int:
-    print('>>> discover_once SCAN-ONLY (near-now + categoryId + duration filter) starting')
+    print('>>> discover_once SCAN-ONLY (near-now + categoryId + RANDOM weighted pick) starting')
     if not API_KEY:
         print('Missing YT_API_KEY', file=sys.stderr)
         return 2
@@ -370,9 +297,7 @@ def main() -> int:
     db = client.get_database()
     now = datetime.now(timezone.utc)
     published_after = (now - timedelta(minutes=SINCE_MINUTES)).isoformat()
-
-    duration_used = pick_duration_param()
-    print(f'Near-now slice: {published_after}..(now) | region={region_used} | query={query_used!r} | random={RANDOM_PICK} | duration={duration_used or "any"} | exclude_live={EXCLUDE_LIVE}')
+    print(f'Near-now slice: {published_after}..(now) | region={region_used} | query={query_used!r} | random={RANDOM_PICK}')
 
     page_token = None
     pages = 0
@@ -386,57 +311,25 @@ def main() -> int:
                 break
             pages += 1
 
-            data = search_page(published_after, region_used, query_used, page_token, duration_used)
+            data = search_page(published_after, region_used, query_used, page_token)
             items = data.get('items', [])
             found = len(items)
-            # --- NEW: Early filter to remove live/upcoming VOD placeholders
-            filtered = 0
-            if EXCLUDE_LIVE and found > 0:
-                before = len(items)
-                items = [
-                    it for it in items
-                    if (it.get('snippet', {}).get('liveBroadcastContent') or 'none').lower() == 'none'
-                ]
-                filtered = before - len(items)
-                if filtered:
-                    print(f'[page {pages}] filtered_live={filtered}')
+            total_found += found
 
-            total_found += len(items)
-
-            # Enrich categoryId + duration for ALL items (1 quota per 50)
-            if items:
+            # Enrich categoryId for ALL items (1 quota per 50)
+            if found > 0:
                 ids = [it.get('id', {}).get('videoId') for it in items if it.get('id', {}).get('videoId')]
-                det_map = videos_details(ids)
-                enriched_cate = 0
-                enriched_dur  = 0
+                sn_map = videos_snippet(ids)
+                enriched = 0
                 for it in items:
                     vid = it.get('id', {}).get('videoId')
-                    if not vid:
-                        continue
                     sn = it.get('snippet', {}) or {}
-                    det = det_map.get(vid) or {}
-                    sn2 = det.get('snippet', {}) or {}
-                    cd  = det.get('contentDetails', {}) or {}
-
-                    # categoryId
-                    cate = sn2.get('categoryId')
+                    cate = (sn_map.get(vid) or {}).get('categoryId')
                     if cate:
                         sn['categoryId'] = cate
-                        enriched_cate += 1
-
-                    # --- NEW: duration enrichment
-                    dur_iso = cd.get('duration')
-                    secs = iso8601_to_seconds(dur_iso) if dur_iso else None
-                    if dur_iso:
-                        sn['durationISO'] = dur_iso
-                    if secs is not None:
-                        sn['durationSec'] = secs
-                        sn['lengthBucket'] = bucket_from_seconds(secs)
-                        enriched_dur += 1
-
-                    it['snippet'] = sn
-
-                print(f'[page {pages}] found={found}, enriched_category={enriched_cate}, enriched_duration={enriched_dur}')
+                        it['snippet'] = sn
+                        enriched += 1
+                print(f'[page {pages}] found={found}, enriched_category={enriched}')
 
             up = upsert_minimal(items, db, region_used, query_used)
             total_upserted += up
@@ -444,7 +337,7 @@ def main() -> int:
             for it in items[:5]:
                 vid = it.get('id', {}).get('videoId')
                 sn  = it.get('snippet', {})
-                print(f' - {vid} | {sn.get("publishedAt")} | len={sn.get("lengthBucket")} | cate={sn.get("categoryId")} | {sn.get("title")}')
+                print(f' - {vid} | {sn.get("publishedAt")} | cate={sn.get("categoryId")} | {sn.get("title")}')
 
             page_token = data.get('nextPageToken')
             if not page_token:

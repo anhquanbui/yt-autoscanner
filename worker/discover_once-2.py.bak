@@ -154,9 +154,6 @@ except Exception:
 DURATION_MODE = os.getenv('YT_DURATION_MODE', 'any').lower()  # any|short|medium|long|mix
 DURATION_POOL = os.getenv('YT_DURATION_POOL', 'short:1,medium:1,long:1,any:0')
 
-# --- NEW: Exclude live/upcoming (default ON for VOD-only scans)
-EXCLUDE_LIVE = os.getenv('YT_EXCLUDE_LIVE', '1').lower() in ('1','true','yes')
-
 # API endpoints
 SEARCH_URL = 'https://www.googleapis.com/youtube/v3/search'
 VIDEOS_URL = 'https://www.googleapis.com/youtube/v3/videos'
@@ -335,7 +332,7 @@ def upsert_minimal(items: List[Dict[str, Any]], db, region_used: str, query_used
                 'stop_reason': None,
             },
             'stats_snapshots': [],
-            'ml_flags': {'likely_iral': False, 'viral_confirmed': False, 'score': 0.0},
+            'ml_flags': {'likely_viral': False, 'viral_confirmed': False, 'score': 0.0},
         }
         insert_doc = full_doc.copy()
         insert_doc.pop('snippet', None)  # <-- critical: do not duplicate 'snippet' path in $setOnInsert
@@ -372,7 +369,7 @@ def main() -> int:
     published_after = (now - timedelta(minutes=SINCE_MINUTES)).isoformat()
 
     duration_used = pick_duration_param()
-    print(f'Near-now slice: {published_after}..(now) | region={region_used} | query={query_used!r} | random={RANDOM_PICK} | duration={duration_used or "any"} | exclude_live={EXCLUDE_LIVE}')
+    print(f'Near-now slice: {published_after}..(now) | region={region_used} | query={query_used!r} | random={RANDOM_PICK} | duration={duration_used or "any"}')
 
     page_token = None
     pages = 0
@@ -389,22 +386,10 @@ def main() -> int:
             data = search_page(published_after, region_used, query_used, page_token, duration_used)
             items = data.get('items', [])
             found = len(items)
-            # --- NEW: Early filter to remove live/upcoming VOD placeholders
-            filtered = 0
-            if EXCLUDE_LIVE and found > 0:
-                before = len(items)
-                items = [
-                    it for it in items
-                    if (it.get('snippet', {}).get('liveBroadcastContent') or 'none').lower() == 'none'
-                ]
-                filtered = before - len(items)
-                if filtered:
-                    print(f'[page {pages}] filtered_live={filtered}')
-
-            total_found += len(items)
+            total_found += found
 
             # Enrich categoryId + duration for ALL items (1 quota per 50)
-            if items:
+            if found > 0:
                 ids = [it.get('id', {}).get('videoId') for it in items if it.get('id', {}).get('videoId')]
                 det_map = videos_details(ids)
                 enriched_cate = 0

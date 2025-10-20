@@ -1,9 +1,42 @@
-
-# worker/track_once.py — STATISTICS TRACKER (batch 50 IDs, milestones 1h→24h) + handle backfill + duration backfill
-# (see header in previous message for details)
+# worker/track_once.py — STATISTICS TRACKER (batch 50 IDs, milestones 1h→24h) + handle backfill
+# ---------------------------------------------------------------------------------
+# What it does:
+#   - Pick videos that are due for a statistics re-poll (tracking.status="tracking"
+#     and tracking.next_poll_after <= now).
+#   - Call YouTube videos.list?part=statistics in batches of up to 50 IDs (1 unit/request).
+#   - Append a timestamped snapshot into stats_snapshots, update poll counters,
+#     and schedule the next milestone based on snippet.publishedAt.
+#   - Backfill channel @handle (snippet.channelHandle & source.channelHandle) lazily with cache.
+#   - When a video reaches >= 24h age (no more milestones), mark as complete.
+#
+# Quota:
+#   - videos.list?part=statistics = 1 unit per request (up to 50 videoId).
+#   - channels.list?part=snippet  = 1 unit per request (up to 50 channelId) — only when needed for handle backfill.
+#
+# Exit codes:
+#   - 0  : success (may be "No due videos.")
+#   - 88 : quota exhausted (quotaExceeded|dailyLimitExceeded|rateLimitExceeded...)
+#   - 2  : missing YT_API_KEY
+#   - 1  : other errors
+#
+# Environment:
+#   Required:
+#     - YT_API_KEY
+#     - MONGO_URI                      (e.g., mongodb://localhost:27017/ytscan)
+#   Optional:
+#     - TRACK_BATCH_SIZE               (default: 50; hard limit: 50)
+#     - TRACK_MAX_DUE_PER_RUN          (default: 1000)
+#     - YT_TRACK_PLAN_MINUTES          (comma list; overrides default ML milestones)
+#     - TRACK_LOG_SAMPLE               (default: 5; how many sample lines to print)
+#     - YT_ENRICH_HANDLE_MODE          (default: "track"; "off" to disable; "discover" means discover_once handles it)
+#
+# Mongo indexes (highly recommended):
+#   db.videos.createIndex({ "tracking.status": 1, "tracking.next_poll_after": 1 })
+#   db.videos.createIndex({ "snippet.publishedAt": -1 })
+#
 from __future__ import annotations
 
-import os, sys, io, re
+import os, sys, io
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 
@@ -32,6 +65,12 @@ LOG_SAMPLE       = max(0, int(os.getenv("TRACK_LOG_SAMPLE", "5")))
 
 ENRICH_HANDLE_MODE = os.getenv("YT_ENRICH_HANDLE_MODE", "track").lower()  # track|discover|off
 
+# Milestones (minutes since publishedAt) for 24h — tuned for early viral detection
+# Default (when YT_TRACK_PLAN_MINUTES is not set):
+#   0–2h   : every 5 minutes
+#   2–6h   : every 15 minutes
+#   6–12h  : every 30 minutes
+#   12–24h : every 60 minutes
 _PLAN_ENV = os.getenv("YT_TRACK_PLAN_MINUTES")
 if _PLAN_ENV:
     PLAN_MINUTES = [int(x) for x in _PLAN_ENV.split(",") if x.strip()]
@@ -47,18 +86,6 @@ VIDEOS_URL   = "https://www.googleapis.com/youtube/v3/videos"
 CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 EXIT_QUOTA   = 88
 
-# --- Duration helpers (for backfill) ---
-_DUR_RE = re.compile(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$', re.I)
-
-def iso8601_to_seconds(s: Optional[str]) -> Optional[int]:
-    if not s:
-        return None
-    m = _DUR_RE.match(s)
-    if not m:
-        return None
-    h, mnt, sec = (int(x) if x else 0 for x in m.groups())
-    return h * 3600 + mnt * 60 + sec
-
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -72,7 +99,9 @@ def parse_iso(s: str) -> Optional[datetime]:
 
 
 def next_due_from_publish(published_at: datetime, now: datetime) -> Optional[datetime]:
+    """Return the next milestone time strictly > now, or None if >= last milestone (≈24h)."""
     age_min = (now - published_at).total_seconds() / 60.0
+    # debug (first few milestones)
     try:
         print(f"[milestone] age={age_min:.1f}m | next> {next((m for m in PLAN_MINUTES if m>age_min), None)}")
     except Exception:
@@ -81,13 +110,18 @@ def next_due_from_publish(published_at: datetime, now: datetime) -> Optional[dat
         due = published_at + timedelta(minutes=m)
         if due > now:
             return due
-    return None
+    return None  # no more milestones (>=24h)
 
 
 def fetch_stats(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Fetch statistics for up to 50 video IDs. Returns {videoId: statistics}."""
     if not video_ids:
         return {}
-    params = {"key": API_KEY, "part": "statistics", "id": ",".join(video_ids[:50])}
+    params = {
+        "key": API_KEY,
+        "part": "statistics",
+        "id": ",".join(video_ids[:50])
+    }
     r = requests.get(VIDEOS_URL, params=params, timeout=30)
     r.raise_for_status()
     out: Dict[str, Dict[str, Any]] = {}
@@ -99,6 +133,7 @@ def fetch_stats(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
 
 
 def fetch_channel_handles(channel_ids: List[str]) -> Dict[str, str]:
+    """Return {channelId: '@handle'} via channels.list(snippet.customUrl)."""
     if not channel_ids:
         return {}
     params = {"key": API_KEY, "part": "snippet", "id": ",".join(channel_ids[:50])}
@@ -114,6 +149,7 @@ def fetch_channel_handles(channel_ids: List[str]) -> Dict[str, str]:
 
 
 def backfill_handles_for_due_videos(due_docs: List[Dict[str, Any]], db) -> None:
+    """Enrich snippet.channelHandle & source.channelHandle (if missing), with cache in db.channels."""
     if ENRICH_HANDLE_MODE in ("off", "discover"):
         return
     need: List[str] = []
@@ -129,6 +165,7 @@ def backfill_handles_for_due_videos(due_docs: List[Dict[str, Any]], db) -> None:
     if not need:
         return
 
+    # cache
     cached: Dict[str, str] = {c["_id"]: c.get("handle") for c in db.channels.find({"_id": {"$in": need}}, {"handle": 1})}
     to_fetch = [cid for cid in need if not cached.get(cid)]
 
@@ -139,6 +176,7 @@ def backfill_handles_for_due_videos(due_docs: List[Dict[str, Any]], db) -> None:
 
     handle_map = {**cached, **fetched}
 
+    # write cache
     if fetched:
         now_iso = now_utc().isoformat()
         ops = [
@@ -148,6 +186,7 @@ def backfill_handles_for_due_videos(due_docs: List[Dict[str, Any]], db) -> None:
         if ops:
             db.channels.bulk_write(ops, ordered=False)
 
+    # update videos
     ops = []
     for d in due_docs:
         vid = d.get("_id")
@@ -168,65 +207,6 @@ def backfill_handles_for_due_videos(due_docs: List[Dict[str, Any]], db) -> None:
         db.videos.bulk_write(ops, ordered=False)
 
 
-def enrich_duration_for_missing_videos(due_docs: List[Dict[str, Any]], db) -> None:
-    missing_ids = []
-    for d in due_docs:
-        sn = d.get("snippet", {}) or {}
-        if not sn.get("durationISO") or not sn.get("lengthBucket"):
-            missing_ids.append(str(d["_id"]))
-    if not missing_ids:
-        return
-
-    print(f"Backfilling duration for {len(missing_ids)} videos...")
-    for i in range(0, len(missing_ids), 50):
-        batch = missing_ids[i:i+50]
-        params = {
-            "key": API_KEY,
-            "part": "contentDetails,liveStreamingDetails",
-            "id": ",".join(batch)
-        }
-        r = requests.get(VIDEOS_URL, params=params, timeout=30)
-        r.raise_for_status()
-
-        items = r.json().get("items", [])
-        if not items:
-            continue
-
-        ops = []
-        for it in items:
-            vid = it.get("id")
-            cd = it.get("contentDetails", {}) or {}
-            lsd = it.get("liveStreamingDetails", {}) or {}
-
-            dur_iso = cd.get("duration")
-            dur_sec = iso8601_to_seconds(dur_iso) if dur_iso else None
-
-            length_bucket = None
-            if dur_sec is not None:
-                if dur_sec < 240:
-                    length_bucket = "short"
-                elif dur_sec <= 1200:
-                    length_bucket = "medium"
-                else:
-                    length_bucket = "long"
-            elif lsd.get("actualStartTime") or lsd.get("scheduledStartTime"):
-                length_bucket = "live"
-
-            update_fields = {}
-            if dur_iso:
-                update_fields["snippet.durationISO"] = dur_iso
-            if dur_sec is not None:
-                update_fields["snippet.durationSec"] = dur_sec
-            if length_bucket:
-                update_fields["snippet.lengthBucket"] = length_bucket
-
-            if update_fields:
-                ops.append(UpdateOne({"_id": vid}, {"$set": update_fields}))
-
-        if ops:
-            db.videos.bulk_write(ops, ordered=False)
-
-
 def main() -> int:
     print(">>> track_once starting")
     if not API_KEY:
@@ -238,10 +218,11 @@ def main() -> int:
     now = now_utc()
     now_iso = now.isoformat()
 
+    # 1) Find due videos by ISO timestamp (stored as ISO-8601 UTC string)
     due_cur = (db.videos.find({
         "tracking.status": "tracking",
         "tracking.next_poll_after": {"$lte": now_iso}
-    }, {"_id": 1, "snippet.publishedAt": 1, "snippet.channelId": 1, "snippet.channelHandle": 1, "source.channelHandle": 1, "tracking": 1, "snippet.durationISO": 1, "snippet.lengthBucket": 1})
+    }, {"_id": 1, "snippet.publishedAt": 1, "snippet.channelId": 1, "snippet.channelHandle": 1, "source.channelHandle": 1, "tracking": 1})
     .sort("tracking.next_poll_after", 1)
     .limit(TRACK_MAX_DUE))
 
@@ -253,37 +234,20 @@ def main() -> int:
     print(f"Due videos: {len(due_docs)}")
     print(f"Plan milestones (first 8): {PLAN_MINUTES[:8]}{' ...' if len(PLAN_MINUTES)>8 else ''}")
 
+    # 1b) Lazy handle backfill (cached)
     backfill_handles_for_due_videos(due_docs, db)
-
-    try:
-        enrich_duration_for_missing_videos(due_docs, db)
-    except requests.HTTPError as e:
-        try:
-            body = e.response.json()
-        except Exception:
-            body = {"error": str(e)}
-        reason = None
-        err = body.get("error") if isinstance(body, dict) else None
-        if isinstance(err, dict):
-            errs = err.get("errors") or []
-            if isinstance(errs, list) and errs:
-                reason = errs[0].get("reason")
-            reason = reason or err.get("status") or err.get("message")
-        quota_reasons = {"quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded", "userRateLimitExceeded"}
-        if str(reason) in quota_reasons:
-            print("YouTube quota exhausted during duration backfill — continuing stats only.", file=sys.stderr)
-        else:
-            print("YouTube API error during duration backfill:", body, file=sys.stderr)
 
     processed = 0
     completed = 0
 
+    # 2) Process in batches (<=50 ids per request)
     for i in range(0, len(due_docs), TRACK_BATCH_SIZE):
         batch = due_docs[i:i + TRACK_BATCH_SIZE]
         ids = [str(d["_id"]) for d in batch]
         try:
             stats_map = fetch_stats(ids)
         except requests.HTTPError as e:
+            # Handle possible quota errors explicitly
             try:
                 body = e.response.json()
             except Exception:
@@ -308,6 +272,7 @@ def main() -> int:
             sn = d.get("snippet", {}) or {}
             pub = parse_iso(sn.get("publishedAt") or "")
             if not pub:
+                # No publish time => mark complete to avoid looping forever
                 ops.append(UpdateOne({"_id": vid}, {
                     "$set": {
                         "tracking.status": "complete",
@@ -322,6 +287,7 @@ def main() -> int:
 
             st = stats_map.get(vid)
             if not st:
+                # Video unavailable (deleted/private or no stats returned)
                 ops.append(UpdateOne({"_id": vid}, {
                     "$set": {
                         "tracking.status": "complete",
@@ -334,6 +300,7 @@ def main() -> int:
                 completed += 1
                 continue
 
+            # Build snapshot (likeCount/commentCount may be hidden/absent)
             snap = {
                 "ts": now_iso,
                 "viewCount": int(st.get("viewCount", 0) or 0),
@@ -341,8 +308,10 @@ def main() -> int:
                 "commentCount": (int(st["commentCount"]) if "commentCount" in st else None)
             }
 
+            # Compute next milestone
             next_due = next_due_from_publish(pub, now)
             if next_due is None:
+                # done (>=24h)
                 ops.append(UpdateOne({"_id": vid}, {
                     "$push": {"stats_snapshots": snap},
                     "$set": {
@@ -368,6 +337,7 @@ def main() -> int:
             db.videos.bulk_write(ops, ordered=False)
         processed += len(batch)
 
+    # Log some samples for visibility
     if LOG_SAMPLE and due_docs:
         print("Sample due items:")
         for d in due_docs[:LOG_SAMPLE]:

@@ -1,9 +1,8 @@
+
 <# 
   run_both_local.ps1 — Local runner for discover_once.py + track_once.py
-  - Auto-loads .env (YT_API_KEY, MONGO_URI, etc.) without hardcoding secrets
-  - Sets runtime configs (near-now discover + random region/keywords)
-  - Runs discover & tracker on a staggered loop
-  - Logs to console and to logs/scanner-YYYY-MM-DD.log
+  Adds weighted random pick for YouTube video length buckets (short/medium/long/any).
+  PowerShell 5 compatible (no '??' operator).
 #>
 
 # =======================
@@ -49,17 +48,13 @@ function Load-DotEnv([string]$FilePath) {
     if (-not (Test-Path $FilePath)) { return }
     $lines = Get-Content -Raw -Path $FilePath -Encoding UTF8 -ErrorAction SilentlyContinue -ReadCount 0
     foreach ($line in ($lines -split "`r?`n")) {
-        # Skip comments/blank
         if ($line -match '^\s*#' -or $line -match '^\s*$') { continue }
-        # Split on first '='
         $parts = $line -split '=', 2
         if ($parts.Count -lt 2) { continue }
         $k = $parts[0].Trim()
         $v = $parts[1].Trim()
-        # Remove surrounding quotes if present
         if ($v.StartsWith('"') -and $v.EndsWith('"')) { $v = $v.Substring(1, $v.Length-2) }
         elseif ($v.StartsWith("'") -and $v.EndsWith("'")) { $v = $v.Substring(1, $v.Length-2) }
-        # Assign to process environment
         ${env:$k} = $v
     }
 }
@@ -84,7 +79,6 @@ if ($env:MONGO_URI) {
 # =======================
 # 🌐 Runtime config (non-secret)
 # =======================
-# Keep existing env if already set; otherwise apply sensible defaults.
 if (-not $env:YT_SINCE_MINUTES) { $env:YT_SINCE_MINUTES = "20" }
 if (-not $env:YT_MAX_PAGES)     { $env:YT_MAX_PAGES     = "1"  }
 
@@ -95,7 +89,7 @@ if (-not $env:YT_RANDOM_QUERY_POOL)  {
   $env:YT_RANDOM_QUERY_POOL  = "live:6, breaking news:5, news:5, update:3, " +
                                "gaming:6, highlights:6, esports:4, fortnite:5, minecraft:5, roblox:4, valorant:5, league of legends:5, genshin impact:4, pubg:3, mobile legends:3, fifa:4, nba:4, nfl:4, soccer:5, football:5, premier league:5, goals:4, " +
                                "shorts:6, tiktok:4, meme:4, memes:4, compilation:4, fail:3, prank:3, challenge:3, reaction:4, try not to laugh:2, " +
-                               "music:5, mv:4, music video:4, cover:5, remix:4, lyrics:4, karaoke:3, kpop:5, jpop:4, hip hop:4, rap:5, edm:4, lo-fi:3, lofi:3, " +
+                               "music:5, mv:4, music video:4, cover:5, remix:4, lyrics:4, karaoke:3, kpop:5, jpop:4, hip hop:4, rap:5, edm:4, lofi:3, " +
                                "anime:5, vtuber:5, cosplay:3, trailer:5, official trailer:5, teaser:4, netflix:3, marvel:3, dc:2, " +
                                "vlog:4, daily vlog:3, travel:4, food:4, street food:3, cooking:5, recipe:5, mukbang:4, review:4, unboxing:5, tech review:5, " +
                                "iphone:5, samsung:4, smartphone:4, camera:4, gopro:3, drone:3, " +
@@ -118,6 +112,59 @@ if (-not $env:YT_RANDOM_QUERY_POOL_JP) { $env:YT_RANDOM_QUERY_POOL_JP = "vtuber:
 if (-not $env:YT_RANDOM_QUERY_POOL_VN) { $env:YT_RANDOM_QUERY_POOL_VN = "nhac tre:3, rap viet:4, bong da:4, highlights:5, live:3" }
 
 # =======================
+# 🎚️ Duration weighting (NEW)
+# =======================
+if (-not $env:YT_DURATION_POOL) { $env:YT_DURATION_POOL = "short:1,medium:3,long:3,any:0" }
+
+function Parse-WeightedPool([string]$Pool) {
+    $pairs = @()
+    foreach ($raw in ($Pool -split ',')) {
+        $s = $raw.Trim()
+        if (-not $s) { continue }
+        if ($s -like "*:*") {
+            $spl = $s.Split(':',2)
+            $name = $spl[0].Trim()
+            $wstr = $spl[1].Trim()
+            try { $weight = [double]::Parse($wstr) } catch { $weight = 1.0 }
+        } else {
+            $name = $s
+            $weight = 1.0
+        }
+        if ($name -and ($weight -gt 0)) {
+            $pairs += [PSCustomObject]@{ Name=$name; Weight=$weight }
+        }
+    }
+    return $pairs
+}
+
+function Pick-ByWeight([object[]]$Pairs) {
+    if (-not $Pairs -or $Pairs.Count -eq 0) { return $null }
+    $totalObj = $Pairs | Measure-Object -Property Weight -Sum
+    $total = [double]$totalObj.Sum
+    if ($total -le 0) { return $Pairs[0].Name }
+    $r = Get-Random -Minimum 0.0 -Maximum $total
+    $acc = 0.0
+    foreach ($p in $Pairs) {
+        $acc = $acc + [double]$p.Weight
+        if ($r -le $acc) { return $p.Name }
+    }
+    return $Pairs[$Pairs.Count-1].Name
+}
+
+function Pick-DurationBucket() {
+    # Respect static setting if user forces a bucket via env
+    $mode = $env:YT_DURATION_MODE
+    if (-not $mode) { $mode = "mix" }
+    $mode = $mode.ToLower()
+    if ($mode -in @("short","medium","long","any")) { return $mode }
+    # Otherwise pick by weights each discover run
+    $pairs = Parse-WeightedPool $env:YT_DURATION_POOL
+    $pick = Pick-ByWeight $pairs
+    if (-not $pick) { return "any" }
+    return $pick
+}
+
+# =======================
 # 🏃 Helper to run a step
 # =======================
 function Run-Step([string]$Name, [string]$ScriptRelPath) {
@@ -126,6 +173,11 @@ function Run-Step([string]$Name, [string]$ScriptRelPath) {
         if (-not (Test-Path $full)) {
             Write-Log "Script not found: $full" "ERROR"
             return
+        }
+        if ($Name -eq "discover_once") {
+            $bucket = Pick-DurationBucket
+            $env:YT_DURATION_MODE = $bucket
+            Write-Log ("Duration bucket this run: {0}" -f $bucket)
         }
         Write-Log "Running $Name ($full)"
         Push-Location $RepoRoot  # ensure Python sees .env at repo root
@@ -165,5 +217,3 @@ while ($true) {
 
     Start-Sleep -Seconds $TickSleepSeconds
 }
-
-# End (Transcript stops when PS session ends)
