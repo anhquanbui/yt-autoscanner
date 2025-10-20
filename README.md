@@ -65,64 +65,19 @@ python process_data.py --query "{'region': 'US'}"
 
 ---
 
-## What's new (2025-10-20)
+## What's new (Oct 20 2025)
+- **Discover Worker v4.3** — Added automatic filtering to skip live and upcoming videos.
+- **Track Worker v3.1** — Enhanced duration backfill logic for videos missing duration data.
+- **Backfill Tool v1.0** — Introduced `tools/backfill_missing_fields.py` to fill missing duration/handles independently.
+- **.gitignore** — Now excludes `.bak` backup files.
 
-### ⚙️ `worker\discover_once.py` — **v4.3**
-- Added **automatic filtering** to exclude `live` and `upcoming` videos during discovery.
-- Maintains duration-based sampling (`short`, `medium`, `long`, `any`, `mix`) for flexible coverage.
-- Keeps full snippet enrichment (categoryId, durationISO, durationSec, lengthBucket).
-- Logs filtered counts for better visibility during scans.
-- Backward compatible with `.env` configuration from v4.2.
+## What's new (Oct 17 2025)
+- **Process Data Script (v1.0)** — Automates inserting JSON into MongoDB.
+- **Discover Worker (v4.2)** — Adds duration enrichment and random region/query weighting.
+- **Track Worker (v3.0)** — Tracks video metrics at multiple milestones (up to 24h).
+- **Unified Runner (v5)** — Real-time logs and quota protection.
 
-### ⚙️ `worker\track_once.py` — **v3.1**
-- Introduced optimized **backfill handling** for missing duration or length buckets.
-- Automatically skips live/upcoming videos and ensures consistent milestone polling.
-- Improved error handling and quota recovery for `quotaExceeded` events.
-- Refactored backfill to trigger only when duration fields are missing.
-
-### 🧰 `tools/backfill_missing_fields.py` — **v1.0** (new)
-- New standalone script designed to backfill videos that are already `complete` or partially enriched.
-- Handles missing fields such as:
-  - `snippet.durationISO`, `snippet.durationSec`, `snippet.lengthBucket`
-  - `snippet.channelHandle` (via channel lookup)
-- Supports CLI arguments for batch size, dry-run, and limit filtering.
-- Keeps tracking and discovery independent from data repair tasks.
-
-### ⚡ `run_both_local.ps1` — **v5.1**
-- Enhanced compatibility with PowerShell 7+ (UTF-8 logs + color-safe output).
-- Improved log timestamping and error capture for both discover and track workers.
-- Automatically pauses between runs when API quota is exhausted.
-- Adds flag to optionally run `tools/backfill_missing_fields.py` once a day.
-
-### 📁 Documentation updates
-- README updated with new “What’s new (2025-10-20)” section.
-- Added internal reference in Docs to `backfill_missing_fields.py` under `tools/`.
-- Updated project progress table and `Last updated` timestamp.
-
----
-
-
-### Worker (`discover_once.py`) — **v4.2**
-- Refactored for **lightweight near-now scan** (no lookback > 24h).
-- Keeps **categoryId** enrichment (1 quota per 50 videos).
-- Simplified: skips `topicId`, `channelHandle`, random by weighted query & region pool.
-- Random mode: dynamically selects region & query (hot topics weighted).
-
-### Tracker (`track_once.py`) — **v3.0**
-- Monitors video statistics (views, likes, comments) until **24h**.
-- Uses **fine-grained milestones** for ML-friendly time series (every 5m→60m).
-- Marks video complete after 24h or unavailable.
-
-### Backfill (`tools/backfill_channels_v2.py`) — **v2**
-- Adds channel metadata & statistics (`subscriberCount`, `videoCount`, `viewCount`).
-- Auto-detects missing or stale documents (older than X hours).
-- Supports dry-run mode for safe testing.
-
-### Unified Runner (`run_both_local.ps1`) — **v5**
-- Runs both **discover** and **track** loops on schedule.
-- Reads `.env` automatically (no hardcoded keys).
-- Logs in real time to `./logs/transcript-YYYYMMDD.log`.
-- Auto-stops on quota exhaustion (exit code 88).
+👉 **View full changelog → [CHANGELOG.md](CHANGELOG.md)**
 
 ---
 

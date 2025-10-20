@@ -1,4 +1,4 @@
-# tools/backfill_missing_fields.py — one-shot BACKFILL tool (handles + duration)
+# tools/backfill_missing_fields.py (v1.0) — one-shot BACKFILL tool (handles + duration)
 # ---------------------------------------------------------------------------------
 # PURPOSE
 #   Chạy thủ công khi cần để backfill các trường còn thiếu cho video:

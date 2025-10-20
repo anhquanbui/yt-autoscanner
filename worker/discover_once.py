@@ -1,5 +1,5 @@
 
-# worker/discover_once.py — VIDEO DISCOVERY (Near-now scan with categoryId + Duration Filter)
+# worker/discover_once.py (v 4.3) — VIDEO DISCOVERY (Near-now scan with categoryId + Duration Filter)
 # ---------------------------------------------------------------------------------
 # PURPOSE:
 #   Discover newly published YouTube videos (within a near-now window)

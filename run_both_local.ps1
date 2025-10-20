@@ -1,6 +1,6 @@
 
 <# 
-  run_both_local.ps1 — Local runner for discover_once.py + track_once.py
+  run_both_local.ps1 (v5.1) — Local runner for discover_once.py + track_once.py
   Adds weighted random pick for YouTube video length buckets (short/medium/long/any).
   PowerShell 5 compatible (no '??' operator).
 #>
