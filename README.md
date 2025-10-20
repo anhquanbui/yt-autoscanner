@@ -65,10 +65,6 @@ YT-AUTOSCANNER/
 │   ├─ main.py                    # API entry point (Uvicorn server)
 │   └─ requirements.txt           # API dependencies
 │
-├─ dashboard/                     # Streamlit dashboard (local visualization)
-│   ├─ app.py                     # Main dashboard UI
-│   └─ requirements.txt           # Dashboard dependencies
-│
 ├─ docs/                          # Internal documentation & references
 │   ├─ Autorun_Scripts_Guide.md
 │   ├─ mongo_collections_overview.md
@@ -188,11 +184,11 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ---
 
-### 5️⃣ Run the Streamlit Dashboard
+### 5️⃣ Run the Streamlit Dashboard (for future development)
 
 ```powershell
-cd dashboard
-streamlit run app.py
+cd dashboard # dashboard PATH
+streamlit run [name_of_the_file].py
 # Default URL: http://localhost:8501
 ```
 

@@ -335,7 +335,7 @@ def upsert_minimal(items: List[Dict[str, Any]], db, region_used: str, query_used
                 'stop_reason': None,
             },
             'stats_snapshots': [],
-            'ml_flags': {'likely_iral': False, 'viral_confirmed': False, 'score': 0.0},
+            'ml_flags': {'likely_viral': False, 'viral_confirmed': False, 'score': 0.0},
         }
         insert_doc = full_doc.copy()
         insert_doc.pop('snippet', None)  # <-- critical: do not duplicate 'snippet' path in $setOnInsert
