@@ -1,9 +1,11 @@
-# Worker dependencies (discover_once.py, track_once.py)
-# Python 3.11+ recommended
+# ==========================================================
+#  Worker dependencies (discover_once.py, track_once.py)
+#  Python 3.11+ recommended
+# ==========================================================
 
 requests>=2.31.0
 pymongo>=4.6.0
 python-dotenv>=1.0.1
 
-# Optional: only needed if you run worker/scheduler.py (Python scheduler)
+# Optional — only needed if running worker/scheduler.py
 schedule>=1.2.0

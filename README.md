@@ -59,34 +59,49 @@ This README covers local development, environment config, the discover worker (v
 ## Project structure
 
 ```
-yt-autoscanner/
-├─ docs/
-│  ├─ mongo_collections_overview.md
-│  ├─ pipeline_overview.md
-│  ├─ process_data_readme.md
-│  └─ processed_videos_explanation.md
-├─ api/
-│  ├─ main.py
-│  └─ requirements.txt
-├─ worker/
-│  ├─ discover_once.py
-│  ├─ track_once.py
-│  ├─ scheduler.py
-│  └─ requirements.txt
-├─ tools/
-│  ├─ make_indexes.py
-│  ├─ backfill_channels_v2.py
-│  └─ process_data.py
-├─ logs/
-│  └─ scanner-YYYY-MM-DD.log
-├─ .env
-├─ .gitignore
-├─ auto-track.ps1
-├─ README.md
-├─ CHANGELOG.md
-├─ requirements.txt
-├─ run_both_local.ps1
-├─ seed.py
+YT-AUTOSCANNER/
+│
+├─ api/                           # FastAPI backend
+│   ├─ main.py                    # API entry point (Uvicorn server)
+│   └─ requirements.txt           # API dependencies
+│
+├─ dashboard/                     # Streamlit dashboard (local visualization)
+│   ├─ app.py                     # Main dashboard UI
+│   └─ requirements.txt           # Dashboard dependencies
+│
+├─ docs/                          # Internal documentation & references
+│   ├─ Autorun_Scripts_Guide.md
+│   ├─ mongo_collections_overview.md
+│   ├─ pipeline_overview.md
+│   ├─ process_data_readme.md
+│   └─ processed_videos_explanation.md
+│
+├─ logs/                          # Log output from workers / API
+│
+├─ tools/                         # Helper utilities
+│   ├─ backfill_channels_v2.py
+│   ├─ backfill_missing_fields.py
+│   └─ make_indexes.py
+│
+├─ worker/                        # Data ingestion and tracking logic
+│   ├─ discover_once.py           # Discover new YouTube videos
+│   ├─ track_once.py              # Track video stats over time (1h→24h)
+│   ├─ scheduler.py               # Optional scheduler for periodic tasks
+│   ├─ process_data.py            # Clean & aggregate raw data
+│   └─ requirements.txt           # Worker dependencies
+│
+├─ venv/                          # Local Python virtual environment (ignored by Git)
+│
+├─ .env                           # Environment variables (Mongo URI, API key, etc.)
+├─ .gitignore                     # Ignore venv, logs, cache files
+├─ requirements-dev.txt            # Full dev setup (worker + API + dashboard)
+├─ README.md                      # Documentation and setup instructions
+├─ CHANGELOG.md                   # Version changes and release notes
+├─ run_both_local.ps1             # Run discover + track together (PowerShell)
+├─ run_track_one_loop_30s.ps1     # Loop runner for track_once.py (demo/test)
+├─ auto-track.ps1                 # Auto-tracking shortcut script
+└─ seed.py                        # Seed data helper or test initialization
+
 ```
 
 ---
@@ -105,35 +120,110 @@ yt-autoscanner/
 
 ---
 
-## Local setup
+## 🧬 Local Setup
 
-### 1️⃣ Python & venv (Windows PowerShell)
+### 1️⃣ Python & Virtual Environment (Windows PowerShell)
+
 ```powershell
+# Create a new virtual environment
 python -m venv venv
-# If blocked once:
+
+# If activation is blocked once:
 #   Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-.venv\Scripts\Activate.ps1
+
+# Activate the environment
+.\venv\Scripts\Activate.ps1
 ```
 
-### 2️⃣ Install dependencies
+---
+
+### 2️⃣ Install Dependencies
+
+You have two options depending on your workflow:
+
+#### 🧩 Option A — Install by module
+
 ```powershell
-pip install -r requirements.txt
+# API (FastAPI backend)
 pip install -r api/requirements.txt
+
+# Worker (discover_once.py, track_once.py)
 pip install -r worker/requirements.txt
-# pip install -r tools/requirements.txt  # (if available)
+
+# Dashboard (Streamlit UI)
+pip install -r dashboard/requirements.txt
 ```
 
-### 3️⃣ MongoDB
+#### 🚀 Option B — Full development setup (everything)
+
 ```powershell
+pip install -r requirements-dev.txt
+```
+
+> 💡 **Tip:**  
+> Use **Option B** for local development when you plan to run all components (API + worker + dashboard).  
+> Use **Option A** for deploying or testing individual modules.
+
+---
+
+### 3️⃣ MongoDB Setup
+
+```powershell
+# Run MongoDB in Docker
 docker run -d --name mongo -p 27017:27017 mongo:7
+
+# (Optional) create indexes if you have a helper script
 python tools/make_indexes.py
 ```
 
-### 4️⃣ Run API
+---
+
+### 4️⃣ Run the FastAPI Backend
+
 ```powershell
 cd api
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 # Swagger UI → http://127.0.0.1:8000/docs
+```
+
+---
+
+### 5️⃣ Run the Streamlit Dashboard
+
+```powershell
+cd dashboard
+streamlit run app.py
+# Default URL: http://localhost:8501
+```
+
+---
+
+### 6️⃣ Run Worker Scripts (Data Ingestion / Tracking)
+
+```powershell
+# Discover new YouTube videos
+python worker/discover_once.py
+
+# Track video metrics over time (1h → 24h)
+python worker/track_once.py
+
+# Optional: run both in a loop (PowerShell helper script)
+.\run_both_local.ps1
+```
+
+---
+
+### ⚙️ Environment Variables (.env)
+
+Ensure a `.env` file exists in the project root:
+
+```env
+# === MongoDB ===
+MONGO_URI=mongodb://localhost:27017
+DB_NAME=yt_autoscanner
+
+# === YouTube API ===
+YT_API_KEY=your_youtube_api_key_here
 ```
 
 ---
