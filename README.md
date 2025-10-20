@@ -40,31 +40,6 @@ This README covers local development, environment config, the discover worker (v
 
 ---
 
-## What's new (2025-10-17)
-
-### 🆕 `worker\process_data.py` — **v1.0**
-- New CLI script for **processing local JSON data** and **pushing results to MongoDB** automatically.
-- Loads `.env` for `MONGO_URI` and uses the `videos` collection by default.
-- Supports optional `--query` filter or JSON file input.
-- Automatically creates missing collections and indexes if not found.
-- Default behavior: pushes data directly to MongoDB (`insert_many`).
-
-#### Example usage
-```bash
-# Basic usage (auto push)
-python process_data.py
-
-# Custom Mongo URI or collection
-python process_data.py --mongo-uri "mongodb://localhost:27017" --db ytscan --collection videos
-
-# Optional query mode
-python process_data.py --query "{'region': 'US'}"
-```
-
-👉 See full guide: [process_data_readme.md](docs/process_data_readme.md)
-
----
-
 ## What's new (Oct 20 2025)
 - **Discover Worker v4.3** — Added automatic filtering to skip live and upcoming videos.
 - **Track Worker v3.1** — Enhanced duration backfill logic for videos missing duration data.
