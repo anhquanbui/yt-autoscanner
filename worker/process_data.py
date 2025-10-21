@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# process_data.py (v6) — v5 + dashboard_overview.json (total/processed/pending)
+# process_data.py (v7) — v6 + source_meta + coverage_score + snapshot_features + growth_phase + ml_flags
 from __future__ import annotations
 
 import argparse
@@ -8,15 +8,17 @@ import sys
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from pathlib import Path
+import math
 
 # Optional pymongo imports
 try:
-    from pymongo import MongoClient, UpdateOne
+    from pymongo import MongoClient, UpdateOne, ReplaceOne
 except Exception:
     MongoClient = None  # optional
     UpdateOne = None    # optional
+    ReplaceOne = None   # optional
 
 # Optional dotenv loader
 try:
@@ -111,10 +113,119 @@ def coverage_ratio(snaps:List[Snapshot], pub:Optional[datetime], h:int)->float:
     exp=expected_count_up_to(h)
     return round(avail/max(exp,1),6)
 
+# ---------------- v7: snapshot feature helpers ----------------
+def _hours_since(a: datetime, b: datetime) -> float:
+    return max((a - b).total_seconds() / 3600.0, 0.0)
+
+def compute_snapshot_features(snaps: List[Snapshot], published: Optional[datetime]) -> Dict[str, Optional[float]]:
+    """
+    Compute lightweight stats from fine-grained snapshots.
+    Returns None/0 for missing pieces gracefully.
+    """
+    out = {
+        "v_slope_mean": None,
+        "v_slope_max": None,
+        "v_slope_std": None,
+        "v_accel_mean": None,
+        "time_first_1k": None,
+        "time_first_10k": None,
+    }
+    if not snaps or not published:
+        return out
+
+    # sort by time, map to hours since publish, views
+    srt = sorted(snaps, key=lambda x: x.ts)
+    xs = [_hours_since(s.ts, published) for s in srt]
+    ys = [max(0, int(s.viewCount)) for s in srt]
+
+    # if all xs same or single point -> nothing to compute
+    if len(xs) < 2 or (max(xs) - min(xs) < 1e-6):
+        return out
+
+    # approximate derivative dy/dx between consecutive points
+    slopes: List[float] = []
+    for i in range(1, len(xs)):
+        dx = xs[i] - xs[i-1]
+        dy = ys[i] - ys[i-1]
+        if dx <= 0:
+            continue
+        slopes.append(dy / dx)
+
+    if slopes:
+        mean_slope = sum(slopes) / len(slopes)
+        max_slope = max(slopes)
+        var = sum((s - mean_slope) ** 2 for s in slopes) / max(len(slopes)-1, 1)
+        std_slope = math.sqrt(var)
+        # accel ~ slope diffs per hour window (rough)
+        accs: List[float] = []
+        for i in range(1, len(slopes)):
+            accs.append(slopes[i] - slopes[i-1])
+        out.update({
+            "v_slope_mean": round(mean_slope, 6),
+            "v_slope_max": round(max_slope, 6),
+            "v_slope_std": round(std_slope, 6),
+            "v_accel_mean": round(sum(accs)/len(accs), 6) if accs else 0.0
+        })
+    else:
+        out.update({
+            "v_slope_mean": 0.0,
+            "v_slope_max": 0.0,
+            "v_slope_std": 0.0,
+            "v_accel_mean": 0.0
+        })
+
+    # time to first thresholds (in hours)
+    def _time_to_threshold(th: int) -> Optional[float]:
+        for x, y in zip(xs, ys):
+            if y >= th:
+                return round(x, 6)
+        return None
+
+    out["time_first_1k"] = _time_to_threshold(1_000)
+    out["time_first_10k"] = _time_to_threshold(10_000)
+    return out
+
+def classify_growth_phase(hz: Dict[str, Any]) -> Optional[str]:
+    """
+    Heuristic phase classification using 6h->12h and 12h->24h growth.
+    """
+    try:
+        v6 = hz.get("360", {}).get("views") or 0
+        v12 = hz.get("720", {}).get("views") or 0
+        v24 = hz.get("1440", {}).get("views") or 0
+        dv_6_12 = (v12 - v6)
+        dv_12_24 = (v24 - v12)
+        # thresholds are heuristic; safe defaults for broad datasets
+        if v6 == 0 and v12 == 0 and v24 == 0:
+            return "flat"
+        if dv_6_12 > 0 and dv_12_24 > 0:
+            # accelerating if later delta >> earlier delta
+            if dv_12_24 >= 1.5 * max(dv_6_12, 1):
+                return "early-burst"
+            return "steady"
+        if v24 <= 5_000:
+            return "flat"
+        return "steady"
+    except Exception:
+        return None
+
+# ----------------------------------------------------------------
+
 def summarize_video(doc:Dict[str,Any])->Dict[str,Any]:
     vid=str(doc.get('_id') or doc.get('video_id') or '')
     status=(doc.get('tracking') or {}).get('status')
-    pub=parse_iso(((doc.get('snippet') or {}).get('publishedAt')))
+    snippet = (doc.get('snippet') or {})
+    pub=parse_iso(snippet.get('publishedAt'))
+
+    # v7: source/snippet meta (best-effort)
+    source = (doc.get('source') or {})
+    source_meta = {
+        "region_code": source.get("regionCode") or source.get("region") or None,
+        "query_seed": source.get("query") or source.get("querySeed") or None,
+        "duration_bucket": (snippet.get("lengthBucket") or snippet.get("durationBucket") or None),
+        "categoryId": snippet.get("categoryId")
+    }
+
     raw=doc.get('stats_snapshots') or []
     snaps=[s for s in (coerce_snap(x) for x in raw) if s]
     snaps.sort(key=lambda x:x.ts)
@@ -123,9 +234,11 @@ def summarize_video(doc:Dict[str,Any])->Dict[str,Any]:
 
     horizons_out={}
     completed_horizons: List[int] = []
+    cov_values: List[float] = []
     for h in HORIZONS:
         snap_h,method=floor_ceil_value(snaps,pub,h)
         cov=coverage_ratio(snaps,pub,h)
+        cov_values.append(cov)
         horizons_out[str(h)] = {
             "views": snap_h.viewCount if snap_h else None,
             "likes": snap_h.likeCount if snap_h else None,
@@ -138,6 +251,24 @@ def summarize_video(doc:Dict[str,Any])->Dict[str,Any]:
         if method in ("floor","ceil"):
             completed_horizons.append(h)
 
+    # v7: coverage_score (mean coverage across horizons)
+    coverage_score = None
+    if cov_values:
+        coverage_score = round(sum(cov_values)/len(cov_values), 6)
+
+    # v7: snapshot_features (lightweight stats from fine-grained snaps)
+    snap_feats = compute_snapshot_features(snaps, pub)
+
+    # v7: growth phase heuristic
+    growth_phase = classify_growth_phase(horizons_out)
+
+    # v7: ML flags placeholder (kept for later inference)
+    ml_flags = {
+        "likely_viral": False,
+        "score": 0.0,
+        "viral_confirmed": False
+    }
+
     return {
         "video_id": vid,
         "status": status,
@@ -147,6 +278,13 @@ def summarize_video(doc:Dict[str,Any])->Dict[str,Any]:
         "completed_horizons": completed_horizons,
         "n_completed_horizons": len(completed_horizons),
         "horizons": horizons_out,
+
+        # ---- new in v7 ----
+        "source_meta": source_meta,
+        "coverage_score": coverage_score,
+        "growth_phase": growth_phase,
+        "snapshot_features": snap_feats,
+        "ml_flags": ml_flags,
     }
 
 def build_dashboard_summary(rows:List[Dict[str,Any]])->List[Dict[str,Any]]:
@@ -169,7 +307,15 @@ def build_dashboard_summary(rows:List[Dict[str,Any]])->List[Dict[str,Any]]:
             "coverage_6h":hz.get("360",{}).get("coverage_ratio"),
             "coverage_12h":hz.get("720",{}).get("coverage_ratio"),
             "coverage_24h":hz.get("1440",{}).get("coverage_ratio"),
-            "n_completed_horizons": len(r.get("completed_horizons", []))
+            "n_completed_horizons": len(r.get("completed_horizons", [])),
+
+            # v7: quick peeks
+            "coverage_score": r.get("coverage_score"),
+            "growth_phase": r.get("growth_phase"),
+            "region_code": (r.get("source_meta") or {}).get("region_code"),
+            "query_seed": (r.get("source_meta") or {}).get("query_seed"),
+            "duration_bucket": (r.get("source_meta") or {}).get("duration_bucket"),
+            "categoryId": (r.get("source_meta") or {}).get("categoryId"),
         })
     return out
 
@@ -180,7 +326,24 @@ def read_from_mongo(uri:str,db_name:str,coll:str, query:dict|None=None):
     db=client[db_name]
     q = query or {}
     print(f"🔍 Using query filter: {json.dumps(q, ensure_ascii=False)}")
-    cur=db[coll].find(q,projection={"_id":1,"snippet.publishedAt":1,"tracking.status":1,"stats_snapshots":1})
+    # v7: include source & snippet fields that feed source_meta
+    cur=db[coll].find(
+        q,
+        projection={
+            "_id":1,
+            "snippet.publishedAt":1,
+            "snippet.categoryId":1,
+            "snippet.durationISO":1,
+            "snippet.durationSec":1,
+            "snippet.lengthBucket":1,
+            "tracking.status":1,
+            "source.regionCode":1,
+            "source.region":1,
+            "source.query":1,
+            "source.querySeed":1,
+            "stats_snapshots":1
+        }
+    )
     for d in cur:
         yield d
 
@@ -194,7 +357,7 @@ def read_from_mongo_unprocessed(uri:str, db_name:str, src_coll:str, processed_co
     db = client[db_name]
     q = query or {}
     if "tracking.status" not in q:
-        q["tracking.status"] = "complete"
+        q["tracking.status"] = {"$in": ["complete", "tracking"]}
     pipeline = [
         {"$match": q},
         {"$addFields": {"_id_str": {"$toString": "$_id"}}},
@@ -208,7 +371,15 @@ def read_from_mongo_unprocessed(uri:str, db_name:str, src_coll:str, processed_co
         {"$project": {
             "_id": 1,
             "snippet.publishedAt": 1,
+            "snippet.categoryId":1,
+            "snippet.durationISO":1,
+            "snippet.durationSec":1,
+            "snippet.lengthBucket":1,
             "tracking.status": 1,
+            "source.regionCode":1,
+            "source.region":1,
+            "source.query":1,
+            "source.querySeed":1,
             "stats_snapshots": 1
         }},
     ]
@@ -236,8 +407,8 @@ def read_from_json(path:str):
             elif isinstance(data,dict):
                 yield data
 
-def upsert_to_mongo(uri:str, db_name:str, coll_name:str, rows:List[Dict[str,Any]], key:str="video_id"):
-    if MongoClient is None or UpdateOne is None:
+def upsert_to_mongo(uri:str, db_name:str, coll_name:str, rows:List[Dict[str,Any]], key:str="video_id", use_replace: bool = False):
+    if MongoClient is None or (UpdateOne is None and ReplaceOne is None):
         raise RuntimeError("pymongo is required for --to-mongo")
     client = MongoClient(uri)
     db = client[db_name]
@@ -246,14 +417,23 @@ def upsert_to_mongo(uri:str, db_name:str, coll_name:str, rows:List[Dict[str,Any]
         coll.create_index(key, unique=True)
     except Exception:
         pass
+
     ops = []
     for r in rows:
         if key not in r:
             continue
-        ops.append(UpdateOne({key: r[key]}, {"$set": r}, upsert=True))
+        if use_replace and ReplaceOne is not None:
+            # Ghi đè toàn bộ document theo video_id (upsert)
+            ops.append(ReplaceOne({key: r[key]}, r, upsert=True))
+        else:
+            # Hành vi cũ: chỉ $set các field có trong payload
+            ops.append(UpdateOne({key: r[key]}, {"$set": r}, upsert=True))
+
     if ops:
         res = coll.bulk_write(ops, ordered=False)
-        print(f" ↳ {coll_name}: upserted={res.upserted_count}, modified={res.modified_count}")
+        up = getattr(res, "upserted_count", 0)
+        mod = getattr(res, "modified_count", 0)
+        print(f" ↳ {coll_name}: upserted={up}, modified={mod}, strategy={'replace' if use_replace else 'set'}")
     else:
         print(f" ↳ {coll_name}: nothing to upsert")
 
@@ -287,8 +467,10 @@ def main():
     ap.add_argument("--processed-source-coll", default=None, help="Collection to check for already processed rows. Defaults to --out-coll-processed")
     # NEW: output directory selector (CLI > env > parent-of-script)
     ap.add_argument("--out-dir", default=None, help="Directory to write output JSONs. Default: project root (parent of this script). Can also be set via env OUTPUT_DIR")
+    ap.add_argument("--refresh-existing", action="store_true", help="Replace existing documents (by video_id) instead of $set updating.")
 
     args=ap.parse_args()
+
 
     # === Auto load .env ===
     env_path = Path(__file__).resolve().parents[1] / ".env"
@@ -348,6 +530,17 @@ def main():
     p_out_overview  = (out_dir / "dashboard_overview.json").resolve()
 
     # Decide data source
+    # Decide data source
+    # --- Normalize query: default include both complete & tracking ---
+    DEFAULT_STATUS_FILTER = {"$in": ["complete", "tracking"]}
+    if query_dict is None:
+        query_dict = {}
+    if "tracking.status" not in query_dict:
+        query_dict["tracking.status"] = DEFAULT_STATUS_FILTER
+
+    # Log the normalized query (helps you verify)
+    print(f"🔧 Normalized query: {json.dumps(query_dict, ensure_ascii=False)}")
+
     if args.mongo_uri:
         if skip_processed:
             docs = read_from_mongo_unprocessed(
@@ -356,12 +549,11 @@ def main():
                 query=query_dict
             )
         else:
-            # fallback: plain find (you can still pass --query)
-            if query_dict is None:
-                query_dict = {"tracking.status": "complete"}
+            # plain find with the normalized query_dict (includes tracking by default)
             docs = read_from_mongo(args.mongo_uri, args.db, args.collection, query=query_dict)
     else:
         docs = read_from_json(args.input_json)
+
 
     processed=[]
     for i,d in enumerate(docs,1):
@@ -398,11 +590,12 @@ def main():
             print("⚠️ Skipping Mongo upsert: could not detect DB name from URI. Provide --db explicitly.", file=sys.stderr)
         else:
             print("⏫ Upserting outputs into Mongo...")
-            upsert_to_mongo(args.mongo_uri, args.db, args.out_coll_processed, processed, key="video_id")
-            upsert_to_mongo(args.mongo_uri, args.db, args.out_coll_summary, summary, key="video_id")
+            use_replace = bool(getattr(args, "refresh_existing", False))
+            upsert_to_mongo(args.mongo_uri, args.db, args.out_coll_processed, processed, key="video_id", use_replace=use_replace)
+            upsert_to_mongo(args.mongo_uri, args.db, args.out_coll_summary,  summary,   key="video_id", use_replace=use_replace)
             print("✅ Done upserting to Mongo.")
 
-    # ---- NEW: create dashboard_overview.json with counts ----
+    # ---- dashboard_overview.json with counts ----
     try:
         overview = {
             "total_videos": None,
@@ -422,7 +615,6 @@ def main():
                 "pending_videos": pending
             })
         else:
-            # Fallback when using JSON input: infer processed from current run
             overview.update({
                 "total_videos": None,
                 "processed_videos": len(processed),
