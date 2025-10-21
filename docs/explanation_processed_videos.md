@@ -110,4 +110,4 @@ Each horizon contains detailed data and tracking coverage info.
 
 ---
 
-**Last updated:** 2025-10-17
+📅 **Last Updated:** **Oct 20 2025**

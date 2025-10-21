@@ -33,3 +33,5 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Unified logging across discover/track scripts.
 - Updated documentation and file structure in README.
 - Added random region/query weighting system for discovery.
+
+📅 **Last Updated:** **Oct 20 2025**

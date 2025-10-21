@@ -10,6 +10,15 @@
 
 ---
 
+## 🆕 What's New in v6
+- Added support for `--out-dir` and environment variable `OUTPUT_DIR`
+- Writes outputs (`processed_videos.json`, `dashboard_summary.json`, `dashboard_overview.json`) to project root or custom directory
+- New file: `dashboard_overview.json` with global counts
+- Improved skip logic for already processed videos (`read_from_mongo_unprocessed`)
+- More verbose console logs with query filters and pipeline info
+
+---
+
 ## ⚙️ Requirements
 ```bash
 pip install pymongo python-dotenv
@@ -37,6 +46,7 @@ MONGO_URI=mongodb://localhost:27017/ytscan
 | `--out-coll-summary` | MongoDB collection for dashboard summary |
 | `--skip-processed` | Skip already processed videos (default `true`) |
 | `--processed-source-coll` | Override source used for duplicate checking |
+| `--out-dir` | Custom output directory (default: project root, or set via `OUTPUT_DIR`) |
 
 ---
 
@@ -86,6 +96,7 @@ Contains one entry per video with full details by time horizon.
   }
 }
 ```
+> **Note:** `coverage_ratio` shows how complete the polling data was up to each time horizon (0.0–1.0). Example: `0.80` means 80% of expected snapshots were captured.
 
 ### **2️⃣ dashboard_summary.json**
 Compact view for analytics tools like Power BI or Grafana.
@@ -117,11 +128,10 @@ Provides global counts for quick dashboard progress tracking.
 ```
 
 **Logic:**
-- `total_videos` = total count from `videos` collection
-- `processed_videos` = count from `processed_videos` collection
-- `pending_videos` = difference between total and processed
-
-If using `--input-json`, only `processed_videos` is filled.
+- `total_videos` = total count from `videos` collection  
+- `processed_videos` = count from `processed_videos` collection  
+- `pending_videos` = difference between total and processed  
+- If using `--input-json`, only `processed_videos` is filled.
 
 ---
 
@@ -134,6 +144,14 @@ To include all:
 ```bash
 --skip-processed=false
 ```
+
+---
+
+## ⚠️ Error Handling
+- If MongoDB is not reachable, script still saves local JSON outputs.
+- Missing `.env` or `--mongo-uri` → prints error and exits (code 2).
+- Invalid JSON in `--query` → prints error and exits (code 4).
+- Upsert failures are caught safely (files still written).
 
 ---
 
@@ -160,5 +178,4 @@ To include all:
 
 ---
 
-## 🪪 Author
-**Anh Quan Bui — YouTube Virality Project (Saskatchewan Polytechnic)**
+📅 **Last Updated:** **Oct 20 2025**

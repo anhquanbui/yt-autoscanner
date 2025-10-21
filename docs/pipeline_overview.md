@@ -208,4 +208,4 @@ A single video document in `videos` typically looks like:
 
 ---
 
-**Last updated:** 2025-10-17
+📅 **Last Updated:** **Oct 17 2025**
