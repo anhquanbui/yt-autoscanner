@@ -37,6 +37,7 @@ This README covers local development, environment config, the discover worker (v
 | [`pipeline_overview.md`](docs/pipeline_overview.md) | Describes the full YouTube data pipeline — from discovery and tracking to post-processing and dashboard integration |
 | [`process_data_v6_usage.md`](docs/process_data_v6_usage.md) | Usage guide for `process_data_v6.py`, including CLI options, workflow, and output files |
 | [`explanation_processed_videos.md`](docs/explanation_processed_videos.md) | Explains the structure, metrics, and interpretation of `processed_videos.json` entries |
+| [`Autorun_Scripts_Guide.md`](docs/Autorun_Scripts_Guide.md) | Describes how automated scripts manage discovery, tracking, and data processing tasks |
 
 ---
 
