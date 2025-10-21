@@ -29,14 +29,14 @@ This README covers local development, environment config, the discover worker (v
 
 ---
 
-## 📘 Docs Overview
+## 📁 Documentation Files
 
 | File | Description |
 |------|--------------|
-| [`mongo_collections_overview.md`](docs/mongo_collections_overview.md) | Explains all MongoDB collections and their key fields |
-| [`pipeline_overview.md`](docs/pipeline_overview.md) | Describes end-to-end ingestion → tracking → processing pipeline |
-| [`process_data_readme.md`](docs/process_data_readme.md) | Detailed documentation for `process_data.py` usage and logic |
-| [`processed_videos_explanation.md`](docs/processed_videos_explanation.md) | Explains structure and meaning of `processed_videos.json` |
+| [`ytscan_collections_overview.md`](docs/ytscan_collections_overview.md) | Explains all MongoDB collections (`videos`, `processed_videos`, `dashboard_summary`, `channels`) and their relationships |
+| [`pipeline_overview.md`](docs/pipeline_overview.md) | Describes the full YouTube data pipeline — from discovery and tracking to post-processing and dashboard integration |
+| [`process_data_v6_usage.md`](docs/process_data_v6_usage.md) | Usage guide for `process_data_v6.py`, including CLI options, workflow, and output files |
+| [`explanation_processed_videos.md`](docs/explanation_processed_videos.md) | Explains the structure, metrics, and interpretation of `processed_videos.json` entries |
 
 ---
 
@@ -209,42 +209,12 @@ python worker/track_once.py
 
 ---
 
-### ⚙️ Environment Variables (.env)
-
-Ensure a `.env` file exists in the project root:
-
-```env
-# === MongoDB ===
-MONGO_URI=mongodb://localhost:27017
-DB_NAME=yt_autoscanner
-
-# === YouTube API ===
-YT_API_KEY=your_youtube_api_key_here
-```
-
----
-
 ## Environment (`.env`)
 
 ```
 # --- Required ---
 YT_API_KEY=YOUR_YOUTUBE_API_KEY
 MONGO_URI=mongodb://localhost:27017/ytscan
-
-# --- Common ---
-YT_REGION=US
-YT_SINCE_MODE=minutes
-YT_SINCE_MINUTES=20
-
-# --- Random mode ---
-YT_RANDOM_MODE=1
-YT_RANDOM_REGION_POOL=US,GB,JP,VN,CA,SG,PH,IN,AU
-YT_RANDOM_QUERY_POOL=live:5,news:3,gaming:4,highlights:4,music:3,trailer:3,shorts:3,breaking:2,review:2,concert:2,update:2
-
-# --- Quota safety ---
-YT_MAX_PAGES=2
-DISCOVER_INTERVAL_SECONDS=1800   # 30min
-TRACK_INTERVAL_SECONDS=30        # 30s
 ```
 
 ---
