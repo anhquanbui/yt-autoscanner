@@ -48,7 +48,7 @@ This README covers local development, environment config, the discover worker (v
 - **.gitignore** — Now excludes `.bak` backup files.
 
 ## What's new (Oct 17 2025)
-- **Process Data Script (v1.0)** — Automates inserting JSON into MongoDB.
+- **Process Data Script (v7.0)** — Automates inserting JSON into MongoDB.
 - **Discover Worker (v4.2)** — Adds duration enrichment and random region/query weighting.
 - **Track Worker (v3.0)** — Tracks video metrics at multiple milestones (up to 24h).
 - **Unified Runner (v5)** — Real-time logs and quota protection.
@@ -349,4 +349,4 @@ Useful queries:
 ---
 
 
-📅 **Last Updated:** **Oct 20 2025**
+📅 **Last Updated:** **Oct 21 2025**
