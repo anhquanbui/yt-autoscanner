@@ -11,21 +11,23 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 from pathlib import Path
 
+# Optional pymongo imports
 try:
     from pymongo import MongoClient, UpdateOne
 except Exception:
     MongoClient = None  # optional
-    UpdateOne = None
+    UpdateOne = None    # optional
 
-# optional dotenv loader
+# Optional dotenv loader
 try:
     from dotenv import load_dotenv
 except Exception:
-    def load_dotenv(dotenv_path=None): ...
+    def load_dotenv(dotenv_path=None):
+        ...
 
 def default_plan_minutes() -> List[int]:
     plan: List[int] = []
-    plan += list(range(5,  120 + 1, 5))    # 0–2h: every 5 min
+    plan += list(range(5, 120 + 1, 5))     # 0–2h: every 5 min
     plan += list(range(135, 360 + 1, 15))  # 2–6h: every 15 min
     plan += list(range(390, 720 + 1, 30))  # 6–12h: every 30 min
     plan += list(range(780, 1440 + 1, 60)) # 12–24h: every 60 min
@@ -182,11 +184,9 @@ def read_from_mongo(uri:str,db_name:str,coll:str, query:dict|None=None):
     for d in cur:
         yield d
 
-def read_from_mongo_unprocessed(uri:str, db_name:str, src_coll:str,
-                                processed_coll:str, query:dict|None=None):
-    """Stream only NOT-YET-PROCESSED docs.
-    Join: stringified source _id -> processed.video_id.
-    Defaults to tracking.status == "complete" if not specified.
+def read_from_mongo_unprocessed(uri:str, db_name:str, src_coll:str, processed_coll:str, query:dict|None=None):
+    """Stream only NOT-YET-PROCESSED docs. Join: stringified source _id -> processed.video_id.
+       Defaults to tracking.status == "complete" if not specified.
     """
     if MongoClient is None:
         raise RuntimeError("pymongo not installed")
@@ -195,7 +195,6 @@ def read_from_mongo_unprocessed(uri:str, db_name:str, src_coll:str,
     q = query or {}
     if "tracking.status" not in q:
         q["tracking.status"] = "complete"
-
     pipeline = [
         {"$match": q},
         {"$addFields": {"_id_str": {"$toString": "$_id"}}},
@@ -232,10 +231,10 @@ def read_from_json(path:str):
     else:
         with open(path,"r",encoding="utf-8") as fh:
             data=json.load(fh)
-        if isinstance(data,list):
-            yield from data
-        elif isinstance(data,dict):
-            yield data
+            if isinstance(data,list):
+                yield from data
+            elif isinstance(data,dict):
+                yield data
 
 def upsert_to_mongo(uri:str, db_name:str, coll_name:str, rows:List[Dict[str,Any]], key:str="video_id"):
     if MongoClient is None or UpdateOne is None:
@@ -254,9 +253,9 @@ def upsert_to_mongo(uri:str, db_name:str, coll_name:str, rows:List[Dict[str,Any]
         ops.append(UpdateOne({key: r[key]}, {"$set": r}, upsert=True))
     if ops:
         res = coll.bulk_write(ops, ordered=False)
-        print(f"   ↳ {coll_name}: upserted={res.upserted_count}, modified={res.modified_count}")
+        print(f" ↳ {coll_name}: upserted={res.upserted_count}, modified={res.modified_count}")
     else:
-        print(f"   ↳ {coll_name}: nothing to upsert")
+        print(f" ↳ {coll_name}: nothing to upsert")
 
 def detect_db_from_uri(uri:str)->Optional[str]:
     tail = uri.split("/")[-1]
@@ -284,10 +283,11 @@ def main():
     ap.add_argument("--query", help="MongoDB query as JSON string, e.g. '{\"tracking.status\":\"complete\"}'")
     ap.add_argument("--out-coll-processed", default="processed_videos", help="Collection for processed output")
     ap.add_argument("--out-coll-summary", default="dashboard_summary", help="Collection for dashboard summary")
-    ap.add_argument("--skip-processed", default="true",
-                    help="Skip documents already present in processed collection (true/false, default: true)" )
-    ap.add_argument("--processed-source-coll", default=None,
-                    help="Collection to check for already processed rows. Defaults to --out-coll-processed")
+    ap.add_argument("--skip-processed", default="true", help="Skip documents already present in processed collection (true/false, default: true)")
+    ap.add_argument("--processed-source-coll", default=None, help="Collection to check for already processed rows. Defaults to --out-coll-processed")
+    # NEW: output directory selector (CLI > env > parent-of-script)
+    ap.add_argument("--out-dir", default=None, help="Directory to write output JSONs. Default: project root (parent of this script). Can also be set via env OUTPUT_DIR")
+
     args=ap.parse_args()
 
     # === Auto load .env ===
@@ -300,11 +300,13 @@ def main():
     if not args.mongo_uri and os.getenv("MONGO_URI"):
         args.mongo_uri=os.getenv("MONGO_URI")
         print(f"✅ Using Mongo URI from .env: {args.mongo_uri}")
+
     if not args.db and args.mongo_uri:
         guess = detect_db_from_uri(args.mongo_uri)
         if guess:
             args.db=guess
             print(f"✅ Auto-detected DB: {args.db}")
+
     if not args.collection:
         args.collection="videos"
 
@@ -327,6 +329,23 @@ def main():
         except Exception as e:
             print(f"ERROR: --query must be valid JSON. {e}", file=sys.stderr)
             sys.exit(4)
+
+    # === Resolve out directory ===
+    # Priority: CLI --out-dir > env OUTPUT_DIR > parent of this script
+    default_out_dir = Path(__file__).resolve().parents[1]  # project root if this file is in worker/
+    env_out_dir = os.getenv("OUTPUT_DIR")
+    if args.out_dir:
+        out_dir = Path(args.out_dir).expanduser().resolve()
+    elif env_out_dir:
+        out_dir = Path(env_out_dir).expanduser().resolve()
+    else:
+        out_dir = default_out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Precompute full output paths
+    p_out_processed = (out_dir / args.out_processed).resolve()
+    p_out_summary   = (out_dir / args.out_summary).resolve()
+    p_out_overview  = (out_dir / "dashboard_overview.json").resolve()
 
     # Decide data source
     if args.mongo_uri:
@@ -353,13 +372,16 @@ def main():
         except Exception as e:
             print(f"Skip doc due to error: {e}",file=sys.stderr)
 
-    with open(args.out_processed,"w",encoding="utf-8") as f:
+    with open(p_out_processed,"w",encoding="utf-8") as f:
         json.dump(processed,f,ensure_ascii=False,indent=2)
+
     summary=build_dashboard_summary(processed)
-    with open(args.out_summary,"w",encoding="utf-8") as f:
+
+    with open(p_out_summary,"w",encoding="utf-8") as f:
         json.dump(summary,f,ensure_ascii=False,indent=2)
-    print(f"\n✅ Wrote {args.out_processed} ({len(processed)} rows)")
-    print(f"✅ Wrote {args.out_summary} ({len(summary)} rows)")
+
+    print(f"\n✅ Wrote {p_out_processed} ({len(processed)} rows)")
+    print(f"✅ Wrote {p_out_summary} ({len(summary)} rows)")
 
     # Optional: upsert outputs back to Mongo (default ON)
     do_push = True
@@ -371,9 +393,9 @@ def main():
 
     if do_push:
         if not args.mongo_uri:
-            print("⚠️  Skipping Mongo upsert: no MONGO_URI provided (use .env or --mongo-uri).", file=sys.stderr)
+            print("⚠️ Skipping Mongo upsert: no MONGO_URI provided (use .env or --mongo-uri).", file=sys.stderr)
         elif not args.db:
-            print("⚠️  Skipping Mongo upsert: could not detect DB name from URI. Provide --db explicitly.", file=sys.stderr)
+            print("⚠️ Skipping Mongo upsert: could not detect DB name from URI. Provide --db explicitly.", file=sys.stderr)
         else:
             print("⏫ Upserting outputs into Mongo...")
             upsert_to_mongo(args.mongo_uri, args.db, args.out_coll_processed, processed, key="video_id")
@@ -406,12 +428,13 @@ def main():
                 "processed_videos": len(processed),
                 "pending_videos": None
             })
-        with open("dashboard_overview.json", "w", encoding="utf-8") as f:
+
+        with open(p_out_overview, "w", encoding="utf-8") as f:
             json.dump(overview, f, ensure_ascii=False, indent=2)
-        print("📊 Dashboard overview saved → dashboard_overview.json")
+        print(f"📊 Dashboard overview saved → {p_out_overview}")
         print(json.dumps(overview, indent=2))
     except Exception as e:
-        print(f"⚠️  Failed to write dashboard_overview.json: {e}", file=sys.stderr)
+        print(f"⚠️ Failed to write dashboard_overview.json: {e}", file=sys.stderr)
 
 if __name__=="__main__":
     main()
