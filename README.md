@@ -147,7 +147,7 @@ pip install -r api/requirements.txt
 # Worker (discover_once.py, track_once.py)
 pip install -r worker/requirements.txt
 
-# Dashboard (Streamlit UI)
+# Dashboard (Streamlit UI) - not yet develope
 pip install -r dashboard/requirements.txt
 ```
 
