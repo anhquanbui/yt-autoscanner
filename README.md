@@ -163,15 +163,52 @@ pip install -r dev-requirements.txt
 
 ---
 
-### 3️⃣ MongoDB Setup
+### 🧩 MongoDB Setup (Docker or Compass)
+
+You can run MongoDB either via **Docker** or locally with **MongoDB Compass**. If you are not familiar with mongo, please see full guide below.
+
+👉 **View full guide → [mongodb_setup_for_beginners.md](mongodb_setup_for_beginners.md)**
+
+#### Option A — Run MongoDB with Docker (reccomend for VPS)
 
 ```powershell
-# Run MongoDB in Docker
+# Start MongoDB in Docker
 docker run -d --name mongo -p 27017:27017 mongo:7
 
-# (Optional) create indexes if you have a helper script
-python tools/make_indexes.py
+# (Optional) create indexes using helper script
+python tools/make_indexes_v2.py
 ```
+
+> 💡 **Tip:** Safe to run the script multiple times — existing indexes will be skipped automatically.
+
+#### Option B — Run MongoDB locally (Compass)
+
+1. **Start MongoDB service**
+   - On Windows: open *services.msc* → start *MongoDB Server*  
+   - On macOS/Linux:
+     ```bash
+     brew services start mongodb-community
+     ```
+     or
+     ```bash
+     sudo systemctl start mongod
+     ```
+
+2. **Connect via Compass**
+   - Connection string:  
+     ```
+     mongodb://localhost:27017
+     ```
+   - Default database: `ytscan`
+
+3. **Run the index setup**
+   ```powershell
+   python tools/make_indexes_v2.py
+   ```
+
+> ✅ **Check your indexes:**  
+> In MongoDB Compass → open your collection → go to the **Indexes** tab.  
+> You should see entries like `tracking.status_1_tracking.next_poll_after_1` or `snippet.publishedAt_-1`.
 
 ---
 
@@ -349,4 +386,4 @@ Useful queries:
 ---
 
 
-📅 **Last Updated:** **Oct 21 2025**
+📅 **Last Updated:** **Oct 22 2025**
