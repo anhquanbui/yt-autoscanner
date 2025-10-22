@@ -2,6 +2,34 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
+## [Oct 22 2025]
+### 🚀 Added
+- Introduced **`make_indexes_v2.py`** with **multi-collection support** (`videos`, `channels`, `processed`)
+- Added CLI flags:
+  - `--show-only` — preview actions without writing to DB  
+  - `--drop-old` — safely remove indexes not defined in the standard map  
+  - `--collections` — restrict operations to specific collections
+- Implemented **duplicate index detection** (skips existing indexes automatically)
+- Implemented **background index creation** (non-blocking operations)
+- Added **logging system** (console + file `index_maintenance.log`)
+- Added **index cleanup mechanism** for unused or outdated indexes
+- New **index map definitions** for:
+  - `videos`: tracking, publishedAt, region, channelId, lengthBucket, categoryId  
+  - `channels`: handle, last_checked_at  
+  - `processed`: video_id, status, snapshot_time
+
+### 🧠 Improved
+- Better modular code structure with helper functions:
+  - `create_or_verify_indexes()`
+  - `drop_unused_indexes()`
+- Human-readable console output (with emojis and status indicators)
+- Safe re-runs (idempotent design — can be executed multiple times)
+
+### 🧾 Documentation
+- Added `make_indexes_v2.md` — full technical documentation and CLI guide.
+- Added `CHANGELOG.md` (this file) for version tracking and maintenance logs.
+
+---
 
 ## [Oct 21 2025]
 ### Added
