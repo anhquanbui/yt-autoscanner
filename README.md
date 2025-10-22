@@ -154,7 +154,7 @@ pip install -r dashboard/requirements.txt
 #### 🚀 Option B — Full development setup (everything)
 
 ```powershell
-pip install -r requirements-dev.txt
+pip install -r dev-requirements.txt
 ```
 
 > 💡 **Tip:**  
