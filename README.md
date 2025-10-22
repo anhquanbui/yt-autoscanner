@@ -38,8 +38,13 @@ This README covers local development, environment config, the discover worker (v
 | [`process_data_v6_usage.md`](docs/process_data_v6_usage.md) | Usage guide for `process_data_v6.py`, including CLI options, workflow, and output files |
 | [`explanation_processed_videos.md`](docs/explanation_processed_videos.md) | Explains the structure, metrics, and interpretation of `processed_videos.json` entries |
 | [`Autorun_Scripts_Guide.md`](docs/Autorun_Scripts_Guide.md) | Describes how automated scripts manage discovery, tracking, and data processing tasks |
+| [`make_indexes_v2.md`](docs/make_indexes_v2.md) | Documents index creation for key MongoDB collections, including performance tuning and index verification commands |
+| [`mongodb_setup_for_beginners.md`](docs/mongodb_setup_for_beginners.md) | Step-by-step guide to installing, configuring, and connecting MongoDB for use with the YT-Autoscanner project |
 
 ---
+
+## What's new (Oct 22 2025)
+- **make_indexes_v2.py** — Enhanced MongoDB index management tool
 
 ## What's new (Oct 20 2025)
 - **Discover Worker v4.3** — Added automatic filtering to skip live and upcoming videos.
@@ -68,10 +73,12 @@ YT-AUTOSCANNER/
 │
 ├─ docs/                          # Internal documentation & references
 │   ├─ Autorun_Scripts_Guide.md
-│   ├─ mongo_collections_overview.md
+│   ├─ explanation_processed_videos.md
+│   ├─ make_indexes_v2.md
+│   ├─ mongodb_setup_for_beginners.md
 │   ├─ pipeline_overview.md
-│   ├─ process_data_readme.md
-│   └─ processed_videos_explanation.md
+│   ├─ process_data_v6_usage.md
+│   └─ ytscan_collections_overview.md
 │
 ├─ logs/                          # Log output from workers / API
 │
@@ -91,14 +98,13 @@ YT-AUTOSCANNER/
 │
 ├─ .env                           # Environment variables (Mongo URI, API key, etc.)
 ├─ .gitignore                     # Ignore venv, logs, cache files
-├─ requirements-dev.txt            # Full dev setup (worker + API + dashboard)
+├─ requirements-dev.txt           # Full dev setup (worker + API + dashboard)
 ├─ README.md                      # Documentation and setup instructions
 ├─ CHANGELOG.md                   # Version changes and release notes
 ├─ run_both_local.ps1             # Run discover + track together (PowerShell)
 ├─ run_track_one_loop_30s.ps1     # Loop runner for track_once.py (demo/test)
 ├─ auto-track.ps1                 # Auto-tracking shortcut script
 └─ seed.py                        # Seed data helper or test initialization
-
 ```
 
 ---
@@ -151,7 +157,7 @@ pip install -r worker/requirements.txt
 pip install -r dashboard/requirements.txt
 ```
 
-#### 🚀 Option B — Full development setup (everything)
+#### 🚀 Option B — Full development setup (everything) (recommend for local with VS code)
 
 ```powershell
 pip install -r dev-requirements.txt
@@ -180,6 +186,8 @@ python tools/make_indexes_v2.py
 ```
 
 > 💡 **Tip:** Safe to run the script multiple times — existing indexes will be skipped automatically.
+
+👉 **Explanation indexes → [make_indexes_v2.md](make_indexes_v2.md)**
 
 #### Option B — Run MongoDB locally (Compass)
 
@@ -242,7 +250,14 @@ python worker/discover_once.py
 python worker/track_once.py
 
 # Optional: run both in a loop (PowerShell helper script)
+# If blocked once:
+#   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\run_both_local.ps1
+
+# Optional: run track_once.py every 30 seconds
+# If blocked once:
+#   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\run_track_one_loop_30s.ps1
 ```
 
 ---
