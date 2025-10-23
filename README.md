@@ -400,5 +400,10 @@ Useful queries:
 
 ---
 
+## Compliance Notice
+This repository contains code developed under the YouTube Researcher Program authorization. No YouTube Data API data is included in this repository.  
 
-📅 **Last Updated:** **Oct 22 2025**
+All data used during experimentation remains private and complies with the YouTube Researcher Program policies.
+
+
+📅 **Last Updated:** **Oct 23 2025**
