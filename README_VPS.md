@@ -23,7 +23,7 @@ yt-autoscanner/
 │   ├── auto_discover.sh         # Loop-discovery runner
 │   ├── auto_track.sh            # Loop-tracking runner
 │   ├── make_indexes.py          # MongoDB indexes
-│   ├── backfill_channels_v2.py
+│   ├── backfill_channels.py
 │   ├── backfill_missing_fields.py
 │   └── mongo_backup.sh          # Scheduled DB backups
 │
@@ -39,7 +39,6 @@ yt-autoscanner/
 ├── .gitignore
 ├── CHANGELOG.md                 # Feature + version history
 ├── run_discover_once.sh         # Manual one-shot discover
-└── run_track_once_loop.sh       # Manual loop tracker
 ```
 
 ---
@@ -68,15 +67,15 @@ Note: for authentication, please change MONGO_URI connection string
 
 | Component | Method | Status Cmd |
 |----------|--------|------------|
-| Discover Worker | systemd | `systemctl status yt-discover` |
-| Track Worker | systemd | `systemctl status yt-track` |
+| Discover Worker | systemd | `systemctl status yt-auto-discover` |
+| Track Worker | systemd | `systemctl status yt-auto-track` |
 | Backups | cronjob | `crontab -l` |
 | API (FastAPI + Uvicorn) | systemd | `systemctl status yt-api` |
 
 Restart services:
 
 ```
-sudo systemctl restart yt-discover yt-track yt-api
+sudo systemctl restart yt-auto-discover yt-auto-track
 ```
 
 Note: please put away unavailable service
@@ -106,7 +105,7 @@ python tools/make_indexes.py
 |--------|----------|---------|
 | `discover_once.py` | 5 min | New upload detection |
 | `track_once.py` | 15 sec | 1h→24h early-signal tracking |
-| `process_data.py` | 6 hours | BI metric refresh |
+| `process_data.py` | 6 hours | BI metric refresh | (not deployed yet)
 
 ---
 
@@ -114,9 +113,8 @@ python tools/make_indexes.py
 
 ### Worker logs
 ```
-journalctl -u yt-discover -f
-journalctl -u yt-track -f
-journalctl -u yt-api -f
+journalctl -u yt-auto-discover -f
+journalctl -u yt-auto-track -f
 ```
 
 ### Check running processes
