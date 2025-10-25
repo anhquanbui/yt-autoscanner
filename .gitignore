@@ -18,11 +18,20 @@ __pycache__/
 # Virtual environment
 # =========================
 .env
+.env.*
 venv/
 .venv/
 
 # =========================
-# Docker volumes / data
+# Dependency / Package Cache
+# =========================
+pip-wheel-metadata/
+*.whl
+*.egg-info/
+.eggs/
+
+# =========================
+# Docker / Containers
 # =========================
 mongo_data/
 docker_data/
@@ -30,20 +39,43 @@ docker_data/
 *.sqlite
 
 # =========================
-# System / temporary files/folers
+# MongoDB dump folders
+# =========================
+mongo_backups/
+*.bson
+*.metadata.json
+
+# =========================
+# System / temporary files/folders
 # =========================
 .DS_Store
 Thumbs.db
 logs/*
 !logs/.gitkeep
+tmp/
+temp/
 
 # =========================
 # Ignore processed data exports
 # =========================
 *.json
 !package.json
+!*.schema.json  # allow schema version control
 
 # =========================
-# Ignore backup files
+# Credentials / Secrets
+# =========================
+*.pem
+*.key
+config/*.secret
+
+# =========================
+# Bash script cache
 # =========================
 *.bak
+*.swp
+
+# =========================
+# Cloudflare tunnel configs
+# =========================
+cloudflared/*.yaml

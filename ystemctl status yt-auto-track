@@ -1,0 +1,21 @@
+[0;1;32m●[0m yt-auto-discover.service - YT Auto Discover Loop Worker
+     Loaded: loaded (]8;;file://64gh-1.2tb/etc/systemd/system/yt-auto-discover.service/etc/systemd/system/yt-auto-discover.service]8;;; [0;1;32menabled[0m; preset: [0;1;32menabled[0m)
+     Active: [0;1;32mactive (running)[0m since Sat 2025-10-25 03:27:01 CST; 3min 42s ago
+   Main PID: 1640769 (bash)
+      Tasks: 2 (limit: 77070)
+     Memory: 608.0K (peak: 23.9M)
+        CPU: 11.521s
+     CGroup: /system.slice/yt-auto-discover.service
+             ├─[0;38;5;245m1640769 bash /home/ytscan/yt-autoscanner/tools/auto_discover.sh[0m
+             └─[0;38;5;245m1641759 sleep 30[0m
+
+Oct 25 03:30:16 64gh-1.2tb bash[1641708]: Near-now slice: 2025-10-25T09:10:15.608183+00:00..(now) | region=SG | query='haul' | random=True | duration=any | exclude_live=True
+Oct 25 03:30:16 64gh-1.2tb bash[1641708]: [page 1] filtered_live=3
+Oct 25 03:30:16 64gh-1.2tb bash[1641708]: [page 1] found=45, enriched_category=42, enriched_duration=42
+Oct 25 03:30:16 64gh-1.2tb bash[1641708]:  - aKjnuXsieH8 | 2025-10-25T09:30:00Z | len=short | cate=1 | Earrings From Meesho | #meeshoearring #earringhaul #shorts #ytshorts #meeshojewellery #haul
+Oct 25 03:30:16 64gh-1.2tb bash[1641708]:  - 9tlNsGdfhoA | 2025-10-25T09:30:05Z | len=medium | cate=26 | Wedding Special Sarees Haul For Classy &amp; Elegant Style | Thehopestory
+Oct 25 03:30:16 64gh-1.2tb bash[1641708]:  - Z35JMgvyOCk | 2025-10-25T09:29:00Z | len=short | cate=22 | Tote/shoulder bag🫶🏼 #shoulderbag #totebag #bag #purse #savana #savanahaul #haul #grwm #trend
+Oct 25 03:30:16 64gh-1.2tb bash[1641708]:  - USjTsKv9MTM | 2025-10-25T09:29:34Z | len=short | cate=27 | Pinteresty jewellery haul ✨ #shorts #shortsfeed #temufinds #jewllery #aesthetic #haulvideo #asmr #yt
+Oct 25 03:30:16 64gh-1.2tb bash[1641708]:  - 4mUv7i9dkac | 2025-10-25T09:30:06Z | len=short | cate=26 | NEW IN ZARA AUTUMN HAUL 2025🍂#zara #zarahaul #outfitideas #fashiontrends #autumnfashion #zaranewin
+Oct 25 03:30:16 64gh-1.2tb bash[1641708]: >>> DONE. pages=1, total_found=42, total_upserted=42
+Oct 25 03:30:17 64gh-1.2tb bash[1640769]: [AutoDiscover] sleeping 30s

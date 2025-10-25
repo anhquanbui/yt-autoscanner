@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional
 import requests
 from pymongo import MongoClient, UpdateOne
 from dotenv import load_dotenv
+from pathlib import Path
 
 # Ensure UTF-8 console logging (Windows PowerShell safety)
 try:
@@ -20,7 +21,35 @@ except Exception:
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 # Load .env but DO NOT override existing ENV (server/cron wins)
-load_dotenv(override=False)
+def load_project_env():
+    loaded = False
+
+    # 1) Ưu tiên .env ở root dự án (…/yt-autoscanner/.env)
+    proj_root = Path(__file__).resolve().parents[1] / ".env"
+    if proj_root.exists():
+        load_dotenv(dotenv_path=proj_root)
+        print(f"✅ Loaded .env from project root: {proj_root}")
+        loaded = True
+
+    # 2) Thử .env ở HOME (ví dụ /home/ytscan/.env)
+    home_env = Path.home() / ".env"
+    if home_env.exists():
+        load_dotenv(dotenv_path=home_env, override=True)
+        print(f"✅ Loaded .env from home: {home_env}")
+        loaded = True
+
+    # 3) Thử .env tại thư mục đang chạy (CWD)
+    cwd_env = Path(".env").resolve()
+    if cwd_env.exists():
+        load_dotenv(dotenv_path=cwd_env, override=True)
+        print(f"✅ Loaded .env from CWD: {cwd_env}")
+        loaded = True
+
+    if not loaded:
+        print("⚠️ No .env found. Using existing environment variables.")
+
+load_project_env()
+
 
 # ---- Config ----
 API_KEY   = os.getenv("YT_API_KEY")
