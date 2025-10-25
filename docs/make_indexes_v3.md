@@ -1,11 +1,11 @@
-# make_indexes_v2.py — Smart MongoDB Index Manager
+# make_indexes.py — Smart MongoDB Index Manager (version 3)
 
 **Last updated:** 2025-10-22 21:45:40
 
 ---
 
 ## 📘 Overview
-`make_indexes_v2.py` is an enhanced MongoDB index management tool designed for projects with multiple collections such as **videos**, **channels**, and **processed**.  
+`make_indexes.py` is an enhanced MongoDB index management tool designed for projects with multiple collections such as **videos**, **channels**, and **processed**.  
 It automatically creates, verifies, and (optionally) removes outdated indexes, ensuring optimal query performance across the system.
 
 ---
@@ -65,16 +65,16 @@ It automatically creates, verifies, and (optionally) removes outdated indexes, e
 
 ```bash
 # Create all standard indexes
-python make_indexes_v2.py
+python make_indexes.py
 
 # Preview actions only (no DB changes)
-python make_indexes_v2.py --show-only
+python make_indexes.py --show-only
 
 # Clean up unused indexes and rebuild required ones
-python make_indexes_v2.py --drop-old
+python make_indexes.py --drop-old
 
 # Apply only to specific collections
-python make_indexes_v2.py --collections videos,channels
+python make_indexes.py --collections videos,channels
 ```
 
 ---
@@ -115,7 +115,7 @@ You can schedule this script to run weekly using **cron** or **systemd timer** f
 Example cron entry (runs every Sunday at 3AM):
 
 ```
-0 3 * * SUN /usr/bin/python3 /path/to/make_indexes_v2.py --drop-old >> /var/log/mongo_index.log 2>&1
+0 3 * * SUN /usr/bin/python3 /path/to/make_indexes.py --drop-old >> /var/log/mongo_index.log 2>&1
 ```
 
 ---

@@ -1,7 +1,40 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+---
+## [Oct 24 2025]
+### 🚀 Improved / Updated
+- Upgraded **`make_indexes.py`** with full smart indexing workflow (version 3)
+- All indexes now follow **real workload optimization**:
+  - `_id` uses **YouTube videoId** → not need index `video_id`
+  - Query-heavy workload **compound-optimized**:  
+    `Equality → Sort → Range`
+- Performance tuning:
+  - Added **compound indexes** cho `videos`:
+    - `channelId + publishedAt` (fetch latest by channel)
+    - `regionCode + publishedAt` (region reporting)
+    - `categoryId + lengthBucket + publishedAt` (analytics)
+  - Added **partial index** (`tracking.status ∈ ["queued","tracking","retry"]`)  
+    → reduce IO, queue lookup quicker
+- Compatibility enhancement:
+  - Updated fields to match current schema:  
+    `last_snapshot_ts`, `last_updated`, `_id = videoId`
+- Index safety improvements:
+  - Avoids recreating indexes when the keys match even if the name or options differ.
+  - Optional **selective index cleanup** (accurate drop-old with signature check)
+
+### 🧰 Developer Experience
+- Automatic **index name assignment** for readability
+- Enhanced logging metadata (`index_maintenance.log`)
+- Strict index map ensures **schema-aware indexing**
+- Codebase refactor → future use easily
+
+### ✅ Supported Collections
+- `videos`: tracking, time-sort, compound analytical indexes
+- `processed`: unique per video + analytical last_snapshot
+- `channels`: lookup by handle + freshness tracking
 
 ---
+
 ## [Oct 22 2025]
 ### 🚀 Added
 - Introduced **`make_indexes_v2.py`** with **multi-collection support** (`videos`, `channels`, `processed`)

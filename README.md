@@ -38,13 +38,15 @@ This README covers local development, environment config, the discover worker (v
 | [`process_data_v6_usage.md`](docs/process_data_v6_usage.md) | Usage guide for `process_data_v6.py`, including CLI options, workflow, and output files |
 | [`explanation_processed_videos.md`](docs/explanation_processed_videos.md) | Explains the structure, metrics, and interpretation of `processed_videos.json` entries |
 | [`Autorun_Scripts_Guide.md`](docs/Autorun_Scripts_Guide.md) | Describes how automated scripts manage discovery, tracking, and data processing tasks |
-| [`make_indexes_v2.md`](docs/make_indexes_v2.md) | Documents index creation for key MongoDB collections, including performance tuning and index verification commands |
+| [`make_indexes_v3.md`](docs/make_indexes_v3.md) | Documents index creation for key MongoDB collections, including performance tuning and index verification commands |
 | [`mongodb_setup_for_beginners.md`](docs/mongodb_setup_for_beginners.md) | Step-by-step guide to installing, configuring, and connecting MongoDB for use with the YT-Autoscanner project |
 
 ---
+## What's new (Oct 24 2025)
+- **make_indexes.py** — Version 3 with sub-index
 
 ## What's new (Oct 22 2025)
-- **make_indexes_v2.py** — Enhanced MongoDB index management tool
+- **make_indexes.py** — Version 2: Enhanced MongoDB index management tool
 
 ## What's new (Oct 20 2025)
 - **Discover Worker v4.3** — Added automatic filtering to skip live and upcoming videos.
@@ -74,7 +76,7 @@ YT-AUTOSCANNER/
 ├─ docs/                          # Internal documentation & references
 │   ├─ Autorun_Scripts_Guide.md
 │   ├─ explanation_processed_videos.md
-│   ├─ make_indexes_v2.md
+│   ├─ make_indexes_v3.md
 │   ├─ mongodb_setup_for_beginners.md
 │   ├─ pipeline_overview.md
 │   ├─ process_data_v6_usage.md
@@ -83,7 +85,7 @@ YT-AUTOSCANNER/
 ├─ logs/                          # Log output from workers / API
 │
 ├─ tools/                         # Helper utilities
-│   ├─ backfill_channels_v2.py
+│   ├─ backfill_channels.py
 │   ├─ backfill_missing_fields.py
 │   └─ make_indexes.py
 │
@@ -182,12 +184,12 @@ You can run MongoDB either via **Docker** or locally with **MongoDB Compass**. I
 docker run -d --name mongo -p 27017:27017 mongo:7
 
 # (Optional) create indexes using helper script
-python tools/make_indexes_v2.py
+python tools/make_indexes.py
 ```
 
 > 💡 **Tip:** Safe to run the script multiple times — existing indexes will be skipped automatically.
 
-👉 **Explanation indexes → [make_indexes_v2.md](make_indexes_v2.md)**
+👉 **Explanation indexes → [make_indexes.md](make_indexes.md)**
 
 #### Option B — Run MongoDB locally (Compass)
 
@@ -211,7 +213,7 @@ python tools/make_indexes_v2.py
 
 3. **Run the index setup**
    ```powershell
-   python tools/make_indexes_v2.py
+   python tools/make_indexes.py
    ```
 
 > ✅ **Check your indexes:**  
@@ -406,4 +408,4 @@ This repository contains code developed under the YouTube Researcher Program aut
 All data used during experimentation remains private and complies with the YouTube Researcher Program policies.
 
 
-📅 **Last Updated:** **Oct 23 2025**
+📅 **Last Updated:** **Oct 24 2025**
