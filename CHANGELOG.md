@@ -1,5 +1,38 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+## [Oct 26 2025]
+### 🚀 Improved / Updated
+- Data footprint reduction across ingestion pipeline:
+  - Removed **`channelTitle`** and **`channelHandle`** from `discover_once` output
+  - Lightweight insert-only design maintained ✅
+- Introduced **`prune_unavailable_once.py`**:
+  - Hard-deletes **unavailable / no_publishedAt** videos instantly
+  - Optional API re-check for stronger validation
+  - Ensures data quality for early engagement modeling
+- Enhanced **`archive_completed_videos.py`**:
+  - 🔹 Partitioned cold collections → `videos_cold_YYYY_MM`
+  - 🔹 Trimming heavy fields (`thumbnails`, long description)
+  - Batch-safe UPSERT → delete workflow
+  - Keeps `videos` hot store **lean and performant**
+- Documentation improvements:
+  - Added **English technical docs** for 4 core tools:
+    - `discover_once.md`
+    - `track_once.md`
+    - `archive_completed_videos.md`
+    - `prune_unavailable_once.md`
+  - Clear operational roles and lifecycle transitions
+- Tracking lifecycle clarity:
+  - Updated behavior explanation for `track_once`
+  - Stop conditions defined for ML training integrity
+
+### ✅ Results
+- Hot dataset shrinks automatically
+- Cleaner ingestion → faster tracking
+- Long-term data still retained in cold storage
+- Team onboarding & maintenance improved significantly
+
+> These improvements strengthen the **data lifecycle**, reduce costs, and set a strong foundation for **virality prediction accuracy**.
+
 ---
 ## [Oct 24 2025]
 ### 🚀 Improved / Updated

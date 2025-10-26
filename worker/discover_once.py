@@ -1,110 +1,10 @@
-
-# worker/discover_once.py (v 4.3) — VIDEO DISCOVERY (Near-now scan with categoryId + Duration Filter)
+# worker/discover_once.py (v 4.3a) — VIDEO DISCOVERY (Near-now scan with categoryId + Duration Filter)
 # ---------------------------------------------------------------------------------
-# PURPOSE:
-#   Discover newly published YouTube videos (within a near-now window)
-#   and insert them into MongoDB for later tracking by track_once.py.
-#   It supports both deterministic time-slice (SINCE_MODE) and randomized
-#   discovery (RANDOM_MODE) with region and query pools.
-#
-#   ★ Update: Adds optional duration control (short/medium/long/any/mix) and
-#     enriches snippet with durationISO/durationSec/lengthBucket.
-#
-# ---------------------------------------------------------------------------------
-# OPERATING MODES
-#
-# 1️⃣ Random Mode (Exploratory / Weighted Sampling)
-#     Enabled when:  YT_RANDOM_MODE=1
-#
-#     Variables:
-#       - YT_RANDOM_LOOKBACK_MINUTES  : how far back to pick the random slice (default: 43200 = 30 days)
-#       - YT_RANDOM_WINDOW_MINUTES    : window length for that slice (default: 30)
-#       - YT_RANDOM_REGION_POOL       : comma-separated region list (e.g. "US,GB,JP,VN")
-#       - YT_RANDOM_QUERY_POOL        : weighted keyword list (e.g. "live:5,news:3,gaming:4,music:2")
-#
-#     Example:
-#       YT_RANDOM_MODE=1
-#       YT_RANDOM_REGION_POOL=US,GB,JP,VN
-#       YT_RANDOM_QUERY_POOL=live:5,news:3,gaming:4,music:2,trailer:1
-#
-#     Behavior:
-#       - Randomly selects a region from REGION_POOL
-#       - Randomly selects a keyword based on weighted probability
-#       - Picks a random time slice (e.g. 20–30 minutes window)
-#       - Quota use: ~101 units per page (50 results + category lookup)
-#
-# 2️⃣ Since Mode (Deterministic Near-now)
-#     Enabled when:  YT_RANDOM_MODE=0 or not set
-#
-#     Variables:
-#       - YT_SINCE_MODE        : "minutes" (default) | "lookback" | "local_midnight"
-#       - YT_SINCE_MINUTES     : how many minutes to look back (default: 20)
-#       - YT_REGION            : fixed region (default: US)
-#       - YT_QUERY             : fixed keyword (optional)
-#       - YT_LOCAL_TZ          : required only for local_midnight
-#
-#     Example:
-#       YT_SINCE_MODE=minutes
-#       YT_SINCE_MINUTES=10
-#       YT_REGION=US
-#       YT_QUERY=live
-#
-# ---------------------------------------------------------------------------------
-# QUOTA SAFETY
-#   - YT_MAX_PAGES limits the number of search pages (default: 1).
-#     Each page = 50 results (100 quota units for search + 1 for details lookup).
-#   - Recommended for scheduled runs: 1–3 pages per call.
-#
-# ---------------------------------------------------------------------------------
-# DATABASE STRUCTURE
-#   Each discovered video is inserted (upsert) into MongoDB:
-#     {
-#       _id: <videoId>,
-#       source: { query, regionCode, randomMode, filteredByCategoryId },
-#       snippet: {
-#         title, publishedAt, thumbnails, channelId, channelTitle, categoryId,
-#         durationISO, durationSec, lengthBucket
-#       },
-#       tracking: { status, discovered_at, next_poll_after, poll_count },
-#       stats_snapshots: [],
-#       ml_flags: { likely_viral, viral_confirmed, score }
-#     }
-#
-# ---------------------------------------------------------------------------------
-# EXIT CODES
-#   0  = success
-#   88 = YouTube quota exhausted (quotaExceeded / rateLimitExceeded)
-#   2  = missing API key
-#   1  = other errors
-#
-# ---------------------------------------------------------------------------------
-# RECOMMENDED ENV CONFIG (example .env)
-#
-#   YT_API_KEY=<your_youtube_api_key>
-#   MONGO_URI=mongodb://localhost:27017/ytscan
-#
-#   # --- Random mode (global weighted pool) ---
-#   YT_RANDOM_MODE=1
-#   YT_RANDOM_LOOKBACK_MINUTES=43200
-#   YT_RANDOM_WINDOW_MINUTES=30
-#   YT_RANDOM_REGION_POOL=US,GB,JP,VN,KR,IN,BR,CA,DE,FR
-#   YT_RANDOM_QUERY_POOL=live:5,news:3,gaming:4,music:3,highlights:4,shorts:2,trailer:2,stream:3,review:3,performance:2
-#
-#   # --- Duration control ---
-#   # any|short|medium|long|mix (mix randomly picks one per run using pool)
-#   YT_DURATION_MODE=any
-#   YT_DURATION_POOL="short:1,medium:2,long:2,any:0"
-#
-#   # --- Quota & interval ---
-#   YT_MAX_PAGES=1
-#   DISCOVER_INTERVAL_SECONDS=1800
-#
-# ---------------------------------------------------------------------------------
-# NOTE:
-#   - The script intentionally avoids collecting statistics to keep discovery cheap.
-#   - Detailed updates (stats, engagement, ML flags) are handled by track_once.py.
-#
-# ---------------------------------------------------------------------------------
+# CHANGELOG (v4.3a):
+#   - Remove channelTitle from snippet to reduce document size.
+#   - There is no channelHandle in this script; kept as-is (not stored).
+#   - Keep channelId in snippet for downstream linking/analytics.
+#   - All other behavior unchanged (duration/category enrichment, exclude live, etc.).
 
 from __future__ import annotations
 
@@ -165,11 +65,6 @@ EXIT_QUOTA = 88
 
 
 def parse_weighted_pool(val: str) -> Tuple[List[str], List[float]]:
-    """
-    Parse a weighted CSV string into (choices, weights).
-    - Input format: "termA:5, termB:2, term C:1"  (weight defaults to 1 if omitted)
-    - Trims whitespace; ignores empty items and zero/negative weights.
-    """
     if not val:
         return [], []
     choices: List[str] = []
@@ -195,11 +90,6 @@ def parse_weighted_pool(val: str) -> Tuple[List[str], List[float]]:
 
 
 def pick_query_for_region(region_code: str) -> Optional[str]:
-    """
-    Choose a keyword for the given region using region-specific pool if present,
-    else fall back to global pool, else None (which means 'no q' param).
-    Region-specific env name: YT_RANDOM_QUERY_POOL_<REGION>, e.g., YT_RANDOM_QUERY_POOL_US
-    """
     env_name = f'YT_RANDOM_QUERY_POOL_{region_code.upper()}'
     val = os.getenv(env_name, '').strip()
     if not val:
@@ -234,9 +124,6 @@ def bucket_from_seconds(secs: Optional[int]) -> Optional[str]:
     return 'long'
 
 def pick_duration_param() -> Optional[str]:
-    """
-    Return short|medium|long|None (None means 'any') based on env YT_DURATION_MODE/POOL.
-    """
     mode = DURATION_MODE
     if mode == 'mix':
         choices, weights = parse_weighted_pool(DURATION_POOL)
@@ -266,7 +153,6 @@ def search_page(published_after_iso: str, region_code: str, query_str: Optional[
     }
     if query_str:
         params['q'] = query_str
-    # --- NEW: pass duration filter to search ---
     if video_duration in {'short','medium','long'}:
         params['videoDuration'] = video_duration
     if page_token:
@@ -277,7 +163,6 @@ def search_page(published_after_iso: str, region_code: str, query_str: Optional[
 
 
 def videos_details(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Return {videoId: {'snippet':..., 'contentDetails':...}} to enrich categoryId + duration (1 quota per 50 IDs)."""
     out: Dict[str, Dict[str, Any]] = {}
     if not video_ids:
         return out
@@ -297,9 +182,6 @@ def videos_details(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
 
 
 def upsert_minimal(items: List[Dict[str, Any]], db, region_used: str, query_used: Optional[str]) -> int:
-    """Insert minimal video docs; tracker will enrich/track later.
-    Fix: avoid MongoDB update path conflict on 'snippet' by NOT including it in $setOnInsert.
-    """
     ops = []
     now_iso = datetime.now(timezone.utc).isoformat()
     for it in items:
@@ -307,7 +189,6 @@ def upsert_minimal(items: List[Dict[str, Any]], db, region_used: str, query_used
         sn  = it.get('snippet', {}) or {}
         if not vid or not sn:
             continue
-        # Build full doc (for insert) then separate snippet into $set to prevent path conflict.
         full_doc = {
             '_id': vid,
             'source': {
@@ -319,9 +200,9 @@ def upsert_minimal(items: List[Dict[str, Any]], db, region_used: str, query_used
                 'title': sn.get('title'),
                 'publishedAt': sn.get('publishedAt'),
                 'thumbnails': sn.get('thumbnails', {}),
-                'channelId': sn.get('channelId'),
-                'channelTitle': sn.get('channelTitle'),
-                'categoryId': sn.get('categoryId'),   # set by enrichment above
+                'channelId': sn.get('channelId'),            # keep
+                # 'channelTitle': sn.get('channelTitle'),     # removed
+                'categoryId': sn.get('categoryId'),
                 'durationISO': sn.get('durationISO'),
                 'durationSec': sn.get('durationSec'),
                 'lengthBucket': sn.get('lengthBucket'),
@@ -338,7 +219,7 @@ def upsert_minimal(items: List[Dict[str, Any]], db, region_used: str, query_used
             'ml_flags': {'likely_viral': False, 'viral_confirmed': False, 'score': 0.0},
         }
         insert_doc = full_doc.copy()
-        insert_doc.pop('snippet', None)  # <-- critical: do not duplicate 'snippet' path in $setOnInsert
+        insert_doc.pop('snippet', None)
         update_doc = {
             '$setOnInsert': insert_doc,
             '$set': {'snippet': full_doc['snippet']},
@@ -356,15 +237,13 @@ def main() -> int:
         print('Missing YT_API_KEY', file=sys.stderr)
         return 2
 
-    # region pick
     region_used = (random.choice(RANDOM_REGION_POOL) if RANDOM_PICK and RANDOM_REGION_POOL else REGION)
 
-    # query pick (region-specific weighted)
     query_used = None
     if RANDOM_PICK:
         query_used = pick_query_for_region(region_used)
     if not query_used:
-        query_used = QUERY  # may be None/empty → omit q
+        query_used = QUERY
 
     client = MongoClient(MONGO_URI)
     db = client.get_database()
@@ -389,7 +268,6 @@ def main() -> int:
             data = search_page(published_after, region_used, query_used, page_token, duration_used)
             items = data.get('items', [])
             found = len(items)
-            # --- NEW: Early filter to remove live/upcoming VOD placeholders
             filtered = 0
             if EXCLUDE_LIVE and found > 0:
                 before = len(items)
@@ -403,7 +281,6 @@ def main() -> int:
 
             total_found += len(items)
 
-            # Enrich categoryId + duration for ALL items (1 quota per 50)
             if items:
                 ids = [it.get('id', {}).get('videoId') for it in items if it.get('id', {}).get('videoId')]
                 det_map = videos_details(ids)
@@ -418,13 +295,11 @@ def main() -> int:
                     sn2 = det.get('snippet', {}) or {}
                     cd  = det.get('contentDetails', {}) or {}
 
-                    # categoryId
                     cate = sn2.get('categoryId')
                     if cate:
                         sn['categoryId'] = cate
                         enriched_cate += 1
 
-                    # --- NEW: duration enrichment
                     dur_iso = cd.get('duration')
                     secs = iso8601_to_seconds(dur_iso) if dur_iso else None
                     if dur_iso:
@@ -454,7 +329,6 @@ def main() -> int:
         return 0
 
     except requests.HTTPError as e:
-        # Detect quota exhaustion
         try:
             body = e.response.json()
         except Exception:
