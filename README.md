@@ -20,7 +20,7 @@
 # yt-autoscanner — Local Dev (API + MongoDB + YouTube Worker + Scheduler)
 
 A minimal starter to ingest **YouTube** videos into **MongoDB** and expose them via a **FastAPI** API.  
-This README covers local development, environment config, the discover worker (v4.1), the tracker, backfill utilities, and the unified PowerShell runner.
+This README covers local development, environment config, the discover worker (v4.3), the tracker, backfill utilities, and the unified PowerShell runner.
 
 > **Quick links**
 > - API (local): `http://127.0.0.1:8000/docs`
@@ -31,89 +31,96 @@ This README covers local development, environment config, the discover worker (v
 
 ## 📁 Documentation Files
 
+### 🛰️ Ingestion — Discover & Track
 | File | Description |
-|------|--------------|
-| [`ytscan_collections_overview.md`](docs/ytscan_collections_overview.md) | Explains all MongoDB collections (`videos`, `processed_videos`, `dashboard_summary`, `channels`) and their relationships |
-| [`pipeline_overview.md`](docs/pipeline_overview.md) | Describes the full YouTube data pipeline — from discovery and tracking to post-processing and dashboard integration |
-| [`process_data_v6_usage.md`](docs/process_data_v6_usage.md) | Usage guide for `process_data_v6.py`, including CLI options, workflow, and output files |
-| [`explanation_processed_videos.md`](docs/explanation_processed_videos.md) | Explains the structure, metrics, and interpretation of `processed_videos.json` entries |
-| [`Autorun_Scripts_Guide.md`](docs/Autorun_Scripts_Guide.md) | Describes how automated scripts manage discovery, tracking, and data processing tasks |
-| [`make_indexes_v3.md`](docs/make_indexes_v3.md) | Documents index creation for key MongoDB collections, including performance tuning and index verification commands |
-| [`mongodb_setup_for_beginners.md`](docs/mongodb_setup_for_beginners.md) | Step-by-step guide to installing, configuring, and connecting MongoDB for use with the YT-Autoscanner project |
+|------|-------------|
+| 📌 [discover_once.md](docs/discover_once.md) | Discovers newly published videos via region + keyword pools |
+| 📈 [track_once.md](docs/track_once.md) | Collects early engagement time‑series snapshots |
+
+### 🔄 Data Lifecycle — Maintain a Clean & Scalable Dataset
+| File | Description |
+|------|-------------|
+| 🧊 [archive_completed_videos.md](docs/archive_completed_videos.md) | Moves completed videos → cold storage (monthly partitions) |
+| 🗑️ [prune_unavailable_once.md](docs/prune_unavailable_once.md) | Removes private/deleted/no‑data videos to reduce bloat |
+
+### 🗄️ Database Schema & Performance
+| File | Description |
+|------|-------------|
+| 🧩 [ytscan_collections_overview.md](docs/ytscan_collections_overview.md) | Database schema & relations (hot + cold storage) |
+| 🚀 [make_indexes_v3.md](docs/make_indexes_v3.md) | Performance‑optimized MongoDB indexes |
+
+### ⚙️ Operations & Automation
+| File | Description |
+|------|-------------|
+| 🕒 [Autorun_Scripts_Guide.md](docs/Autorun_Scripts_Guide.md) | Automated scheduling for ingestion tasks |
+| 🔧 [mongodb_setup_for_beginners.md](docs/mongodb_setup_for_beginners.md) | Setup local MongoDB / Compass |
+
+### 🧪 Data Processing & Analytics Pipeline
+| File | Description |
+|------|-------------|
+| 🧼 [process_data_v6_usage.md](docs/process_data_v6_usage.md) | Aggregation + feature processing workflow [explanation](docs/explanation_processed_videos.md) |
+| 🗺️ [pipeline_overview.md](docs/pipeline_overview.md) | Full pipeline flow: Discover → Track → Archive/Prune → ML |
 
 ---
+
+## What's new (Oct 26 2025)
+- **discover_once.py** — Removed channelTitle + lightweight insertion
+- **track_once.py** — Clarified stop lifecycle, stronger polling logic docs
+- **archive_completed_videos.py** — Monthly partitioned cold storage
+- **prune_unavailable_once.py** — Hard delete unavailable/no-publishedAt videos
+- **Docs Update** — English documentation for 4 core tools
+
 ## What's new (Oct 24 2025)
 - **make_indexes.py** — Version 3 with sub-index
 
 ## What's new (Oct 22 2025)
-- **make_indexes.py** — Version 2: Enhanced MongoDB index management tool
-
-## What's new (Oct 20 2025)
-- **Discover Worker v4.3** — Added automatic filtering to skip live and upcoming videos.
-- **Track Worker v3.1** — Enhanced duration backfill logic for videos missing duration data.
-- **Backfill Tool v1.0** — Introduced `tools/backfill_missing_fields.py` to fill missing duration/handles independently.
-- **.gitignore** — Now excludes `.bak` backup files.
-
-## What's new (Oct 17 2025)
-- **Process Data Script (v7.0)** — Automates inserting JSON into MongoDB.
-- **Discover Worker (v4.2)** — Adds duration enrichment and random region/query weighting.
-- **Track Worker (v3.0)** — Tracks video metrics at multiple milestones (up to 24h).
-- **Unified Runner (v5)** — Real-time logs and quota protection.
-
-👉 **View full changelog → [CHANGELOG.md](CHANGELOG.md)**
-
----
+- **make_indexes.py** — Version 2: Enhanced MongoDB index management
 
 ## Project structure
-
 ```
 YT-AUTOSCANNER/
+├─ api/                         # FastAPI backend
+│   └─ main.py
 │
-├─ api/                           # FastAPI backend
-│   ├─ main.py                    # API entry point (Uvicorn server)
-│   └─ requirements.txt           # API dependencies
-│
-├─ docs/                          # Internal documentation & references
-│   ├─ Autorun_Scripts_Guide.md
-│   ├─ explanation_processed_videos.md
-│   ├─ make_indexes_v3.md
-│   ├─ mongodb_setup_for_beginners.md
+├─ docs/                        # Internal documentation (English ✅)
+│   ├─ discover_once.md
+│   ├─ track_once.md
+│   ├─ archive_completed_videos.md
+│   ├─ prune_unavailable_once.md
+│   ├─ ytscan_collections_overview.md
 │   ├─ pipeline_overview.md
 │   ├─ process_data_v6_usage.md
-│   └─ ytscan_collections_overview.md
+│   ├─ make_indexes_v3.md
+│   ├─ Autorun_Scripts_Guide.md
+│   └─ mongodb_setup_for_beginners.md
 │
-├─ logs/                          # Log output from workers / API
-│
-├─ tools/                         # Helper utilities
+├─ tools/                       # Data lifecycle & maintenance tools
+│   ├─ archive_completed_videos.py   # moves complete videos → cold
+│   ├─ prune_unavailable_once.py     # removes broken/unavailable docs
 │   ├─ backfill_channels.py
 │   ├─ backfill_missing_fields.py
-│   └─ make_indexes.py
+│   ├─ make_indexes.py
+│   └─ index_maintenance.log
 │
-├─ worker/                        # Data ingestion and tracking logic
-│   ├─ discover_once.py           # Discover new YouTube videos
-│   ├─ track_once.py              # Track video stats over time (1h→24h)
-│   ├─ scheduler.py               # Optional scheduler for periodic tasks
-│   ├─ process_data.py            # Clean & aggregate raw data
-│   └─ requirements.txt           # Worker dependencies
+├─ worker/                      # Video ingestion + tracking core
+│   ├─ discover_once.py              # Discover fresh videos
+│   ├─ track_once.py                 # Track early engagement stats
+│   ├─ scheduler.py                  # (optional) automated jobs
+│   ├─ process_data.py
+│   └─ requirements.txt
 │
-├─ venv/                          # Local Python virtual environment (ignored by Git)
-│
-├─ .env                           # Environment variables (Mongo URI, API key, etc.)
-├─ .gitignore                     # Ignore venv, logs, cache files
-├─ requirements-dev.txt           # Full dev setup (worker + API + dashboard)
-├─ README.md                      # Documentation and setup instructions
-├─ CHANGELOG.md                   # Version changes and release notes
-├─ run_both_local.ps1             # Run discover + track together (PowerShell)
-├─ run_track_one_loop_30s.ps1     # Loop runner for track_once.py (demo/test)
-├─ auto-track.ps1                 # Auto-tracking shortcut script
-└─ seed.py                        # Seed data helper or test initialization
+├─ logs/                        # Worker/API logs (rotating daily)
+├─ .env                         # Mongo + YouTube API key
+├─ CHANGELOG.md                 # Version history
+├─ README.md                    # You are here 👋
+├─ dashboard_summary.json       # Statistics for dashboard
+├─ run_both_local.ps1           # Unified worker runner
+└─ seed.py                      # Sample initializer or testing
 ```
 
 ---
 
-## API
-
-### Endpoints
+## API Endpoints
 - `GET /health`
 - `GET /videos`
 - `GET /video/{id}`
@@ -121,291 +128,93 @@ YT-AUTOSCANNER/
 - `GET /complete`
 - `GET /videos/count`
 - `GET /stats`
-- *(future)* `/channels` for enriched channel info
+
+*(future)* `/channels` — channel-level insights
 
 ---
 
-## 🧬 Local Setup
-
-### 1️⃣ Python & Virtual Environment (Windows PowerShell)
-
+## 🧬 Local Setup Guide
+### 1️⃣ Virtual Environment
 ```powershell
-# Create a new virtual environment
 python -m venv venv
-
-# If activation is blocked once:
-#   Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-
-# Activate the environment
 .\venv\Scripts\Activate.ps1
 ```
 
----
-
 ### 2️⃣ Install Dependencies
-
-You have two options depending on your workflow:
-
-#### 🧩 Option A — Install by module
-
 ```powershell
-# API (FastAPI backend)
-pip install -r api/requirements.txt
-
-# Worker (discover_once.py, track_once.py)
-pip install -r worker/requirements.txt
-
-# Dashboard (Streamlit UI) - not yet develope
-pip install -r dashboard/requirements.txt
+pip install -r requirements-dev.txt
 ```
-
-#### 🚀 Option B — Full development setup (everything) (recommend for local with VS code)
-
-```powershell
-pip install -r dev-requirements.txt
-```
-
-> 💡 **Tip:**  
-> Use **Option B** for local development when you plan to run all components (API + worker + dashboard).  
-> Use **Option A** for deploying or testing individual modules.
+> Use this for full-stack local development
 
 ---
 
-### 🧩 MongoDB Setup (Docker or Compass)
-
-You can run MongoDB either via **Docker** or locally with **MongoDB Compass**. If you are not familiar with mongo, please see full guide below.
-
-👉 **View full guide → [mongodb_setup_for_beginners.md](mongodb_setup_for_beginners.md)**
-
-#### Option A — Run MongoDB with Docker (reccomend for VPS)
-
+### 3️⃣ MongoDB Setup
+Via Docker:
 ```powershell
-# Start MongoDB in Docker
 docker run -d --name mongo -p 27017:27017 mongo:7
-
-# (Optional) create indexes using helper script
 python tools/make_indexes.py
 ```
-
-> 💡 **Tip:** Safe to run the script multiple times — existing indexes will be skipped automatically.
-
-👉 **Explanation indexes → [make_indexes.md](make_indexes.md)**
-
-#### Option B — Run MongoDB locally (Compass)
-
-1. **Start MongoDB service**
-   - On Windows: open *services.msc* → start *MongoDB Server*  
-   - On macOS/Linux:
-     ```bash
-     brew services start mongodb-community
-     ```
-     or
-     ```bash
-     sudo systemctl start mongod
-     ```
-
-2. **Connect via Compass**
-   - Connection string:  
-     ```
-     mongodb://localhost:27017
-     ```
-   - Default database: `ytscan`
-
-3. **Run the index setup**
-   ```powershell
-   python tools/make_indexes.py
-   ```
-
-> ✅ **Check your indexes:**  
-> In MongoDB Compass → open your collection → go to the **Indexes** tab.  
-> You should see entries like `tracking.status_1_tracking.next_poll_after_1` or `snippet.publishedAt_-1`.
+Via Compass — guide → `mongodb_setup_for_beginners.md`
 
 ---
 
-### 4️⃣ Run the FastAPI Backend
-
+### 4️⃣ Run API
 ```powershell
 cd api
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-# Swagger UI → http://127.0.0.1:8000/docs
+uvicorn main:app --reload
 ```
 
----
-
-### 5️⃣ Run the Streamlit Dashboard (for future development)
-
-```powershell
-cd dashboard # dashboard PATH
-streamlit run [name_of_the_file].py
-# Default URL: http://localhost:8501
-```
-
----
-
-### 6️⃣ Run Worker Scripts (Data Ingestion / Tracking)
-
-```powershell
-# Discover new YouTube videos
-python worker/discover_once.py
-
-# Track video metrics over time (1h → 24h)
-python worker/track_once.py
-
-# Optional: run both in a loop (PowerShell helper script)
-# If blocked once:
-#   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\run_both_local.ps1
-
-# Optional: run track_once.py every 30 seconds
-# If blocked once:
-#   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\run_track_one_loop_30s.ps1
-```
-
----
-
-## Environment (`.env`)
-
-```
-# --- Required ---
-YT_API_KEY=YOUR_YOUTUBE_API_KEY
-MONGO_URI=mongodb://localhost:27017/ytscan
-```
-
----
-
-## Workers
-
-### 🔹 Discover Once
+### 5️⃣ Run Workers
 ```powershell
 python worker/discover_once.py
-```
-Discovers recent videos (within last 20 minutes).  
-Saves `categoryId`, region, query, timestamp.  
-Quota usage: ~101 units per 50 videos.
-
----
-
-### 🔹 Track Once
-```powershell
 python worker/track_once.py
 ```
-Tracks stats per milestone → snapshots every few minutes up to 24h.  
-Quota: ~1 unit per 50 videos.
 
----
-
-### 🔹 Process Data
+Unified runner:
 ```powershell
-python tools/process_data.py
-```
-Processes local JSON data and automatically inserts it into MongoDB.  
-- Loads `.env` for default `MONGO_URI`.  
-- Supports manual overrides via CLI args.  
-- Pushes directly to MongoDB unless `--dry-run` specified.  
-
-Example:
-```powershell
-python tools/process_data.py --mongo-uri "mongodb://localhost:27017" --db ytscan --collection videos
-```
-
----
-
-### 🔹 Backfill Channels
-```powershell
-python tools/backfill_channels_v2.py --stale-hours 24
-```
-Refreshes missing or outdated channel stats.  
-Dry-run mode:
-```powershell
-python tools/backfill_channels_v2.py --dry-run
-```
-
----
-
-## Unified Runner (PowerShell)
-
-### Run both discover + tracker
-```powershell
-# If blocked once:
-#   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\run_both_local.ps1
 ```
-- Loads `.env` automatically  
-- Writes logs to `/logs/`  
-- Auto-sleeps between runs  
-- Stops safely on quota exhaustion
 
 ---
 
-## Logging
-- Logs are written to `logs/` with rotating daily filenames.  
-- Each run includes timestamped activity from both workers.
-
-**Tail logs live:**
-```powershell
-Get-Content .\logs\transcript-$(Get-Date -Format yyyyMMdd).log -Tail 100 -Wait
-```
-
----
-
-## Monitoring (MongoDB Compass)
-Connect to:
-```
-mongodb://localhost:27017/ytscan
-```
-Collections:
-- `videos` → discovered & tracked videos
-- `channels` → enriched metadata & stats
+## Collections
+- `videos` — Active tracking pool
+- `channels` — Channel enrichment metadata
 
 Useful queries:
-- `{ "tracking.status": "tracking" }`
-- `{ "tracking.status": "complete" }`
-- Sort by `snippet.publishedAt` or `tracking.discovered_at`
+```js
+{ "tracking.status": "tracking" }
+{ "tracking.status": "complete" }
+```
 
 ---
 
-## Next steps
-- Add ML model training for early-viral prediction using `stats_snapshots`.
-- Implement FastAPI endpoints for `/channels` data.
-- Add Docker Compose for full stack (API + MongoDB + Workers).
+## 📊 Current System Status (as of 2025-10-26)
+
+| Component | Status | Progress |
+|----------|:------:|:-------:|
+| API | ✅ Stable | 100% |
+| MongoDB Indexing | ✅ Tuned | 100% |
+| Discover Worker | ✅ Running | 100% |
+| Track Worker | ✅ Running | 100% |
+| Data Lifecycle (Archive + Prune) | ✅ Complete | **100%** |
+| Backfill Tools | ✅ Complete | 100% |
+| Documentation | ✅ Updated | 90% |
+| ML Stage | 🚧 In progress | 25% |
+| Dashboard | 📌 Planned | 20% |
+| Deployment CI (Docker Compose + VPS) | 🚧 Planned | 10% |
 
 ---
 
-## 📊 System Status Overview (as of 2025-10-17) (PROJECT TRACKING)
-
-| Component | Description | Status | Completion |
-|------------|--------------|:------:|:-----------:|
-| **Core API** | FastAPI endpoints (`/videos`, `/health`, `/tracking`, etc.) | ✅ Stable | **100%** |
-| **MongoDB Integration** | Collections (`videos`, `channels`) with proper indexes | ✅ Complete | **100%** |
-| **Worker — Discover** | Scans latest videos by region/query | ✅ Functional | **100%** |
-| **Worker — Track** | Monitors statistics every milestone (up to 24h) | ✅ Stable | **100%** |
-| **Worker — Process Data** | Processes JSON → inserts into MongoDB automatically | ✅ Complete | **100%** |
-| **Worker — Backfill Channels** | Updates channel metadata and stats | ✅ Complete | **100%** |
-| **Temporal Sampling Plan** | Refined to **64–65 timestamps / 24h** (dynamic frequency) | ✅ Updated | **100%** |
-| **Logging & Scheduler** | PowerShell unified runner (`run_both_local.ps1`) and log rotation | ✅ Verified | **100%** |
-| **Documentation (Docs + README)** | Unified formatting, consistent structure across all `.md` files | ✅ Synced | **100%** |
-| **Local Testing** | MongoDB + API + Worker integration tests | ⚙️ Partial | **75%** |
-| **Machine Learning Stage** | Feature extraction + XGBoost model training | 🔜 Pending | **20%** |
-| **Visualization / Dashboard** | Optional analytics dashboard (Power BI / Streamlit) | 🧩 Planned | **15%** |
-
----
-
-### 🧠 Summary
-- **Core system (Ingestion + Tracking + Processing):** ✅ **Complete (~85%)**  
-- **Full project (including ML & Dashboard):** 🚀 **~65% overall progress**
-
-> Next steps:
-> 1. Implement ML model for early virality prediction.  
-> 2. Add `/predict` and `/channels` endpoints in FastAPI.  
-> 3. Build analytics dashboard for visualization and reporting.
+### ✅ TL;DR Progress Summary
+➡️ **Core ingestion + lifecycle = 93% complete**  
+➡️ **Entire research project = 71% completion**  
+✅ Data pipeline is **ready for ML training stage** 🚀
 
 ---
 
 ## Compliance Notice
-This repository contains code developed under the YouTube Researcher Program authorization. No YouTube Data API data is included in this repository.  
+This repository follows **YouTube Researcher Program policies**.  
+No YouTube Data API content is included in this repo.
 
-All data used during experimentation remains private and complies with the YouTube Researcher Program policies.
-
-
-📅 **Last Updated:** **Oct 24 2025**
+📅 **Last Updated:** **Oct 26 2025**
