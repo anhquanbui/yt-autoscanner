@@ -1,189 +1,195 @@
 #!/usr/bin/env bash
-# === MongoDB Auto Backup (BSON + JSON; keep last 4) — using .env ===
+# === MongoDB Auto Backup — BSON full + JSON (sampling) — keep last 4 ===
+# Mode: Docker-optimized, stable (sequential), URI-based auth, empty-safe, two-step JSON compress
 set -euo pipefail
 
-# --- Load .env (project root -> $HOME -> CWD) ---
+# -------------------- Single-run lock --------------------
+exec 9>/tmp/mongo_backup.lock
+if ! flock -n 9; then
+  echo "[Backup] Another run is already in progress. Exit."
+  exit 0
+fi
+
+ts() { date '+%F %T'; }
+start_ts="$(date +%s)"
+
+# -------------------- Load .env --------------------
 load_env() {
-  local tried=0
-  local p
-
-  p="$(dirname "$0")/../.env"
-  if [ -f "$p" ]; then
-    set -a; . "$p"; set +a
-    echo "✅ Loaded .env: $p"; tried=1
-  fi
-
-  p="$HOME/.env"
-  if [ -f "$p" ]; then
-    set -a; . "$p"; set +a
-    echo "✅ Loaded .env: $p"; tried=1
-  fi
-
-  p=".env"
-  if [ -f "$p" ]; then
-    set -a; . "$p"; set +a
-    echo "✅ Loaded .env: $p"; tried=1
-  fi
-
-  if [ "$tried" -eq 0 ]; then
-    echo "⚠️ No .env found. Using current environment."
-  fi
+  local tried=0 p
+  for p in "$(dirname "$0")/../.env" "$HOME/.env" ".env"; do
+    if [ -f "$p" ]; then
+      set -a; . "$p"; set +a
+      echo "✅ Loaded .env: $p"
+      tried=1
+    fi
+  done
+  if [ "$tried" -eq 0 ]; then echo "⚠️ No .env found. Using current environment."; fi
 }
 load_env
 
-# --- Required configs (pick either Docker mode or Local mode) ---
-# Docker mode requires: MONGO_CONTAINER, DB_NAME, MONGO_USER, MONGO_PASS, BACKUP_DIR
-# Local  mode prefers:  MONGO_URI and BACKUP_DIR (or DB_NAME + auth if needed)
-
+# -------------------- Required configs --------------------
 : "${DB_NAME:?Missing DB_NAME in env}"
 : "${BACKUP_DIR:?Missing BACKUP_DIR in env}"
 
 DATE="$(date +%Y%m%d-%H%M%S)"
 REMOTE_NAME="${RCLONE_REMOTE_NAME:-}"
 REMOTE_DIR="${RCLONE_REMOTE_DIR:-}"
+LOCAL_ARCHIVE="$BACKUP_DIR/mongo-backup-$DATE.tar.gz"
 
 mkdir -p "$BACKUP_DIR"
-
-echo "[Backup] $(date) - Start"
+echo "[Backup] $(ts) - Start"
 
 docker_has_container() {
-  local name="$1"
-  command -v docker >/dev/null 2>&1 || return 1
-  docker ps -a --format '{{.Names}}' | grep -qx "$name"
+  command -v docker >/dev/null && docker ps -a --format '{{.Names}}' | grep -qx "$1"
 }
 
-# -------------------- DOCKER MODE --------------------
+# ====================================================================
+#                         DOCKER MODE (stable)
+# ====================================================================
 if [ -n "${MONGO_CONTAINER:-}" ] && docker_has_container "$MONGO_CONTAINER"; then
-  : "${MONGO_USER:?Missing MONGO_USER for Docker mode}"
-  : "${MONGO_PASS:?Missing MONGO_PASS for Docker mode}"
+  echo "[Backup] Mode: Docker ($MONGO_CONTAINER)"
 
-  echo "[Backup] Mode: Docker container='$MONGO_CONTAINER', DB='$DB_NAME'"
+  IN_TMP="/tmp/ytmongo-backup-$DATE"
+  ARCHIVE_IN_CONTAINER="/tmp/mongo-backup-$DATE.tar.gz"
 
-  # 1) In-container dump (BSON + per-collection JSON)
   docker exec \
-  -e DB_NAME="$DB_NAME" \
-  -e MONGO_USER="$MONGO_USER" \
-  -e MONGO_PASS="$MONGO_PASS" \
-  "$MONGO_CONTAINER" bash -lc "
-  set -euo pipefail
-  ROOT=\"/data/db/backup-$DATE\"
-  mkdir -p \"\$ROOT/bson\" \"\$ROOT/json\"
+    -e DB_NAME="$DB_NAME" \
+    -e MONGO_USER="${MONGO_USER:-}" \
+    -e MONGO_PASS="${MONGO_PASS:-}" \
+    -e MONGO_URI="${MONGO_URI:-}" \
+    -e JSON_SKIP_COLLECTIONS="${JSON_SKIP_COLLECTIONS:-}" \
+    -e JSON_SAMPLE_COLLECTIONS="${JSON_SAMPLE_COLLECTIONS:-videos}" \
+    -e JSON_SAMPLE_LIMIT="${JSON_SAMPLE_LIMIT:-5000}" \
+    -e JSON_MAX_DOCS="${JSON_MAX_DOCS:-0}" \
+    "$MONGO_CONTAINER" bash -lc "
+      set -euo pipefail
 
-  echo \"[In-Container] Dump BSON...\"
-  mongodump \
-    -u \"\$MONGO_USER\" -p \"\$MONGO_PASS\" \
-    --authenticationDatabase admin \
-    --db \"\$DB_NAME\" \
-    --out \"\$ROOT/bson\"
+      rm -rf \"$IN_TMP\" \"$ARCHIVE_IN_CONTAINER\" || true
+      mkdir -p \"$IN_TMP/json\"
 
-  echo \"[In-Container] Export JSON per-collection...\"
-  mapfile -t COLLS < <(mongosh --quiet \
-    -u \"\$MONGO_USER\" -p \"\$MONGO_PASS\" --authenticationDatabase admin \
-    --eval \"db.getSiblingDB(\\\"\$DB_NAME\\\").getCollectionNames().forEach(c=>print(c))\")
-
-  for coll in \"\${COLLS[@]}\"; do
-    [ -n \"\$coll\" ] || continue
-    echo \"  - json: \$coll\"
-    mongoexport \
-      -u \"\$MONGO_USER\" -p \"\$MONGO_PASS\" \
-      --authenticationDatabase admin \
-      --db \"\$DB_NAME\" \
-      --collection \"\$coll\" \
-      --out \"\$ROOT/json/\$coll.json\"
-  done
-  echo \"[In-Container] ✅ Done at \$ROOT\"
-"
-
-  # 2) Copy to host
-  docker cp "$MONGO_CONTAINER:/data/db/backup-$DATE" "$BACKUP_DIR/"
-
-# -------------------- LOCAL MODE --------------------
-else
-  echo "[Backup] Mode: Local mongodump"
-
-  # Ưu tiên MONGO_URI; nếu không có thì dùng auth rời rạc (nếu bạn đặt)
-  if command -v mongosh >/dev/null 2>&1; then :; else
-    echo "❌ mongosh not found (apt install -y mongodb-clients)."; exit 1
-  fi
-  if command -v mongodump >/dev/null 2>&1; then :; else
-    echo "❌ mongodump not found (apt install -y mongodb-database-tools)."; exit 1
-  fi
-
-  ROOT="$BACKUP_DIR/backup-$DATE"
-  mkdir -p "$ROOT/bson" "$ROOT/json"
-
-  echo "[Local] Dump BSON..."
-  if [ -n "${MONGO_URI:-}" ]; then
-    mongodump --uri "$MONGO_URI" --db "$DB_NAME" --out "$ROOT/bson"
-  else
-    # Nếu không dùng URI, bạn có thể thêm các biến: MONGO_HOST, MONGO_PORT, MONGO_USER, MONGO_PASS
-    : "${MONGO_HOST:=localhost}"
-    : "${MONGO_PORT:=27017}"
-    if [ -n "${MONGO_USER:-}" ] && [ -n "${MONGO_PASS:-}" ]; then
-      mongodump -h "$MONGO_HOST:$MONGO_PORT" -u "$MONGO_USER" -p "$MONGO_PASS" \
-        --authenticationDatabase admin --db "$DB_NAME" --out "$ROOT/bson"
-    else
-      mongodump -h "$MONGO_HOST:$MONGO_PORT" --db "$DB_NAME" --out "$ROOT/bson"
-    fi
-  fi
-
-  echo "[Local] Export JSON per-collection..."
-  if [ -n "${MONGO_URI:-}" ]; then
-    mapfile -t COLLS < <(mongosh "$MONGO_URI" --quiet --eval "db.getSiblingDB('$DB_NAME').getCollectionNames().forEach(c=>print(c))")
-  else
-    if [ -n "${MONGO_USER:-}" ] && [ -n "${MONGO_PASS:-}" ]; then
-      mapfile -t COLLS < <(mongosh -u "$MONGO_USER" -p "$MONGO_PASS" --authenticationDatabase admin --quiet \
-        --eval "db.getSiblingDB('$DB_NAME').getCollectionNames().forEach(c=>print(c))")
-    else
-      mapfile -t COLLS < <(mongosh --quiet --eval "db.getSiblingDB('$DB_NAME').getCollectionNames().forEach(c=>print(c))")
-    fi
-  fi
-
-  for coll in "${COLLS[@]}"; do
-    [ -n "$coll" ] || continue
-    echo "  - json: $coll"
-    if [ -n "${MONGO_URI:-}" ]; then
-      mongoexport --uri "$MONGO_URI" --db "$DB_NAME" --collection "$coll" --out "$ROOT/json/$coll.json"
-    else
-      if [ -n "${MONGO_USER:-}" ] && [ -n "${MONGO_PASS:-}" ]; then
-        mongoexport -u "$MONGO_USER" -p "$MONGO_PASS" --authenticationDatabase admin \
-          --db "$DB_NAME" --collection "$coll" --out "$ROOT/json/$coll.json"
+      # Build URI (inside container)
+      if [ -n \"\${MONGO_URI:-}\" ]; then
+        URI=\"\$MONGO_URI\"
       else
-        mongoexport --db "$DB_NAME" --collection "$coll" --out "$ROOT/json/$coll.json"
+        URI=\"mongodb://\${MONGO_USER}:\${MONGO_PASS}@127.0.0.1:27017/\${DB_NAME}?authSource=admin\"
       fi
-    fi
-  done
-  echo "[Local] ✅ Done at $ROOT"
+      export URI
+
+      echo \"[Docker] Dump BSON (archive+gzip)...\"
+      mongodump --uri \"\$URI\" --db \"\$DB_NAME\" \
+        --gzip --archive=\"$IN_TMP/bson.archive.gz\"
+
+      echo \"[Docker] List collections...\"
+      mapfile -t COLLS < <(mongosh \"\$URI\" --quiet --eval \"db.getCollectionNames().forEach(c=>print(c))\")
+
+      echo \"[Docker] Export JSON (sequential, empty-safe, sampling supported with two-step compress)...\"
+      for coll in \"\${COLLS[@]}\"; do
+        [ -n \"\$coll\" ] || continue
+        out_gz=\"$IN_TMP/json/\$coll.json.gz\"
+        tmp_json=\"$IN_TMP/json/\$coll.json.tmp\"
+        log=\"$IN_TMP/json/\$coll.log\"
+
+        # Skip by name (optional)
+        if [ -n \"\${JSON_SKIP_COLLECTIONS:-}\" ] && printf '%s\n' \"\$JSON_SKIP_COLLECTIONS\" | tr ',' '\n' | grep -qx \"\$coll\"; then
+          echo \"  - \$coll: skipped JSON (in skip list).\"
+          continue
+        fi
+
+        # Count docs in DB_NAME explicitly
+        doc_count=\$(mongosh \"\$URI\" --quiet \
+          --eval \"db.getSiblingDB('$DB_NAME').getCollection('\$coll').estimatedDocumentCount()\" 2>>\"\$log\" || echo 0)
+        case \"\$doc_count\" in ''|*[!0-9]*) doc_count=0 ;; esac
+
+        # Auto-skip by MAX_DOCS (optional)
+        if [ -n \"\${JSON_MAX_DOCS:-}\" ] && [ \"\${JSON_MAX_DOCS:-0}\" -gt 0 ] && [ \"\$doc_count\" -gt \"\${JSON_MAX_DOCS:-0}\" ]; then
+          echo \"  - \$coll: \$doc_count docs > \${JSON_MAX_DOCS} → skip JSON (BSON backed).\"
+          continue
+        fi
+
+        if [ \"\$doc_count\" -eq 0 ]; then
+          echo \"  - \$coll: empty (0 docs)\"
+          : | gzip -c > \"\$out_gz\"
+          continue
+        fi
+
+        # Sampling
+        LIMIT_ARGS=\"\"
+        if [ -n \"\${JSON_SAMPLE_COLLECTIONS:-}\" ] && printf '%s\n' \"\$JSON_SAMPLE_COLLECTIONS\" | tr ',' '\n' | grep -qx \"\$coll\"; then
+          LIMIT_ARGS=\"--limit \${JSON_SAMPLE_LIMIT:-5000}\"
+          echo \"  - \$coll: exporting SAMPLE (\${JSON_SAMPLE_LIMIT:-5000} of ~\$doc_count)...\"
+        else
+          echo \"  - \$coll: exporting FULL (\$doc_count docs)...\"
+        fi
+
+        # Prefer pigz if available
+        COMPRESS=\"gzip -c\"; command -v pigz >/dev/null 2>&1 && COMPRESS=\"pigz -c\"
+
+        # Clean previous
+        rm -f \"\$tmp_json\" \"\$out_gz\"
+
+        # ---- Step 1: Export to plain JSON file (no pipe) ----
+        if ! mongoexport --uri \"\$URI\" \
+              --db \"$DB_NAME\" \
+              --collection \"\$coll\" \
+              --type=json \
+              \${LIMIT_ARGS} \
+              --out \"\$tmp_json\" >>\"\$log\" 2>&1; then
+          echo \"❌ mongoexport failed: \$coll (log: \$log)\" >&2
+          exit 1
+        fi
+
+        if [ ! -s \"\$tmp_json\" ]; then
+          echo \"❌ mongoexport produced empty file for \$coll (log: \$log)\" >&2
+          exit 1
+        fi
+
+        # ---- Step 2: Compress to .gz ----
+        if ! eval \"\$COMPRESS\" < \"\$tmp_json\" > \"\$out_gz\"; then
+          echo \"❌ compression failed for \$coll\" >&2
+          exit 1
+        fi
+        rm -f \"\$tmp_json\"
+
+        sz=\$(wc -c < \"\$out_gz\" || echo 0)
+        if [ \"\$sz\" -lt 50 ]; then
+          echo \"❌ Suspiciously small gzip for \$coll (size=\$sz B). See \$log\" >&2
+          exit 1
+        fi
+
+        echo \"  - \$coll: export OK → \$(numfmt --to=iec \"\$sz\" 2>/dev/null || echo \${sz}B)\"
+      done
+
+      echo \"[Docker] Packing...\"
+      tar -C \"$IN_TMP\" -czf \"$ARCHIVE_IN_CONTAINER\" .
+      rm -rf \"$IN_TMP\"
+    "
+
+  docker cp "$MONGO_CONTAINER:$ARCHIVE_IN_CONTAINER" "$LOCAL_ARCHIVE"
+  echo "[Backup] ✅ Copied to host: $LOCAL_ARCHIVE"
+
+else
+  echo "❌ Local mode not configured — please use Docker mode (set MONGO_CONTAINER)."
+  exit 1
 fi
 
-# 3) Compress entire folder (bson + json)
-tar -czf "$BACKUP_DIR/mongo-backup-$DATE.tar.gz" -C "$BACKUP_DIR" "backup-$DATE"
-
-# 4) Remove raw export folder
-rm -rf "$BACKUP_DIR/backup-$DATE"
-echo "[Backup] ✅ Local archive: $BACKUP_DIR/mongo-backup-$DATE.tar.gz"
-
-# 5) Keep only latest 4 backups locally
+# -------------------- Local retention (keep last 4) --------------------
 ls -1t "$BACKUP_DIR"/mongo-backup-*.tar.gz 2>/dev/null | sed -n '5,$p' | xargs -r rm -f
-echo "[Backup] 🧹 Local retention enforced."
+echo "[Backup] 🧹 Local retention enforced"
 
-# 6) Upload to Google Drive if available
-if command -v rclone >/dev/null 2>&1 && [ -n "$REMOTE_NAME" ] && [ -n "$REMOTE_DIR" ]; then
-  REMOTE_PATH="${REMOTE_NAME}:${REMOTE_DIR}"
+# -------------------- Cloud upload (optional, rclone) --------------------
+if command -v rclone >/dev/null && [ -n "$REMOTE_NAME" ] && [ -n "$REMOTE_DIR" ]; then
+  REMOTE_PATH="$REMOTE_NAME:$REMOTE_DIR"
   rclone mkdir "$REMOTE_PATH" >/dev/null 2>&1 || true
-  rclone copy "$BACKUP_DIR/mongo-backup-$DATE.tar.gz" "$REMOTE_PATH" --quiet
-  echo "[Backup] ☁️ Uploaded."
+  rclone copy "$LOCAL_ARCHIVE" "$REMOTE_PATH" --quiet
+  echo "[Backup] ☁️ Uploaded to cloud"
 
-  # 7) Remote retention (keep last 4)
   rclone lsf "$REMOTE_PATH" --files-only \
     | grep -E '^mongo-backup-.*\.tar\.gz$' \
     | sort -r | sed -n '5,$p' \
     | while read -r old; do
-        [ -n "$old" ] && rclone deletefile "$REMOTE_PATH/$old" --quiet || true
+        rclone deletefile "$REMOTE_PATH/$old" --quiet || true
       done
-  echo "[Backup] 🧹 Remote retention enforced."
-else
-  echo "[Backup] ⚠️ rclone not available, skipping cloud upload."
+  echo "[Backup] 🧹 Cloud retention enforced"
 fi
 
-echo "[Backup] ✅ Done."
+echo "[Backup] ✅ Completed in $(( $(date +%s) - start_ts ))s → $LOCAL_ARCHIVE"
