@@ -31,7 +31,7 @@ API_KEY   = os.getenv("YT_API_KEY")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/ytscan")
 
 TRACK_BATCH_SIZE = min(50, max(1, int(os.getenv("TRACK_BATCH_SIZE", "50"))))
-TRACK_MAX_DUE    = max(1, int(os.getenv("TRACK_MAX_DUE_PER_RUN", "1000")))
+TRACK_MAX_DUE    = max(1, int(os.getenv("TRACK_MAX_DUE_PER_RUN", "5000")))
 LOG_SAMPLE       = max(0, int(os.getenv("TRACK_LOG_SAMPLE", "5")))
 
 # Milestone plan (minutes since publishedAt)
