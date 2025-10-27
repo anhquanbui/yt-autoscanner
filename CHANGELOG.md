@@ -1,37 +1,78 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
-## [Oct 26 2025]
-### 🚀 Improved / Updated
-- Data footprint reduction across ingestion pipeline:
-  - Removed **`channelTitle`** and **`channelHandle`** from `discover_once` output
-  - Lightweight insert-only design maintained ✅
-- Introduced **`prune_unavailable_once.py`**:
-  - Hard-deletes **unavailable / no_publishedAt** videos instantly
-  - Optional API re-check for stronger validation
-  - Ensures data quality for early engagement modeling
-- Enhanced **`archive_completed_videos.py`**:
-  - 🔹 Partitioned cold collections → `videos_cold_YYYY_MM`
-  - 🔹 Trimming heavy fields (`thumbnails`, long description)
-  - Batch-safe UPSERT → delete workflow
-  - Keeps `videos` hot store **lean and performant**
-- Documentation improvements:
-  - Added **English technical docs** for 4 core tools:
-    - `discover_once.md`
-    - `track_once.md`
-    - `archive_completed_videos.md`
-    - `prune_unavailable_once.md`
-  - Clear operational roles and lifecycle transitions
-- Tracking lifecycle clarity:
-  - Updated behavior explanation for `track_once`
-  - Stop conditions defined for ML training integrity
 
-### ✅ Results
-- Hot dataset shrinks automatically
-- Cleaner ingestion → faster tracking
-- Long-term data still retained in cold storage
-- Team onboarding & maintenance improved significantly
+---
+## [Oct 26 2025] — Major Data Lifecycle Upgrade 🚀
 
-> These improvements strengthen the **data lifecycle**, reduce costs, and set a strong foundation for **virality prediction accuracy**.
+### 🔥 Data Footprint Optimization
+- Removed **`channelTitle`** & **`channelHandle`** from `discover_once.py`
+- Video ingestion remains **lightweight insert-only**
+- Reduced document size in hot store (`videos`)
+
+→ Faster insert, lower storage growth, higher throughput.
+
+---
+
+### 🧱 New Tool: `prune_unavailable_once.py`
+- Hard-delete videos that are:
+  - `unavailable`, `private`, `no_publishedAt`
+- Optional YouTube API confirmation mode
+- Keeps only high-quality inputs for ML
+
+✅ Removes true noise from dataset
+
+---
+
+### 🧊 Cold Storage Layer for Complete Videos
+**Enhanced `archive_completed_videos.py`:**
+- Moves fully tracked videos to:
+  ```
+  videos_cold_YYYY_MM
+  ```
+- Removes **heavy snapshot metadata**
+- Safe archive → delete workflow
+
+✅ Hot dataset shrinks automatically → faster queries
+
+---
+
+### 🧠 Backfill Channels v2 — Full Refresh Rework
+- Aggregation-based picking (no full scans)
+- UC-only ID filtering (stable API response)
+- Auto-load `.env` for credentials
+- New flags:
+  - `--limit 0` → unlimited processing
+  - `--loop-until-empty` → batch automation
+- Derived ML channel metrics:
+  - `channelAgeDays`
+  - `avgViewsPerVideo`
+  - `uploadFreqPerWeek`
+
+✅ Designed for scaling past 100K+ channels
+
+---
+
+### 🎯 Improved Tracking Lifecycle Stability
+- Clearer stop conditions in `track_once`
+- Only update when **data changed**
+- Prevent useless polling after 24h
+
+✅ Better consistency for early-signal modeling
+
+---
+
+### 📄 Documentation Expansion
+Added new **English** docs:
+- `discover_once.md`
+- `track_once.md`
+- `archive_completed_videos.md`
+- `prune_unavailable_once.md`
+- `backfill_channels.md`
+
+Clear lifecycle:
+**DISCOVER → TRACK → ARCHIVE → PRUNE → BACKFILL**
+
+---
 
 ---
 ## [Oct 24 2025]
@@ -149,4 +190,4 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Updated documentation and file structure in README.
 - Added random region/query weighting system for discovery.
 
-📅 **Last Updated:** **Oct 21 2025**
+📅 **Last Updated:** **Oct 26 2025**

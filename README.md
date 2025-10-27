@@ -69,6 +69,7 @@ This README covers local development, environment config, the discover worker (v
 - **archive_completed_videos.py** — Monthly partitioned cold storage
 - **prune_unavailable_once.py** — Hard delete unavailable/no-publishedAt videos
 - **Docs Update** — English documentation for 4 core tools
+- **backfill_channels.py** — Update cho create channels collection
 
 ## What's new (Oct 24 2025)
 - **make_indexes.py** — Version 3 with sub-index
