@@ -7,7 +7,7 @@
 [CmdletBinding()]
 param(
   [switch]$Loop = $true,              # Continuous loop by default
-  [int]$IntervalSeconds = 30,         # Delay after success
+  [int]$IntervalSeconds = 10,         # Delay after success
   [int]$CooldownSeconds = 900,        # Delay after quota (88)
   [string]$PythonExe = "python",      # Or "py"
   [switch]$DebugEnv = $false          # Print parsed values (masked) for debugging
