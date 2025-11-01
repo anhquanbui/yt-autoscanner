@@ -62,6 +62,9 @@ This README covers local development, environment config, the discover worker (v
 | 🗺️ [pipeline_overview.md](docs/pipeline_overview.md) | Full pipeline flow: Discover → Track → Archive/Prune → ML |
 
 ---
+## What's new (Oct 31 2025)
+- **process_data.py (v7.3)** — Refactored to remove dashboard JSON outputs, streamlined processed_status logic, added per-segment extended features (min_view, max_view, view_range, low_activity, plateau).
+- **make_indexes.py (v4)** — Comprehensive index manager for videos and processed_videos, added partial + wildcard indexes for analytics/ML queries, safer idempotent index maintenance.
 
 ## What's new (Oct 26 2025)
 - **discover_once.py** — Removed channelTitle + lightweight insertion
