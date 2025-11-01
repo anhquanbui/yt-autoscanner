@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-# process_data.py (v7.1) — v7 + always reprocess TRACKING when skip-processed=true
+# process_data.py (v7.3-lean, segment-based)
+# -------------------------------------------------------------
+# - Removes dashboard/summary/overview generation
+# - Drops 'just_completed' state; only 'tracking' or 'complete'
+# - Keeps skip-processed logic (reprocess TRACKING + NEW when enabled)
+# - Adds duration_bucket fallback from durationSec when missing
+# - snapshot_features: v_slope_mean/max/std, v_accel_mean, time_first_1k/10k
+# - Extended per-horizon (3h,6h,12h,24h) ON by default — segment-based
+#   Each horizon includes: v_slope_mean/max/std, v_accel_mean, coverage_ratio,
+#   min_view, max_view, view_range, low_activity, plateau (computed from segment)
+
 from __future__ import annotations
 
 import argparse
@@ -11,15 +21,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from pathlib import Path
 import math
-import itertools  # NEW: for chaining two cursors
+import itertools
 
 # Optional pymongo imports
 try:
     from pymongo import MongoClient, UpdateOne, ReplaceOne
 except Exception:
-    MongoClient = None  # optional
-    UpdateOne = None    # optional
-    ReplaceOne = None   # optional
+    MongoClient = None
+    UpdateOne = None
+    ReplaceOne = None
 
 # Optional dotenv loader
 try:
@@ -27,6 +37,8 @@ try:
 except Exception:
     def load_dotenv(dotenv_path=None):
         ...
+
+# ------------------------- Plan & constants -------------------------
 
 def default_plan_minutes() -> List[int]:
     plan: List[int] = []
@@ -39,6 +51,11 @@ def default_plan_minutes() -> List[int]:
 PLAN_MINUTES = default_plan_minutes()
 HORIZONS = [60, 180, 360, 720, 1440]  # 1h,3h,6h,12h,24h
 CEIL_TOLERANCE_MIN = 30
+
+# Extended features default: ON (disable with --no-extended-features)
+DO_EXTENDED = True
+
+# --------------------------- Utilities -----------------------------
 
 def parse_iso(s: Optional[str]) -> Optional[datetime]:
     if not s:
@@ -62,9 +79,8 @@ def coerce_snap(s: Dict[str,Any]) -> Optional[Snapshot]:
     ts = parse_iso(s.get('ts'))
     if not ts:
         return None
-    v = s.get('viewCount',0) or 0
     try:
-        v = int(v)
+        v = int(s.get('viewCount', 0) or 0)
     except Exception:
         v = 0
     lk = s.get('likeCount'); cm = s.get('commentCount')
@@ -76,7 +92,7 @@ def coerce_snap(s: Dict[str,Any]) -> Optional[Snapshot]:
         cm = int(cm) if cm is not None else None
     except Exception:
         cm = None
-    return Snapshot(ts=ts, viewCount=max(0,v), likeCount=lk, commentCount=cm)
+    return Snapshot(ts=ts, viewCount=max(0, v), likeCount=lk, commentCount=cm)
 
 def expected_count_up_to(h:int)->int:
     return sum(1 for m in PLAN_MINUTES if m<=h)
@@ -114,18 +130,60 @@ def coverage_ratio(snaps:List[Snapshot], pub:Optional[datetime], h:int)->float:
     exp=expected_count_up_to(h)
     return round(avail/max(exp,1),6)
 
+# ---- helpers for per-horizon segment logic ----
+
+def _views_at_cutoff(snaps: List[Snapshot], published: Optional[datetime], minutes: int) -> int:
+    """Return viewCount at cutoff=published+minutes using floor/ceil tolerance."""
+    if not published:
+        return 0
+    s, _m = floor_ceil_value(snaps, published, minutes)
+    return int(s.viewCount) if s else 0
+
+def _is_plateau_segment(snaps: List[Snapshot], start_ts: datetime, end_ts: datetime,
+                        last_n: int = 3, threshold: int = 0) -> bool:
+    """Plateau computed only within (start_ts, end_ts] segment."""
+    seg = [max(0, int(s.viewCount)) for s in sorted(snaps, key=lambda x: x.ts)
+           if s.ts > start_ts and s.ts <= end_ts]
+    if len(seg) < last_n + 1:
+        return False
+    inc = [seg[i] - seg[i-1] for i in range(1, len(seg))]
+    tail = inc[-last_n:]
+    return all(d <= threshold for d in tail)
+
 # ---------------- v7: snapshot feature helpers ----------------
+
 def _hours_since(a: datetime, b: datetime) -> float:
     return max((a - b).total_seconds() / 3600.0, 0.0)
 
+def _slope_stats(xs: List[float], ys: List[int]) -> Tuple[float,float,float,float]:
+    """Return mean_slope, max_slope, std_slope, accel_mean. Safe defaults=0.0."""
+    if len(xs) < 2:
+        return 0.0, 0.0, 0.0, 0.0
+    slopes: List[float] = []
+    for i in range(1, len(xs)):
+        dx = xs[i] - xs[i-1]
+        dy = ys[i] - ys[i-1]
+        if dx <= 0:
+            continue
+        slopes.append(dy / dx)
+    if not slopes:
+        return 0.0, 0.0, 0.0, 0.0
+    mean_slope = sum(slopes) / len(slopes)
+    max_slope = max(slopes)
+    var = sum((s - mean_slope) ** 2 for s in slopes) / max(len(slopes)-1, 1)
+    std_slope = math.sqrt(var)
+    accs = [slopes[i] - slopes[i-1] for i in range(1, len(slopes))]
+    accel_mean = (sum(accs)/len(accs)) if accs else 0.0
+    return mean_slope, max_slope, std_slope, accel_mean
+
 def compute_snapshot_features(snaps: List[Snapshot], published: Optional[datetime]) -> Dict[str, Optional[float]]:
     out = {
-        "v_slope_mean": None,
-        "v_slope_max": None,
-        "v_slope_std": None,
-        "v_accel_mean": None,
-        "time_first_1k": None,
-        "time_first_10k": None,
+        "v_slope_mean": 0.0,
+        "v_slope_max": 0.0,
+        "v_slope_std": 0.0,
+        "v_accel_mean": 0.0,
+        "time_first_1k": 0.0,
+        "time_first_10k": 0.0,
     }
     if not snaps or not published:
         return out
@@ -134,48 +192,75 @@ def compute_snapshot_features(snaps: List[Snapshot], published: Optional[datetim
     xs = [_hours_since(s.ts, published) for s in srt]
     ys = [max(0, int(s.viewCount)) for s in srt]
 
-    if len(xs) < 2 or (max(xs) - min(xs) < 1e-6):
-        return out
+    mean_slope, max_slope, std_slope, accel_mean = _slope_stats(xs, ys)
+    out.update({
+        "v_slope_mean": round(mean_slope, 6),
+        "v_slope_max": round(max_slope, 6),
+        "v_slope_std": round(std_slope, 6),
+        "v_accel_mean": round(accel_mean, 6),
+    })
 
-    slopes: List[float] = []
-    for i in range(1, len(xs)):
-        dx = xs[i] - xs[i-1]
-        dy = ys[i] - ys[i-1]
-        if dx <= 0:
-            continue
-        slopes.append(dy / dx)
-
-    if slopes:
-        mean_slope = sum(slopes) / len(slopes)
-        max_slope = max(slopes)
-        var = sum((s - mean_slope) ** 2 for s in slopes) / max(len(slopes)-1, 1)
-        std_slope = math.sqrt(var)
-        accs: List[float] = []
-        for i in range(1, len(slopes)):
-            accs.append(slopes[i] - slopes[i-1])
-        out.update({
-            "v_slope_mean": round(mean_slope, 6),
-            "v_slope_max": round(max_slope, 6),
-            "v_slope_std": round(std_slope, 6),
-            "v_accel_mean": round(sum(accs)/len(accs), 6) if accs else 0.0
-        })
-    else:
-        out.update({
-            "v_slope_mean": 0.0,
-            "v_slope_max": 0.0,
-            "v_slope_std": 0.0,
-            "v_accel_mean": 0.0
-        })
-
-    def _time_to_threshold(th: int) -> Optional[float]:
+    def _time_to_threshold(th: int) -> float:
         for x, y in zip(xs, ys):
             if y >= th:
-                return round(x, 6)
-        return None
+                return round(x, 1)  # 1 decimal only for time-first metrics
+        return 0.0
 
     out["time_first_1k"] = _time_to_threshold(1_000)
     out["time_first_10k"] = _time_to_threshold(10_000)
     return out
+
+def _extended_per_horizon(snaps: List[Snapshot], published: Optional[datetime],
+                          horizon_min: int, prev_horizon_min: int) -> Dict[str, float | bool | int]:
+    """
+    Per-horizon features for segment (prev_horizon, horizon]:
+      - v_slope_mean/max/std, v_accel_mean  (computed on snapshots within the segment)
+      - coverage_ratio (to H, unchanged)
+      - min_view = views@prev_horizon, max_view = views@horizon, view_range = delta
+      - low_activity (based on segment's max_view & view_range)
+      - plateau (increments only within the segment)
+    """
+    base: Dict[str, float | bool | int] = {
+        "v_slope_mean": 0.0, "v_slope_max": 0.0, "v_slope_std": 0.0,
+        "v_accel_mean": 0.0, "coverage_ratio": 0.0,
+        "min_view": 0, "max_view": 0, "view_range": 0,
+        "low_activity": True, "plateau": False,
+    }
+    if not published:
+        return base
+
+    start_ts = published + timedelta(minutes=prev_horizon_min)
+    end_ts   = published + timedelta(minutes=horizon_min)
+
+    # coverage to H: full-horizon coverage (unchanged)
+    base["coverage_ratio"] = coverage_ratio(snaps, published, horizon_min)
+
+    # snapshots strictly within the segment (start_ts, end_ts]
+    subs = [s for s in snaps if s.ts > start_ts and s.ts <= end_ts]
+    if subs:
+        xs = [(s.ts - published).total_seconds() / 3600.0 for s in subs]
+        ys = [max(0, int(s.viewCount)) for s in subs]
+        m, mx, sd, acc = _slope_stats(xs, ys)
+        base["v_slope_mean"] = round(m, 6)
+        base["v_slope_max"]  = round(mx, 6)
+        base["v_slope_std"]  = round(sd, 6)
+        base["v_accel_mean"] = round(acc, 6)
+
+    # boundary values → segment min/max/range
+    v_prev = _views_at_cutoff(snaps, published, prev_horizon_min)
+    v_curr = _views_at_cutoff(snaps, published, horizon_min)
+    delta  = max(0, v_curr - v_prev)
+
+    base["min_view"]   = v_prev
+    base["max_view"]   = v_curr
+    base["view_range"] = delta
+
+    # segment low-activity rule
+    base["low_activity"] = (v_curr < 200) or (delta < 50)
+
+    # plateau only within segment
+    base["plateau"] = _is_plateau_segment(snaps, start_ts, end_ts, last_n=3, threshold=0)
+    return base
 
 def classify_growth_phase(hz: Dict[str, Any]) -> Optional[str]:
     try:
@@ -196,7 +281,7 @@ def classify_growth_phase(hz: Dict[str, Any]) -> Optional[str]:
     except Exception:
         return None
 
-# ----------------------------------------------------------------
+# --------------------------- Core summarize -------------------------
 
 def summarize_video(doc:Dict[str,Any])->Dict[str,Any]:
     vid=str(doc.get('_id') or doc.get('video_id') or '')
@@ -204,13 +289,19 @@ def summarize_video(doc:Dict[str,Any])->Dict[str,Any]:
     snippet = (doc.get('snippet') or {})
     pub=parse_iso(snippet.get('publishedAt'))
 
-    source = (doc.get('source') or {})
-    source_meta = {
-        "region_code": source.get("regionCode") or source.get("region") or None,
-        "query_seed": source.get("query") or source.get("querySeed") or None,
-        "duration_bucket": (snippet.get("lengthBucket") or snippet.get("durationBucket") or None),
-        "categoryId": snippet.get("categoryId")
-    }
+    # Duration bucket fallback from durationSec if missing
+    dur_bucket = snippet.get("lengthBucket") or snippet.get("durationBucket")
+    dur_sec = snippet.get("durationSec")
+    if not dur_bucket and isinstance(dur_sec, (int, float)):
+        s = int(max(dur_sec, 0))
+        if s < 61:
+            dur_bucket = "shorts"
+        elif s <= 240:
+            dur_bucket = "short"
+        elif s <= 1200:
+            dur_bucket = "medium"
+        else:
+            dur_bucket = "long"
 
     raw=doc.get('stats_snapshots') or []
     snaps=[s for s in (coerce_snap(x) for x in raw) if s]
@@ -242,6 +333,15 @@ def summarize_video(doc:Dict[str,Any])->Dict[str,Any]:
         coverage_score = round(sum(cov_values)/len(cov_values), 6)
 
     snap_feats = compute_snapshot_features(snaps, pub)
+
+    # extended features per horizon (3h,6h,12h,24h) — segment-based
+    if DO_EXTENDED:
+        ext: Dict[str, Dict[str, float | bool | int]] = {}
+        prev_map = {180: 60, 360: 180, 720: 360, 1440: 720}
+        for h in (180, 360, 720, 1440):
+            ext[str(h)] = _extended_per_horizon(snaps, pub, h, prev_map[h])
+        snap_feats["extended"] = ext
+
     growth_phase = classify_growth_phase(horizons_out)
 
     ml_flags = {
@@ -257,46 +357,14 @@ def summarize_video(doc:Dict[str,Any])->Dict[str,Any]:
         "n_snapshots": len(snaps),
         "last_snapshot_ts": iso(last_ts),
         "completed_horizons": completed_horizons,
-        "n_completed_horizons": len(completed_horizons),
         "horizons": horizons_out,
-        "source_meta": source_meta,
         "coverage_score": coverage_score,
         "growth_phase": growth_phase,
         "snapshot_features": snap_feats,
         "ml_flags": ml_flags,
     }
 
-def build_dashboard_summary(rows:List[Dict[str,Any]])->List[Dict[str,Any]]:
-    out=[]
-    for r in rows:
-        hz=r.get("horizons",{})
-        out.append({
-            "video_id":r["video_id"],
-            "status":r.get("status"),
-            "processed_status": r.get("processed_status"),
-            "processed_at": r.get("processed_at"),
-            "published_at":r.get("published_at"),
-            "n_snapshots":r.get("n_snapshots"),
-            "last_snapshot_ts":r.get("last_snapshot_ts"),
-            "reached_h1":hz.get("60",{}).get("value_method") in ("floor","ceil"),
-            "reached_h3":hz.get("180",{}).get("value_method") in ("floor","ceil"),
-            "reached_h6":hz.get("360",{}).get("value_method") in ("floor","ceil"),
-            "reached_h12":hz.get("720",{}).get("value_method") in ("floor","ceil"),
-            "reached_h24":hz.get("1440",{}).get("value_method") in ("floor","ceil"),
-            "coverage_1h":hz.get("60",{}).get("coverage_ratio"),
-            "coverage_3h":hz.get("180",{}).get("coverage_ratio"),
-            "coverage_6h":hz.get("360",{}).get("coverage_ratio"),
-            "coverage_12h":hz.get("720",{}).get("coverage_ratio"),
-            "coverage_24h":hz.get("1440",{}).get("coverage_ratio"),
-            "n_completed_horizons": len(r.get("completed_horizons", [])),
-            "coverage_score": r.get("coverage_score"),
-            "growth_phase": r.get("growth_phase"),
-            "region_code": (r.get("source_meta") or {}).get("region_code"),
-            "query_seed": (r.get("source_meta") or {}).get("query_seed"),
-            "duration_bucket": (r.get("source_meta") or {}).get("duration_bucket"),
-            "categoryId": (r.get("source_meta") or {}).get("categoryId"),
-        })
-    return out
+# --------------------------- IO helpers -----------------------------
 
 def read_from_mongo(uri:str,db_name:str,coll:str, query:dict|None=None):
     if MongoClient is None:
@@ -326,7 +394,7 @@ def read_from_mongo(uri:str,db_name:str,coll:str, query:dict|None=None):
         yield d
 
 def read_from_mongo_unprocessed(uri:str, db_name:str, src_coll:str, processed_coll:str, query:dict|None=None):
-    """Stream only NOT-YET-PROCESSED docs."""
+    """Stream NOT-YET-PROCESSED docs (skip processed), but always include TRACKING set from query."""
     if MongoClient is None:
         raise RuntimeError("pymongo not installed")
     client = MongoClient(uri)
@@ -359,7 +427,10 @@ def read_from_mongo_unprocessed(uri:str, db_name:str, src_coll:str, processed_co
             "stats_snapshots": 1
         }},
     ]
-    print("🔍 Using server-side filter (skip processed) with pipeline:\n" + json.dumps(pipeline, ensure_ascii=False, indent=2))
+    print(
+        "🔍 Using server-side filter (skip processed) with pipeline:\n"
+        + json.dumps(pipeline, ensure_ascii=False, indent=2)
+    )
     cur = db[src_coll].aggregate(pipeline, allowDiskUse=True)
     for d in cur:
         yield d
@@ -411,14 +482,7 @@ def upsert_to_mongo(uri:str, db_name:str, coll_name:str, rows:List[Dict[str,Any]
     else:
         print(f" ↳ {coll_name}: nothing to upsert")
 
-def fetch_existing_processed_ids(uri: str, db_name: str, coll_name: str) -> set[str]:
-    """Return a set of video_ids already in processed collection."""
-    if MongoClient is None:
-        return set()
-    client = MongoClient(uri)
-    db = client[db_name]
-    cur = db[coll_name].find({}, {"video_id": 1})
-    return {doc.get("video_id") for doc in cur if doc.get("video_id")}
+# --------------------------- CLI helpers ----------------------------
 
 def detect_db_from_uri(uri:str)->Optional[str]:
     tail = uri.split("/")[-1]
@@ -433,25 +497,36 @@ def _boolish(v) -> bool:
     s = str(v).strip().lower()
     return s not in ("0","false","no","off")
 
+# ------------------------------- main -------------------------------
+
 def main():
+    global DO_EXTENDED
+
     ap=argparse.ArgumentParser(description="Process YouTube tracker docs into JSON outputs.")
     ap.add_argument("--mongo-uri")
     ap.add_argument("--db", default=None)
     ap.add_argument("--collection", default=None)
     ap.add_argument("--input-json")
     ap.add_argument("--out-processed", default="processed_videos.json")
-    ap.add_argument("--out-summary", default="dashboard_summary.json")
-    ap.add_argument("--to-mongo", action="store_true", help="(Optional) Explicitly upsert outputs into Mongo (default: ON)")
+    ap.add_argument("--to-mongo", action="store_true", help="Upsert outputs into Mongo (ON if flag present)")
     ap.add_argument("--no-mongo", action="store_true", help="Disable upserting outputs into Mongo")
     ap.add_argument("--query", help="MongoDB query as JSON string, e.g. '{\"tracking.status\":\"complete\"}'")
     ap.add_argument("--out-coll-processed", default="processed_videos", help="Collection for processed output")
-    ap.add_argument("--out-coll-summary", default="dashboard_summary", help="Collection for dashboard summary")
     ap.add_argument("--skip-processed", default="true", help="Skip documents already present in processed collection (true/false, default: true)")
-    ap.add_argument("--processed-source-coll", default=None, help="Collection to check for already processed rows. Defaults to --out-coll-processed")
+    ap.add_argument("--processed-source-coll", default=None, help="Collection checked for already processed rows. Defaults to --out-coll-processed")
     ap.add_argument("--out-dir", default=None, help="Directory to write output JSONs. Default: project root (parent of this script). Can also be set via env OUTPUT_DIR")
+
+    # Extended features flags: default ON; allow disabling via --no-extended-features
+    ap.add_argument("--extended-features", dest="extended_features", action="store_true", default=True,
+                    help="Add per-horizon extended features (3h/6h/12h/24h). Default: ON")
+    ap.add_argument("--no-extended-features", dest="extended_features", action="store_false",
+                    help="Disable extended features (override default ON)")
+
     ap.add_argument("--refresh-existing", action="store_true", help="Replace existing documents (by video_id) instead of $set updating.")
 
     args=ap.parse_args()
+
+    DO_EXTENDED = bool(args.extended_features)
 
     # === Auto load .env ===
     env_path = Path(__file__).resolve().parents[1] / ".env"
@@ -503,8 +578,6 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     p_out_processed = (out_dir / args.out_processed).resolve()
-    p_out_summary   = (out_dir / args.out_summary).resolve()
-    p_out_overview  = (out_dir / "dashboard_overview.json").resolve()
 
     # Decide data source — include complete + tracking by default
     DEFAULT_STATUS_FILTER = {"$in": ["complete", "tracking"]}
@@ -513,19 +586,8 @@ def main():
     if "tracking.status" not in query_dict:
         query_dict["tracking.status"] = DEFAULT_STATUS_FILTER
 
-    # Preload existing processed ids (to mark just_completed once)
-    existing_ids: Optional[set] = None
-    if args.mongo_uri and args.db:
-        try:
-            existing_ids = fetch_existing_processed_ids(args.mongo_uri, args.db, args.out_coll_processed)
-            print(f"🔧 Preloaded {len(existing_ids)} existing processed video_ids")
-        except Exception as e:
-            print(f"⚠️ Failed to preload existing processed IDs: {e}", file=sys.stderr)
-            existing_ids = set()
-
     print(f"🔧 Normalized query: {json.dumps(query_dict, ensure_ascii=False)}")
 
-    # NEW: when skip_processed=true, still reprocess all TRACKING + NEW docs
     if args.mongo_uri:
         if skip_processed:
             q_tracking = dict(query_dict)
@@ -550,23 +612,13 @@ def main():
     for i,d in enumerate(docs,1):
         try:
             r = summarize_video(d)
-
-            # processed_at for auditing
             r["processed_at"] = now_iso
 
-            # Single-cycle 'just_completed'
-            vid = r.get("video_id")
+            # only two states needed: complete or tracking
             st  = (r.get("status") or "").lower()
-            if st == "complete":
-                if (args.mongo_uri and isinstance(existing_ids, set) and vid not in existing_ids):
-                    r["processed_status"] = "just_completed"
-                else:
-                    r["processed_status"] = "complete"
-            else:
-                r["processed_status"] = "tracking"
+            r["processed_status"] = "complete" if st == "complete" else "tracking"
 
             processed.append(r)
-
             if i % 500 == 0:
                 print(f"Processed {i} videos...", file=sys.stderr)
         except Exception as e:
@@ -575,15 +627,9 @@ def main():
     with open(p_out_processed,"w",encoding="utf-8") as f:
         json.dump(processed,f,ensure_ascii=False,indent=2)
 
-    summary=build_dashboard_summary(processed)
-
-    with open(p_out_summary,"w",encoding="utf-8") as f:
-        json.dump(summary,f,ensure_ascii=False,indent=2)
-
     print(f"\n✅ Wrote {p_out_processed} ({len(processed)} rows)")
-    print(f"✅ Wrote {p_out_summary} ({len(summary)} rows)")
 
-    # Optional: upsert outputs back to Mongo (default ON)
+    # Optional: upsert outputs back to Mongo
     do_push = True
     if args.no_mongo:
         do_push = False
@@ -599,41 +645,7 @@ def main():
             print("⏫ Upserting outputs into Mongo...")
             use_replace = bool(getattr(args, "refresh_existing", False))
             upsert_to_mongo(args.mongo_uri, args.db, args.out_coll_processed, processed, key="video_id", use_replace=use_replace)
-            upsert_to_mongo(args.mongo_uri, args.db, args.out_coll_summary,  summary,   key="video_id", use_replace=use_replace)
             print("✅ Done upserting to Mongo.")
-
-    # ---- dashboard_overview.json with counts ----
-    try:
-        overview = {
-            "total_videos": None,
-            "processed_videos": None,
-            "pending_videos": None,
-            "timestamp": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00","Z")
-        }
-        if args.mongo_uri and MongoClient is not None and args.db:
-            client = MongoClient(args.mongo_uri)
-            db = client[args.db]
-            total_videos = db[args.collection].count_documents({})
-            processed_count = db[args.out_coll_processed].count_documents({})
-            pending = max(total_videos - processed_count, 0)
-            overview.update({
-                "total_videos": total_videos,
-                "processed_videos": processed_count,
-                "pending_videos": pending
-            })
-        else:
-            overview.update({
-                "total_videos": None,
-                "processed_videos": len(processed),
-                "pending_videos": None
-            })
-
-        with open(p_out_overview, "w", encoding="utf-8") as f:
-            json.dump(overview, f, ensure_ascii=False, indent=2)
-        print(f"📊 Dashboard overview saved → {p_out_overview}")
-        print(json.dumps(overview, indent=2))
-    except Exception as e:
-        print(f"⚠️ Failed to write dashboard_overview.json: {e}", file=sys.stderr)
 
 if __name__=="__main__":
     main()
