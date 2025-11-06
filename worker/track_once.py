@@ -24,21 +24,21 @@ except Exception:
 def load_project_env():
     loaded = False
 
-    # 1) Ưu tiên .env ở root dự án (…/yt-autoscanner/.env)
+    # 1) .env in root
     proj_root = Path(__file__).resolve().parents[1] / ".env"
     if proj_root.exists():
         load_dotenv(dotenv_path=proj_root)
         print(f"✅ Loaded .env from project root: {proj_root}")
         loaded = True
 
-    # 2) Thử .env ở HOME (ví dụ /home/ytscan/.env)
+    # 2) Try .env in HOME
     home_env = Path.home() / ".env"
     if home_env.exists():
         load_dotenv(dotenv_path=home_env, override=True)
         print(f"✅ Loaded .env from home: {home_env}")
         loaded = True
 
-    # 3) Thử .env tại thư mục đang chạy (CWD)
+    # 3) Try .env in current folder
     cwd_env = Path(".env").resolve()
     if cwd_env.exists():
         load_dotenv(dotenv_path=cwd_env, override=True)
@@ -56,7 +56,7 @@ API_KEY   = os.getenv("YT_API_KEY")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/ytscan")
 
 TRACK_BATCH_SIZE = min(50, max(1, int(os.getenv("TRACK_BATCH_SIZE", "50"))))
-TRACK_MAX_DUE    = max(1, int(os.getenv("TRACK_MAX_DUE_PER_RUN", "1000")))
+TRACK_MAX_DUE    = max(1, int(os.getenv("TRACK_MAX_DUE_PER_RUN", "5000")))
 LOG_SAMPLE       = max(0, int(os.getenv("TRACK_LOG_SAMPLE", "5")))
 
 ENRICH_HANDLE_MODE = os.getenv("YT_ENRICH_HANDLE_MODE", "track").lower()  # track|discover|off
