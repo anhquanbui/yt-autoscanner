@@ -1,0 +1,22 @@
+# ==========================================================
+#  YouTube AutoScanner — Tools Environment
+#  (Minimal dependency set for standalone usage)
+# ==========================================================
+
+# --- Core utilities ---
+python-dotenv>=1.0.1          # Load environment variables from .env
+colorama>=0.4.6               # Optional colored console output
+tqdm>=4.66.5                  # Progress bars for long-running exports
+
+# --- Database layer ---
+pymongo==4.8.0                # MongoDB driver
+# dnspython>=2.6.1            # Uncomment if using SRV connection strings
+
+# --- Data handling ---
+pandas>=2.2.2                 # Data manipulation
+numpy>=1.26.4                 # Numerical support
+pyarrow>=17.0.0               # Parquet engine (fast)
+fastparquet>=2024.5.0         # Alternative Parquet engine (optional)
+
+# --- Optional output formats ---
+odfpy>=1.4.1                  # OpenDocument format support (ODS export)
