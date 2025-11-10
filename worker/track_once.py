@@ -240,6 +240,19 @@ def main() -> int:
             vid = str(d["_id"])
             sn = d.get("snippet", {}) or {}
             pub = parse_iso(sn.get("publishedAt") or "")
+            # --- NEW: stop if video is marked low quality ---
+            if d.get("label_low_quality") == 1:
+                ops.append(UpdateOne({"_id": vid}, {
+                    "$set": {
+                        "tracking.status": "stopped",
+                        "tracking.stop_reason": "low_quality_v3_6h",
+                        "tracking.last_polled_at": now_iso,
+                        "tracking.next_poll_after": None
+                    },
+                    "$inc": {"tracking.poll_count": 1}
+                }))
+                completed += 1
+                continue
             if not pub:
                 ops.append(UpdateOne({"_id": vid}, {
                     "$set": {
@@ -258,7 +271,7 @@ def main() -> int:
                 ops.append(UpdateOne({"_id": vid}, {
                     "$set": {
                         "tracking.status": "complete",
-                        "tracking.stop_reason": "unavailable",
+                        "tracking.stop_reason": "removed",  # updated
                         "tracking.last_polled_at": now_iso,
                         "tracking.next_poll_after": None
                     },

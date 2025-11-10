@@ -573,7 +573,7 @@ def parse_args(argv: List[str]):
                    help="Only consider channels from videos newer than N hours (default: 72). Set 0 to ignore.")
     p.add_argument("--stale-hours", type=int, default=48,
                    help="Only refresh channels whose last_checked_at is older than N hours (default: 48). Set 0 to ignore.")
-    p.add_argument("--limit", type=int, default=2000, help="Maximum channels to process in this run (default: 2000). Use 0 for unlimited.")
+    p.add_argument("--limit", type=int, default=50000, help="Maximum channels to process in this run (default: 2000). Use 0 for unlimited.")
     p.add_argument("--scan-all-channels", action="store_true",
                    help="Refresh from the entire 'channels' collection instead of discovering via 'videos'.")
     p.add_argument("--dry-run", action="store_true", help="Do not write to DB; print summary only")
