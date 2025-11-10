@@ -1,35 +1,33 @@
 #!/usr/bin/env python3
 """
-mongo_to_parquet.py — Chunked Export of MongoDB collection to Parquet for ML use.
+mongo_to_parquet.py — Chunked export MongoDB collection → Parquet for ML.
 
-✔ Auto-load .env (MONGO_URI, MONGO_DB, MONGO_COLLECTION)
-✔ Stream export by chunks (no memory overflow)
-✔ Default output directory: ../data_export/
+- Auto loads .env (MONGO_URI, MONGO_DB, MONGO_COLLECTION)
+- Uses centralized export dir from config.path_utils
+  (EXPORT_DIR / OUTPUT_DIR / data_export)
+- Writes in chunks to avoid memory overflow
 """
 
 from __future__ import annotations
+
 import argparse
 import json
 import os
 from pathlib import Path
 from typing import Any, Dict
+
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+from dotenv import load_dotenv
+from pymongo import MongoClient
+from bson import ObjectId, Decimal128, Timestamp, Binary
 
-try:
-    from dotenv import load_dotenv
-except Exception:
-    def load_dotenv(dotenv_path=None): ...
-
-try:
-    from pymongo import MongoClient
-    from bson import ObjectId, Decimal128, Timestamp, Binary
-except ImportError as e:
-    raise SystemExit("Please install:\n  pip install pymongo python-dotenv pyarrow pandas") from e
+from config.path_utils import get_export_dir
 
 
 def normalize_value(v: Any) -> Any:
+    """Normalize BSON/JSON values into Parquet-friendly types."""
     if isinstance(v, (str, int, float, bool)) or v is None:
         return v
     if isinstance(v, ObjectId):
@@ -51,49 +49,84 @@ def normalize_value(v: Any) -> Any:
 
 
 def normalize_document(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply normalize_value() to all fields in a MongoDB document."""
     return {k: normalize_value(v) for k, v in doc.items()}
 
 
 def choose_from_list(items, prompt: str):
+    """Interactive menu to choose an item from a list."""
     if not items:
         raise SystemExit(f"No options for {prompt}")
     print(f"\n{prompt}")
     for i, name in enumerate(items, 1):
         print(f"  [{i}] {name}")
     while True:
-        c = input(f"Enter number (1-{len(items)}): ").strip()
-        if c.isdigit() and 1 <= int(c) <= len(items):
-            return items[int(c) - 1]
+        choice = input(f"Enter number (1-{len(items)}): ").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(items):
+            return items[int(choice) - 1]
         print("Invalid choice, try again.")
 
 
 def main():
     load_dotenv()
 
-    parser = argparse.ArgumentParser(description="Chunked export MongoDB → Parquet (safe for large data)")
-    parser.add_argument("--uri", default=os.getenv("MONGO_URI", "mongodb://localhost:27017"))
-    parser.add_argument("--db", default=os.getenv("MONGO_DB"))
-    parser.add_argument("--collection", "--coll", dest="collection", default=os.getenv("MONGO_COLLECTION"))
-    parser.add_argument("--query", type=str, help="MongoDB filter JSON string")
-    parser.add_argument("--limit", type=int, help="Limit number of documents")
-    parser.add_argument("--chunk", type=int, default=100000, help="Chunk size per write (default 100k)")
-    parser.add_argument("--out", type=str, help="Output path (default: ../data_export/mongo_export.parquet)")
+    parser = argparse.ArgumentParser(
+        description="Chunked export MongoDB → Parquet (safe for large data)."
+    )
+    parser.add_argument(
+        "--uri",
+        default=os.getenv("MONGO_URI", "mongodb://localhost:27017"),
+        help="MongoDB connection URI (default: env MONGO_URI or localhost)",
+    )
+    parser.add_argument(
+        "--db",
+        default=os.getenv("MONGO_DB"),
+        help="Database name (default: env MONGO_DB, otherwise choose interactively).",
+    )
+    parser.add_argument(
+        "--collection",
+        "--coll",
+        dest="collection",
+        default=os.getenv("MONGO_COLLECTION"),
+        help="Collection name (default: env MONGO_COLLECTION, otherwise choose interactively).",
+    )
+    parser.add_argument(
+        "--query",
+        type=str,
+        help="MongoDB filter as JSON string, e.g. '{\"tracking.status\":\"complete\"}'",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Limit number of documents (optional).",
+    )
+    parser.add_argument(
+        "--chunk",
+        type=int,
+        default=100_000,
+        help="Chunk size per write (default: 100000).",
+    )
+    parser.add_argument(
+        "--out",
+        type=str,
+        help="Output filename (relative to EXPORT_DIR). Default: mongo_export.parquet",
+    )
     args = parser.parse_args()
 
     print(f"[INFO] Connecting to MongoDB: {args.uri}")
     client = MongoClient(args.uri)
 
-    # Select DB
+    # --- Select database ---
     if args.db:
         db_name = args.db
     else:
         db_name = choose_from_list(
             [n for n in client.list_database_names() if n not in ("admin", "local", "config")],
-            "Select a database:"
+            "Select a database:",
         )
     db = client[db_name]
 
-    # Select collection
+    # --- Select collection ---
     if args.collection:
         coll_name = args.collection
     else:
@@ -101,8 +134,8 @@ def main():
     coll = db[coll_name]
     print(f"[INFO] Selected {db_name}.{coll_name}")
 
-    # Filter
-    query = {}
+    # --- Build query ---
+    query: Dict[str, Any] = {}
     if args.query:
         try:
             query = json.loads(args.query)
@@ -113,17 +146,25 @@ def main():
     cursor = coll.find(query, no_cursor_timeout=True)
     if args.limit:
         cursor = cursor.limit(args.limit)
+        print(f"[INFO] Limiting to {args.limit} documents")
 
-    # Prepare output path
-    project_root = Path(__file__).resolve().parents[1]
-    export_dir = project_root.parent / "data_export"
-    export_dir.mkdir(parents=True, exist_ok=True)
-    out_path = Path(args.out).resolve() if args.out else export_dir / "mongo_export.parquet"
+    # --- Resolve export directory via path_utils ---
+    export_dir = get_export_dir()  # uses EXPORT_DIR / OUTPUT_DIR / data_export
+    if args.out:
+        out_path = Path(args.out)
+        if not out_path.is_absolute():
+            out_path = export_dir / out_path
+        out_path = out_path.resolve()
+    else:
+        out_path = (export_dir / "mongo_export.parquet").resolve()
 
-    # Parquet writer setup
-    writer = None
+    print(f"[INFO] Export directory: {export_dir}")
+    print(f"[INFO] Writing Parquet → {out_path}")
+
+    # --- Chunked write ---
+    writer: pq.ParquetWriter | None = None
     total = 0
-    buffer = []
+    buffer: list[Dict[str, Any]] = []
 
     try:
         for i, doc in enumerate(cursor, 1):
@@ -135,8 +176,9 @@ def main():
                     writer = pq.ParquetWriter(out_path, table.schema)
                 writer.write_table(table)
                 total += len(buffer)
-                print(f"[INFO] Wrote chunk {total:,} rows → {out_path}")
+                print(f"[INFO] Wrote chunk, total rows: {total:,}")
                 buffer.clear()
+
         # Final flush
         if buffer:
             df = pd.DataFrame(buffer)
@@ -145,14 +187,14 @@ def main():
                 writer = pq.ParquetWriter(out_path, table.schema)
             writer.write_table(table)
             total += len(buffer)
-            print(f"[INFO] Wrote final chunk ({len(buffer):,} rows)")
+            print(f"[INFO] Wrote final chunk, total rows: {total:,}")
 
     finally:
         cursor.close()
         if writer:
             writer.close()
 
-    print(f"[DONE] Exported total {total:,} rows → {out_path}")
+    print(f"[DONE] Exported {total:,} rows → {out_path}")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # ==========================================================
 #  YouTube AutoScanner — Development Environment
-#  (Installs ALL modules: worker + api + ML)
+#  (Installs ALL modules: worker + api + ML + export tools)
 # ==========================================================
 # Use this for full local development and testing.
 # For production or deployment, use the smaller
@@ -31,6 +31,8 @@ numpy>=1.26.4                 # Numerical computing and arrays
 scikit-learn>=1.5.0           # Classic ML toolkit (classification, regression)
 xgboost>=2.1.0                # Gradient boosting model used in prediction pipeline
 
-# (Dashboard packages intentionally excluded)
-# Streamlit / Plotly should be installed in a separate venv
-# if you plan to run the analytics dashboard UI.
+# --- Data Export / Conversion tools ---
+pyarrow>=17.0.0               # High-performance Parquet/Arrow engine
+fastparquet>=2024.5.0         # Alternative Parquet engine (optional)
+odfpy>=1.4.1                  # Optional: for OpenDocument exports (ODS, ODT)
+tqdm>=4.66.5                  # Progress bar for chunked exports

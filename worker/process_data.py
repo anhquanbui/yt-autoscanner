@@ -23,6 +23,8 @@ from pathlib import Path
 import math
 import itertools
 
+from config.path_utils import get_export_dir
+
 # Optional pymongo imports
 try:
     from pymongo import MongoClient, UpdateOne, ReplaceOne
@@ -566,18 +568,18 @@ def main():
             print(f"ERROR: --query must be valid JSON. {e}", file=sys.stderr)
             sys.exit(4)
 
-    # === Resolve out directory ===
-    default_out_dir = Path(__file__).resolve().parents[1]
-    env_out_dir = os.getenv("OUTPUT_DIR")
+    # === Resolve output directory (centralized via path_utils) ===
     if args.out_dir:
+        # If user passes --out-dir, use it directly
         out_dir = Path(args.out_dir).expanduser().resolve()
-    elif env_out_dir:
-        out_dir = Path(env_out_dir).expanduser().resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
     else:
-        out_dir = default_out_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
+        # Otherwise use the shared export directory
+        # (controlled by EXPORT_DIR / OUTPUT_DIR / default data_export)
+        out_dir = get_export_dir()
 
     p_out_processed = (out_dir / args.out_processed).resolve()
+
 
     # Decide data source — include complete + tracking by default
     DEFAULT_STATUS_FILTER = {"$in": ["complete", "tracking"]}

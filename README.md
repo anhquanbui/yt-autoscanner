@@ -35,19 +35,19 @@ This README covers local development, environment config, the discover worker (v
 | File | Description |
 |------|-------------|
 | 📌 [discover_once.md](docs/discover_once.md) | Discovers newly published videos via region + keyword pools |
-| 📈 [track_once.md](docs/track_once.md) | Collects early engagement time‑series snapshots |
+| 📈 [track_once.md](docs/track_once.md) | Collects early engagement time-series snapshots |
 
 ### 🔄 Data Lifecycle — Maintain a Clean & Scalable Dataset
 | File | Description |
 |------|-------------|
 | 🧊 [archive_completed_videos.md](docs/archive_completed_videos.md) | Moves completed videos → cold storage (monthly partitions) |
-| 🗑️ [prune_unavailable_once.md](docs/prune_unavailable_once.md) | Removes private/deleted/no‑data videos to reduce bloat |
+| 🗑️ [prune_unavailable_once.md](docs/prune_unavailable_once.md) | Removes private/deleted/no-data videos to reduce bloat |
 
 ### 🗄️ Database Schema & Performance
 | File | Description |
 |------|-------------|
 | 🧩 [ytscan_collections_overview.md](docs/ytscan_collections_overview.md) | Database schema & relations (hot + cold storage) |
-| 🚀 [make_indexes_v3.md](docs/make_indexes_v3.md) | Performance‑optimized MongoDB indexes |
+| 🚀 [make_indexes_v3.md](docs/make_indexes_v3.md) | Performance-optimized MongoDB indexes |
 
 ### ⚙️ Operations & Automation
 | File | Description |
@@ -62,6 +62,9 @@ This README covers local development, environment config, the discover worker (v
 | 🗺️ [pipeline_overview.md](docs/pipeline_overview.md) | Full pipeline flow: Discover → Track → Archive/Prune → ML |
 
 ---
+## What's new (Nov 10 2025)
+- **Data Export System Added** — Introduced `path_utils.py` for centralized export path management, `mongo_to_parquet.py` for Parquet export, and `process_data.py` integration.
+
 ## What's new (Oct 31 2025)
 - **process_data.py (v7.3)** — Refactored to remove dashboard JSON outputs, streamlined processed_status logic, added per-segment extended features (min_view, max_view, view_range, low_activity, plateau).
 - **make_indexes.py (v4)** — Comprehensive index manager for videos and processed_videos, added partial + wildcard indexes for analytics/ML queries, safer idempotent index maintenance.
@@ -99,11 +102,10 @@ YT-AUTOSCANNER/
 │   └─ mongodb_setup_for_beginners.md
 │
 ├─ tools/                       # Data lifecycle & maintenance tools
-│   ├─ archive_completed_videos.py   # moves complete videos → cold
-│   ├─ prune_unavailable_once.py     # removes broken/unavailable docs
-│   ├─ backfill_channels.py
-│   ├─ backfill_missing_fields.py
-│   ├─ make_indexes.py
+│   ├─ backfill_channels.py          # Rebuild channels collection
+│   ├─ backfill_missing_fields.py    # Fill missing fields in documents
+│   ├─ make_indexes.py               # Maintain indexes for MongoDB
+│   ├─ mongo_to_parquet.py           # Export MongoDB collection → Parquet (ML-ready)
 │   └─ index_maintenance.log
 │
 ├─ worker/                      # Video ingestion + tracking core
@@ -217,8 +219,101 @@ Useful queries:
 
 ---
 
-## Compliance Notice
-This repository follows **YouTube Researcher Program policies**.  
-No YouTube Data API content is included in this repo.
+## 🧩 New Additions — Data Export & ML Integration (Nov 2025)
 
-📅 **Last Updated:** **Oct 26 2025**
+### 🧭 Centralized Path Management — `config/path_utils.py`
+Manages all export/output paths in one place.
+
+#### Features
+- Automatically loads `.env` configuration.
+- Priority order:
+  1. `EXPORT_DIR` (environment variable)
+  2. `OUTPUT_DIR` (environment variable)
+  3. Default fallback: `<project_root>/data_export/`
+- Automatically creates the directory if missing.
+
+#### Example
+```python
+from config.path_utils import get_export_dir
+export_dir = get_export_dir()
+```
+
+Set this in `.env`:
+```env
+EXPORT_DIR=D:\PYTHON\PROJECT\yt-autoscanner\data_export
+```
+If not set, defaults to `yt-autoscanner/data_export/`.
+
+---
+
+### 🧮 Updated Data Processor — `worker/process_data.py`
+Refactored to use centralized `get_export_dir()`.
+
+```python
+from config.path_utils import get_export_dir
+
+if args.out_dir:
+    out_dir = Path(args.out_dir).expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+else:
+    out_dir = get_export_dir()
+```
+All processed outputs (JSON, CSV, etc.) are stored in the unified export directory.
+
+---
+
+### 🧾 Mongo Export Tool — `tools/mongo_to_parquet.py`
+A new tool for exporting MongoDB collections to ML-ready Parquet files.
+
+#### Highlights
+- Reads `.env` (`MONGO_URI`, `MONGO_DB`, `MONGO_COLLECTION`).
+- Chunked writing — prevents memory overflow.
+- Optional `--query`, `--limit`, `--chunk`, `--out` flags.
+- Converts BSON to safe JSON types.
+- Unified output path via `get_export_dir()`.
+
+#### Example usage
+```bash
+python tools/mongo_to_parquet.py \
+  --query '{"processed_status": "complete"}' \
+  --limit 200000 \
+  --chunk 50000 \
+  --out processed_complete.parquet
+```
+Output files are written to `data_export/` or your `EXPORT_DIR` path.
+
+---
+
+### 📦 Updated Dependencies
+Added to `requirements-dev.txt`:
+```bash
+pyarrow>=17.0.0
+fastparquet>=2024.5.0
+odfpy>=1.4.1
+tqdm>=4.66.5
+```
+Install:
+```bash
+pip install -r requirements-dev.txt
+```
+
+---
+
+### 🧬 Typical ML Workflow
+1. Run `worker/process_data.py` to preprocess data.
+2. Run `tools/mongo_to_parquet.py` to export MongoDB data.
+3. Train ML models (e.g., XGBoost, sklearn) on the Parquet file.
+
+---
+
+## ✅ Advantages of Unified Export System
+| Feature | Description |
+|----------|--------------|
+| **Centralized config** | All export paths defined in `.env` |
+| **Cross-platform** | Works on Windows, Linux, Docker |
+| **Chunked export** | Handles large datasets efficiently |
+| **ML-ready** | Outputs Parquet files compatible with pandas/XGBoost |
+
+---
+
+📅 **Last Updated:** **Nov 10 2025**

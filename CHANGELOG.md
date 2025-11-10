@@ -2,6 +2,69 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
+## [Nov 10 2025]
+
+### ✨ **New Features**
+🧭 **Centralized Export Path (`config/path_utils.py`)**
+  - Introduced centralized utility to manage all export/output directories.
+  - Supports `.env` variables: `EXPORT_DIR` and `OUTPUT_DIR`.
+  - Automatically creates export directories if missing, ensuring cross-platform compatibility.
+  - Simplifies path management for `process_data.py` and all future tools.
+
+🧾 **Mongo → Parquet Export Tool (`tools/mongo_to_parquet.py`)**
+  - New command-line tool to export MongoDB collections to ML-ready **Parquet** files.
+  - Handles large datasets safely using **chunked writes** (`--chunk` flag).
+  - Supports filters (`--query`), limits (`--limit`), and custom output file names (`--out`).
+  - Auto-converts BSON types (`ObjectId`, `Decimal128`, etc.) to compatible formats.
+  - Displays progress bar with `tqdm`.
+
+🧮 **Process Data Integration (`worker/process_data.py`)**
+  - Integrated with centralized export system using `get_export_dir()`.
+  - Unified all output paths (JSON, CSV, Parquet) under a single location.
+  - Cleaner structure and easier ML hand-off.
+
+---
+
+### ⚙️ **Configuration**
+- Added new environment variable in `.env`:
+  ```env
+  EXPORT_DIR=D:\PYTHON\PROJECT\yt-autoscanner\data_export
+  ```
+  Default fallback (if unset):  
+  ```
+  <project_root>/data_export/
+  ```
+
+---
+
+### 🧠 **Development Environment**
+- Added new dependencies to `requirements-dev.txt`:
+  ```bash
+  pyarrow>=17.0.0
+  fastparquet>=2024.5.0
+  odfpy>=1.4.1
+  tqdm>=4.66.5
+  ```
+- Updated comments and version consistency for ML-ready export utilities.
+
+---
+
+### 🗂️ **Structural Cleanup**
+- Refactored `/tools/` directory:
+  ```
+  backfill_channels.py
+  backfill_missing_fields.py
+  make_indexes.py
+  mongo_to_parquet.py
+  ```
+  ➤ Removed all legacy `.bak` files and unused scripts.  
+  ➤ Added unified output folder:
+  ```
+  /yt-autoscanner
+  /data_export
+  ```
+
+---
 ## [Oct 26 2025] — Major Data Lifecycle Upgrade 🚀
 
 ### 🔥 Data Footprint Optimization
