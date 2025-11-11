@@ -106,21 +106,21 @@ YT-AUTOSCANNER/
 │   ├─ backfill_missing_fields.py    # Fill missing fields in documents
 │   ├─ make_indexes.py               # Maintain indexes for MongoDB
 │   ├─ mongo_to_parquet.py           # Export MongoDB collection → Parquet (ML-ready)
-│   └─ index_maintenance.log
+│   └─ requirements.txt
 │
 ├─ worker/                      # Video ingestion + tracking core
 │   ├─ discover_once.py              # Discover fresh videos
 │   ├─ track_once.py                 # Track early engagement stats
-│   ├─ scheduler.py                  # (optional) automated jobs
 │   ├─ process_data.py
 │   └─ requirements.txt
+│   
 │
 ├─ logs/                        # Worker/API logs (rotating daily)
-├─ .env                         # Mongo + YouTube API key
+├─ .env                         # Mongo URI + YouTube API key + Export Path
 ├─ CHANGELOG.md                 # Version history
 ├─ README.md                    # You are here 👋
-├─ dashboard_summary.json       # Statistics for dashboard
 ├─ run_both_local.ps1           # Unified worker runner
+├─ run_track_one_loop_30s.ps1   # run track_once every 30 seconds
 └─ seed.py                      # Sample initializer or testing
 ```
 
@@ -160,7 +160,7 @@ Via Docker:
 docker run -d --name mongo -p 27017:27017 mongo:7
 python tools/make_indexes.py
 ```
-Via Compass — guide → `mongodb_setup_for_beginners.md`
+Via Compass — guide → [mongodb_setup_for_beginners.md](docs/mongodb_setup_for_beginners.md)
 
 ---
 
@@ -240,7 +240,7 @@ export_dir = get_export_dir()
 
 Set this in `.env`:
 ```env
-EXPORT_DIR=D:\PYTHON\PROJECT\yt-autoscanner\data_export
+EXPORT_DIR=D:\PYTHON\PROJECT\yt-autoscanner\data_export #This is my PATH
 ```
 If not set, defaults to `yt-autoscanner/data_export/`.
 

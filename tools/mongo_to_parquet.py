@@ -49,8 +49,21 @@ def normalize_value(v: Any) -> Any:
 
 
 def normalize_document(doc: Dict[str, Any]) -> Dict[str, Any]:
-    """Apply normalize_value() to all fields in a MongoDB document."""
+    # Make a shallow copy so we don't mutate the original Mongo document
+    doc = dict(doc)
+
+    # Special handling: tracking.next_poll_after should always be a string
+    tracking = doc.get("tracking")
+    if isinstance(tracking, dict):
+        # If field exists but is None, normalize to empty string
+        if "next_poll_after" in tracking and tracking["next_poll_after"] is None:
+            tracking["next_poll_after"] = ""
+        # You can also ensure it is str if it's some other type
+        elif "next_poll_after" in tracking and tracking["next_poll_after"] is not None:
+            tracking["next_poll_after"] = str(tracking["next_poll_after"])
+
     return {k: normalize_value(v) for k, v in doc.items()}
+
 
 
 def choose_from_list(items, prompt: str):
@@ -173,7 +186,11 @@ def main():
                 df = pd.DataFrame(buffer)
                 table = pa.Table.from_pandas(df)
                 if writer is None:
+                    # First chunk: create writer with this schema
                     writer = pq.ParquetWriter(out_path, table.schema)
+                else:
+                    # Next chunks: cast table to the first chunk's schema
+                    table = table.cast(writer.schema)
                 writer.write_table(table)
                 total += len(buffer)
                 print(f"[INFO] Wrote chunk, total rows: {total:,}")
@@ -185,6 +202,8 @@ def main():
             table = pa.Table.from_pandas(df)
             if writer is None:
                 writer = pq.ParquetWriter(out_path, table.schema)
+            else:
+                table = table.cast(writer.schema)
             writer.write_table(table)
             total += len(buffer)
             print(f"[INFO] Wrote final chunk, total rows: {total:,}")

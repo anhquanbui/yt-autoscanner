@@ -47,3 +47,9 @@ logs/*
 # Ignore backup files
 # =========================
 *.bak
+
+# =========================
+# data export / parquet
+# =========================
+data_export/
+*.parquet
