@@ -282,6 +282,8 @@ python tools/mongo_to_parquet.py \
 ```
 Output files are written to `data_export/` or your `EXPORT_DIR` path.
 
+FULL GUIDE: [mongo_to_parquet_guide.md](docs/mongo_to_parquet_guide.md)
+
 ---
 
 ### 📦 Updated Dependencies
