@@ -51,7 +51,12 @@ def default_plan_minutes() -> List[int]:
     plan += list(range(780, 1440 + 1, 60)) # 12–24h: every 60 min
     return plan
 
-PLAN_MINUTES = default_plan_minutes()
+# ENV like track_once (YT_TRACK_PLAN_MINUTES="5,10,15,...")
+_PLAN_ENV = os.getenv("YT_TRACK_PLAN_MINUTES")
+if _PLAN_ENV:
+    PLAN_MINUTES = [int(x) for x in _PLAN_ENV.split(",") if x.strip()]
+else:
+    PLAN_MINUTES = default_plan_minutes()
 HORIZONS = [60, 180, 360, 720, 1440]  # 1h,3h,6h,12h,24h
 CEIL_TOLERANCE_MIN = 30
 
@@ -293,7 +298,7 @@ def summarize_video(doc:Dict[str,Any])->Dict[str,Any]:
     pub=parse_iso(snippet.get('publishedAt'))
 
     # Duration bucket fallback from durationSec if missing
-    dur_bucket = snippet.get("lengthBucket") or snippet.get("durationBucket")
+    dur_bucket = snippet.get("lengthBucket")
     dur_sec = snippet.get("durationSec")
     if not dur_bucket and isinstance(dur_sec, (int, float)):
         s = int(max(dur_sec, 0))
@@ -598,17 +603,21 @@ def main():
 
     if args.mongo_uri:
         if skip_processed:
+            # 1) Always reprocess all TRACKING docs (even if they already exist in processed_videos)
             q_tracking = dict(query_dict)
             q_tracking["tracking.status"] = "tracking"
             docs_tracking = read_from_mongo(args.mongo_uri, args.db, args.collection, query=q_tracking)
-
+            
+            # 2) Only fetch COMPLETE docs that do not yet exist in processed_videos
+            q_complete = dict(query_dict)
+            q_complete["tracking.status"] = "complete"
             docs_new = read_from_mongo_unprocessed(
                 args.mongo_uri, args.db, args.collection,
                 processed_coll=args.processed_source_coll,
-                query=query_dict
+                query=q_complete
             )
             docs = itertools.chain(docs_tracking, docs_new)
-            print("📦 Mode: skip-processed=true ⇒ reprocessing TRACKING + NEW only")
+            print("📦 Mode: skip-processed=true ⇒ reprocessing TRACKING + NEW COMPLETE only")
         else:
             docs = read_from_mongo(args.mongo_uri, args.db, args.collection, query=query_dict)
             print("📦 Mode: skip-processed=false ⇒ reprocessing ALL matched docs")

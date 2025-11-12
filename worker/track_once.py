@@ -182,6 +182,7 @@ def main() -> int:
         "tracking": 1, 
         "snippet.durationISO": 1, 
         "snippet.lengthBucket": 1,
+        "ml_flags": 1,
         })
     .sort("tracking.next_poll_after", 1)
     .limit(TRACK_MAX_DUE))
