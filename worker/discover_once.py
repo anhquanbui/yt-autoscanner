@@ -189,47 +189,63 @@ def upsert_minimal(items: List[Dict[str, Any]], db, region_used: str, query_used
         sn  = it.get('snippet', {}) or {}
         if not vid or not sn:
             continue
+        ml_flags = {
+            "viral_v1": {
+                "likely": False,
+                "confirmed": False,
+                "score": 0.0,
+                "updated_at": None,
+            },
+            "low_quality_v3_6h": {
+                "is_low": False,
+                "score": 0.0,
+                "threshold": None,
+                "updated_at": None,
+            },
+        }
+
         full_doc = {
-            '_id': vid,
-            'source': {
-                'query': query_used,
-                'regionCode': region_used,
-                'randomMode': bool(RANDOM_PICK),
+            "_id": vid,
+            "source": {
+                "query": query_used,
+                "regionCode": region_used,
+                "randomMode": bool(RANDOM_PICK),
             },
-            'snippet': {
-                'title': sn.get('title'),
-                'publishedAt': sn.get('publishedAt'),
-                'thumbnails': sn.get('thumbnails', {}),
-                'channelId': sn.get('channelId'),            # keep
-                # 'channelTitle': sn.get('channelTitle'),     # removed
-                'categoryId': sn.get('categoryId'),
-                'durationISO': sn.get('durationISO'),
-                'durationSec': sn.get('durationSec'),
-                'lengthBucket': sn.get('lengthBucket'),
+            "snippet": {
+                "title": sn.get("title"),
+                "publishedAt": sn.get("publishedAt"),
+                "thumbnails": sn.get("thumbnails", {}),
+                "channelId": sn.get("channelId"),
+                "categoryId": sn.get("categoryId"),
+                "durationISO": sn.get("durationISO"),
+                "durationSec": sn.get("durationSec"),
+                "lengthBucket": sn.get("lengthBucket"),
             },
-            'tracking': {
-                'status': 'tracking',
-                'discovered_at': now_iso,
-                'last_polled_at': None,
-                'next_poll_after': now_iso,
-                'poll_count': 0,
-                'stop_reason': None,
+            "tracking": {
+                "status": "tracking",
+                "discovered_at": now_iso,
+                "last_polled_at": None,
+                "next_poll_after": now_iso,
+                "poll_count": 0,
+                "stop_reason": None,
             },
-            'stats_snapshots': [],
-            'ml_flags': {'likely_viral': False, 'viral_confirmed': False, 'score': 0.0},
+            "stats_snapshots": [],
+            "ml_flags": ml_flags,
         }
+
+        # Upsert: set most fields only on insert, but always refresh snippet
         insert_doc = full_doc.copy()
-        insert_doc.pop('snippet', None)
+        insert_doc.pop("snippet", None)
         update_doc = {
-            '$setOnInsert': insert_doc,
-            '$set': {'snippet': full_doc['snippet']},
+            "$setOnInsert": insert_doc,
+            "$set": {"snippet": full_doc["snippet"]},
         }
-        ops.append(UpdateOne({'_id': vid}, update_doc, upsert=True))
+        ops.append(UpdateOne({"_id": vid}, update_doc, upsert=True))
+
     if not ops:
         return 0
     res = db.videos.bulk_write(ops, ordered=False)
     return int(res.upserted_count or 0)
-
 
 def main() -> int:
     print('>>> discover_once SCAN-ONLY (near-now + categoryId + duration filter) starting')
@@ -238,11 +254,6 @@ def main() -> int:
         return 2
 
     region_used = (random.choice(RANDOM_REGION_POOL) if RANDOM_PICK and RANDOM_REGION_POOL else REGION)
-
-    # --- Inject local trending keywords ---
-    if RANDOM_PICK:
-        GLOBAL_QUERY_POOL_TRENDED = load_local_trends("./trends/local_trending_weights.json", GLOBAL_QUERY_POOL)
-        os.environ["YT_RANDOM_QUERY_POOL"] = GLOBAL_QUERY_POOL_TRENDED
 
     query_used = None
     if RANDOM_PICK:
@@ -353,44 +364,6 @@ def main() -> int:
     except Exception as e:
         print('Error:', e, file=sys.stderr)
         return 1
-
-    # --- Local Trend Loader (optional) ---
-def load_local_trends(trend_path: str = "./trends/local_trending_weights.json",
-                      base_pool: str = "") -> str:
-    """
-    Read local_trending_weights.json (if exists) and merge into YT_RANDOM_QUERY_POOL.
-    Returns a combined string formatted like: "ai:6, youtube:4, ...".
-    """
-    try:
-        if not os.path.exists(trend_path):
-            print(f"[trend_loader] No local trend file found: {trend_path}")
-            return base_pool
-        with open(trend_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        weights = data.get("weights", {})
-        if not weights:
-            print(f"[trend_loader] Trend file empty: {trend_path}")
-            return base_pool
-
-        # normalize & scale to around 3–6 weight range
-        merged = []
-        for k, v in weights.items():
-            if not k or not isinstance(v, (int, float)):
-                continue
-            w = round(v * 3.5, 2)  # scale factor for discover pool
-            merged.append(f"{k}:{w}")
-
-        # combine with existing base pool
-        combined = base_pool.strip().rstrip(',')
-        if combined:
-            combined += "," + ",".join(merged)
-        else:
-            combined = ",".join(merged)
-        print(f"[trend_loader] Loaded {len(merged)} local trending keywords.")
-        return combined
-    except Exception as e:
-        print(f"[trend_loader] Error: {e}")
-        return base_pool
 
 if __name__ == '__main__':
     raise SystemExit(main())

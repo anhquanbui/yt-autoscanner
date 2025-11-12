@@ -178,6 +178,7 @@ python worker/track_once.py
 
 Unified runner:
 ```powershell
+# Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass (run if FullyQualifiedErrorId : UnauthorizedAccess)
 .\run_both_local.ps1
 ```
 

@@ -22,6 +22,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from pathlib import Path
 import math
 import itertools
+import pandas as pd
 
 from config.path_utils import get_export_dir
 
@@ -346,11 +347,12 @@ def summarize_video(doc:Dict[str,Any])->Dict[str,Any]:
 
     growth_phase = classify_growth_phase(horizons_out)
 
-    ml_flags = {
-        "likely_viral": False,
-        "score": 0.0,
-        "viral_confirmed": False
-    }
+    # NEW: carry ml_flags from original videos doc, if present
+    raw_ml_flags = doc.get("ml_flags")
+    if isinstance(raw_ml_flags, dict):
+        ml_flags = raw_ml_flags
+    else:
+        ml_flags = {}
 
     return {
         "video_id": vid,
@@ -389,7 +391,8 @@ def read_from_mongo(uri:str,db_name:str,coll:str, query:dict|None=None):
             "source.region":1,
             "source.query":1,
             "source.querySeed":1,
-            "stats_snapshots":1
+            "stats_snapshots":1,
+            "ml_flags": 1,
         }
     )
     for d in cur:
@@ -426,7 +429,8 @@ def read_from_mongo_unprocessed(uri:str, db_name:str, src_coll:str, processed_co
             "source.region":1,
             "source.query":1,
             "source.querySeed":1,
-            "stats_snapshots": 1
+            "stats_snapshots": 1,
+            "ml_flags": 1,
         }},
     ]
     print(
@@ -509,9 +513,11 @@ def main():
     ap.add_argument("--db", default=None)
     ap.add_argument("--collection", default=None)
     ap.add_argument("--input-json")
-    ap.add_argument("--out-processed", default="processed_videos.json")
+    ap.add_argument("--out-processed", default="processed_videos")  # we'll add extension based on format
     ap.add_argument("--to-mongo", action="store_true", help="Upsert outputs into Mongo (ON if flag present)")
     ap.add_argument("--no-mongo", action="store_true", help="Disable upserting outputs into Mongo")
+    ap.add_argument("--json", action="store_true", help="Export processed docs to JSON file")
+    ap.add_argument("--parquet", action="store_true", help="Export processed docs to Parquet file")
     ap.add_argument("--query", help="MongoDB query as JSON string, e.g. '{\"tracking.status\":\"complete\"}'")
     ap.add_argument("--out-coll-processed", default="processed_videos", help="Collection for processed output")
     ap.add_argument("--skip-processed", default="true", help="Skip documents already present in processed collection (true/false, default: true)")
@@ -626,17 +632,34 @@ def main():
         except Exception as e:
             print(f"Skip doc due to error: {e}", file=sys.stderr)
 
-    with open(p_out_processed,"w",encoding="utf-8") as f:
-        json.dump(processed,f,ensure_ascii=False,indent=2)
+    # --- Decide output dir & base file name ---
+    if getattr(args, "out_dir", None):
+        out_dir = Path(args.out_dir).expanduser().resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        out_dir = get_export_dir()
 
-    print(f"\n✅ Wrote {p_out_processed} ({len(processed)} rows)")
+    base_name = args.out_processed  # ví dụ: "processed_videos" hoặc "processed_videos.json"
+    if base_name.endswith(".json") or base_name.endswith(".parquet"):
+        base_name = base_name.rsplit(".", 1)[0]
 
-    # Optional: upsert outputs back to Mongo
-    do_push = True
-    if args.no_mongo:
-        do_push = False
-    if args.to_mongo:
-        do_push = True
+    # --- File exports: chỉ ghi nếu có flag ---
+    if getattr(args, "json", False):
+        p_json = (out_dir / f"{base_name}.json").resolve()
+        with open(p_json, "w", encoding="utf-8") as f:
+            json.dump(processed, f, ensure_ascii=False, indent=2)
+        print(f"\n✅ Wrote JSON: {p_json} ({len(processed)} rows)")
+
+    if getattr(args, "parquet", False):
+        p_parquet = (out_dir / f"{base_name}.parquet").resolve()
+        df = pd.DataFrame(processed)
+        df.to_parquet(p_parquet, index=False)
+        print(f"✅ Wrote Parquet: {p_parquet} ({len(processed)} rows)")
+
+    # --- Mongo upsert: mặc định BẬT, trừ khi --no-mongo ---
+    do_push = not getattr(args, "no_mongo", False)
+    if getattr(args, "to_mongo", False):
+        do_push = True  # nếu user cố tình bật lại
 
     if do_push:
         if not args.mongo_uri:
@@ -646,8 +669,16 @@ def main():
         else:
             print("⏫ Upserting outputs into Mongo...")
             use_replace = bool(getattr(args, "refresh_existing", False))
-            upsert_to_mongo(args.mongo_uri, args.db, args.out_coll_processed, processed, key="video_id", use_replace=use_replace)
+            upsert_to_mongo(
+                args.mongo_uri,
+                args.db,
+                args.out_coll_processed,
+                processed,
+                key="video_id",
+                use_replace=use_replace,
+            )
             print("✅ Done upserting to Mongo.")
+
 
 if __name__=="__main__":
     main()

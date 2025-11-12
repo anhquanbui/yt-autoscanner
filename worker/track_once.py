@@ -175,7 +175,14 @@ def main() -> int:
     due_cur = (db.videos.find({
         "tracking.status": "tracking",
         "tracking.next_poll_after": {"$lte": now_iso}
-    }, {"_id": 1, "snippet.publishedAt": 1, "snippet.channelId": 1, "tracking": 1, "snippet.durationISO": 1, "snippet.lengthBucket": 1})
+    }, {
+        "_id": 1, 
+        "snippet.publishedAt": 1, 
+        "snippet.channelId": 1, 
+        "tracking": 1, 
+        "snippet.durationISO": 1, 
+        "snippet.lengthBucket": 1,
+        })
     .sort("tracking.next_poll_after", 1)
     .limit(TRACK_MAX_DUE))
 
@@ -241,7 +248,8 @@ def main() -> int:
             sn = d.get("snippet", {}) or {}
             pub = parse_iso(sn.get("publishedAt") or "")
             # --- NEW: stop if video is marked low quality ---
-            if d.get("label_low_quality") == 1:
+            mlf = (d.get("ml_flags") or {}).get("low_quality_v3_6h", {})
+            if mlf.get("is_low") in (1, True):
                 ops.append(UpdateOne({"_id": vid}, {
                     "$set": {
                         "tracking.status": "stopped",
