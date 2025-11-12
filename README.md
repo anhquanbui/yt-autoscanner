@@ -106,6 +106,7 @@ YT-AUTOSCANNER/
 │   ├─ backfill_missing_fields.py    # Fill missing fields in documents
 │   ├─ make_indexes.py               # Maintain indexes for MongoDB
 │   ├─ mongo_to_parquet.py           # Export MongoDB collection → Parquet (ML-ready)
+│   ├─ ml_flags_migrate.py           # CLI tool to migrate `videos.ml_flags` to nested schema
 │   └─ requirements.txt
 │
 ├─ worker/                      # Video ingestion + tracking core
