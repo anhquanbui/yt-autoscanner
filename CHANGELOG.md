@@ -2,6 +2,19 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
+
+## [Nov 11 2025]
+
+### 🧩 Added
+- **New Tool:** `tools/ml_flags_migrate.py`  
+  CLI tool to migrate `videos.ml_flags` to nested schema (`viral_v1`, `low_quality_v3_6h`).
+
+### 🧰 Notes
+- Default: uses env vars or localhost defaults.
+- Supports `--dry-run`, `--only-legacy`, auto version detection, idempotent updates.
+
+---
+
 ## [Nov 10 2025]
 
 ### ✨ **New Features**
