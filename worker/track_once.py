@@ -246,35 +246,43 @@ def main() -> int:
         ops: List[UpdateOne] = []
         for d in batch:
             vid = str(d["_id"])
+            
+            # 1) if flagged low_quality_v3_6h, stop track
+            mlf = (d.get("ml_flags") or {}).get("low_quality_v3_6h") or {}
+            if mlf.get("is_low") in (True, 1):
+                ops.append(UpdateOne(
+                    {"_id": vid},
+                    {
+                        "$set": {
+                            "tracking.status": "stopped",
+                            "tracking.stop_reason": "ml.low_quality_v3_6h",
+                            "tracking.last_polled_at": now_iso,
+                            "tracking.next_poll_after": None,
+                        },
+                        "$inc": {"tracking.poll_count": 1},
+                    },
+                ))
+                completed += 1
+                continue  # stop fetching stats for this video
+            
+            # 2) Normal process: parse publishedAt & continue to process
             sn = d.get("snippet", {}) or {}
             pub = parse_iso(sn.get("publishedAt") or "")
-            # --- NEW: stop if video is marked low quality ---
-            mlf = (d.get("ml_flags") or {}).get("low_quality_v3_6h", {})
-            if mlf.get("is_low") in (1, True):
-                ops.append(UpdateOne({"_id": vid}, {
-                    "$set": {
-                        "tracking.status": "stopped",
-                        "tracking.stop_reason": "low_quality_v3_6h",
-                        "tracking.last_polled_at": now_iso,
-                        "tracking.next_poll_after": None
-                    },
-                    "$inc": {"tracking.poll_count": 1}
-                }))
-                completed += 1
-                continue
             if not pub:
-                ops.append(UpdateOne({"_id": vid}, {
-                    "$set": {
-                        "tracking.status": "complete",
-                        "tracking.stop_reason": "no_publishedAt",
-                        "tracking.last_polled_at": now_iso,
-                        "tracking.next_poll_after": None
+                ops.append(UpdateOne(
+                    {"_id": vid},
+                    {
+                        "$set": {
+                            "tracking.status": "complete",
+                            "tracking.stop_reason": "no_publishedAt",
+                            "tracking.last_polled_at": now_iso,
+                            "tracking.next_poll_after": None,
+                        },
+                        "$inc": {"tracking.poll_count": 1},
                     },
-                    "$inc": {"tracking.poll_count": 1}
-                }))
+                ))
                 completed += 1
                 continue
-
             st = stats_map.get(vid)
             if not st:
                 ops.append(UpdateOne({"_id": vid}, {

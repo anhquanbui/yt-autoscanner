@@ -1,38 +1,35 @@
 # ==========================================================
-#  YouTube AutoScanner — Development Environment
-#  (Installs ALL modules: worker + api + ML + export tools)
+# YouTube AutoScanner — Stable Training/Inference Stack
+# (Colab + Local/Worker compatible)
 # ==========================================================
-# Use this for full local development and testing.
-# For production or deployment, use the smaller
-# module-specific requirements.txt files.
 
 # --- Core runtime ---
-python-dotenv>=1.0.1          # Load environment variables from .env file
-requests>=2.31.0              # HTTP requests to YouTube API and others
-typing-extensions>=4.14.1     # Ensure compatibility with FastAPI/Pydantic
-colorama>=0.4.6               # Colored logs in PowerShell or CMD (optional)
+python-dotenv==1.0.1
+requests==2.32.3
+typing-extensions==4.12.2
+colorama==0.4.6
+tqdm==4.66.5
+joblib==1.4.2
 
 # --- Database layer ---
-pymongo==4.8.0                # MongoDB driver
-# dnspython>=2.6.1            # Uncomment if using MongoDB SRV URIs (mongodb+srv://)
+pymongo==4.8.0
+# dnspython==2.6.1  # Uncomment if using mongodb+srv://
 
 # --- Worker utilities ---
-schedule>=1.2.0               # Task scheduler for background workers
+schedule==1.2.1
 
 # --- Web API (FastAPI backend) ---
-fastapi==0.115.0              # Backend framework for API endpoints
-uvicorn[standard]==0.30.6     # ASGI server for FastAPI
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
 
 # --- Data processing ---
-pandas>=2.2.2                 # Data manipulation and aggregation
-numpy>=1.26.4                 # Numerical computing and arrays
+numpy==1.26.4
+pandas==2.2.3
+pyarrow==17.0.0
+fastparquet==2024.5.0
+odfpy==1.4.1
 
-# --- Machine Learning utilities (for virality prediction) ---
-scikit-learn>=1.5.0           # Classic ML toolkit (classification, regression)
-xgboost>=2.1.0                # Gradient boosting model used in prediction pipeline
-
-# --- Data Export / Conversion tools ---
-pyarrow>=17.0.0               # High-performance Parquet/Arrow engine
-fastparquet>=2024.5.0         # Alternative Parquet engine (optional)
-odfpy>=1.4.1                  # Optional: for OpenDocument exports (ODS, ODT)
-tqdm>=4.66.5                  # Progress bar for chunked exports
+# --- Machine Learning ---
+scikit-learn==1.7.2     # đồng bộ Colab & worker để load .joblib
+scipy==1.13.1           # tương thích sklearn 1.7.2
+xgboost==2.1.1          # đồng bộ cảnh báo serialize xgb
