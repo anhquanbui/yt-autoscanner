@@ -1,15 +1,17 @@
-
 <# 
-  run_both_local.ps1 (v5.1) — Local runner for discover_once.py + track_once.py
-  Adds weighted random pick for YouTube video length buckets (short/medium/long/any).
+  run_both_local.ps1 (v5.2) — Local runner for discover_once.py + track_once.py + low_quality_autoflag.py
+  - discover_once: quét video mới
+  - track_once: cập nhật stats cho video đang tracking
+  - low_quality_autoflag: chấm điểm & auto dừng video low_quality mỗi 1 giờ
   PowerShell 5 compatible (no '??' operator).
 #>
 
 # =======================
 # 🔁 Intervals (seconds)
 # =======================
-$DiscoverIntervalSeconds = 10  # seconds
-$TrackIntervalSeconds    = 5    # seconds
+$DiscoverIntervalSeconds = 10     # seconds
+$TrackIntervalSeconds    = 5      # seconds
+$LowQIntervalSeconds     = 3600   # 1 giờ = 3600 giây
 $TickSleepSeconds        = 5      # main loop tick sleep
 
 # =======================
@@ -191,10 +193,13 @@ function Run-Step([string]$Name, [string]$ScriptRelPath) {
 # =======================
 # 🚀 Main loop
 # =======================
-Write-Log "Starting combined runner (discover + tracker). Intervals: discover=$DiscoverIntervalSeconds s, track=$TrackIntervalSeconds s"
+Write-Log ("Starting combined runner (discover + tracker + low_quality). " +
+          "Intervals: discover={0}s, track={1}s, low_quality={2}s" -f `
+          $DiscoverIntervalSeconds, $TrackIntervalSeconds, $LowQIntervalSeconds)
 
 $NextDiscover = Get-Date
 $NextTrack    = Get-Date
+$NextLowQ     = Get-Date   # chạy low_quality_autoflag ngay lần đầu, sau đó mỗi 1 giờ
 
 while ($true) {
     $now = Get-Date
@@ -207,6 +212,11 @@ while ($true) {
     if ($now -ge $NextTrack) {
         Run-Step -Name "track_once" -ScriptRelPath "track_once.py"
         $NextTrack = $now.AddSeconds($TrackIntervalSeconds)
+    }
+
+    if ($now -ge $NextLowQ) {
+        Run-Step -Name "low_quality_autoflag" -ScriptRelPath "low_quality_autoflag.py"
+        $NextLowQ = $now.AddSeconds($LowQIntervalSeconds)
     }
 
     Start-Sleep -Seconds $TickSleepSeconds

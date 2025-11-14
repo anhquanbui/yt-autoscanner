@@ -9,11 +9,8 @@ import numpy as np
 from pymongo import MongoClient, UpdateOne
 from pandas import to_datetime
 
-import os
 from dotenv import load_dotenv
 load_dotenv()
-
-import math
 
 import warnings
 from sklearn.exceptions import InconsistentVersionWarning
@@ -44,16 +41,22 @@ def _now_utc_iso() -> str:
     return datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
 
 def _safe_int(x):
-    try: return int(x)
+    try:
+        return int(x)
     except Exception:
-        try: return int(float(x))
-        except Exception: return 0
+        try:
+            return int(float(x))
+        except Exception:
+            return 0
 
 def _loads_jsonish(x):
-    if isinstance(x, (dict, list)): return x
-    if not isinstance(x, str): return x
+    if isinstance(x, (dict, list)):
+        return x
+    if not isinstance(x, str):
+        return x
     s = x.strip()
-    if not s: return None
+    if not s:
+        return None
     if (s[0] == '{' and s[-1] == '}') or (s[0] == '[' and s[-1] == ']'):
         try:
             import orjson as _orjson
@@ -67,8 +70,10 @@ def _loads_jsonish(x):
     return x
 
 def _dig(d: dict, dotted: str):
-    if not isinstance(d, dict): return None
-    if dotted in d: return d[dotted]
+    if not isinstance(d, dict):
+        return None
+    if dotted in d:
+        return d[dotted]
     cur = d
     for k in dotted.split('.'):
         if isinstance(cur, dict) and k in cur:
@@ -80,9 +85,56 @@ def _dig(d: dict, dotted: str):
 def _first_leq(xs, ys, t_target):
     out = np.nan
     for x, y in zip(xs, ys):
-        if x <= t_target: out = y
-        else: break
+        if x <= t_target:
+            out = y
+        else:
+            break
     return out
+
+def _age_hours(rec: dict) -> Optional[float]:
+    """
+    Tính số giờ từ publishedAt đến snapshot cuối cùng.
+    Dùng để đảm bảo chỉ gán cờ khi video đã >= 6 giờ.
+    """
+    rec = _loads_jsonish(rec) if isinstance(rec, str) else rec
+    if not isinstance(rec, dict):
+        return None
+
+    sn = _loads_jsonish(rec.get("snippet"))
+    if isinstance(sn, dict):
+        pub = sn.get("publishedAt")
+    else:
+        pub = _dig(rec, "snippet.publishedAt") or rec.get("publishedAt")
+
+    if not pub:
+        return None
+
+    t0 = to_datetime(pub, utc=True, errors="coerce")
+    if t0 is None or str(t0) == "NaT":
+        return None
+
+    snaps = _loads_jsonish(rec.get("stats_snapshots")) or _loads_jsonish(rec.get("stats.snapshots"))
+    if not isinstance(snaps, list) or not snaps:
+        return None
+
+    max_h = None
+    for s in snaps:
+        s = _loads_jsonish(s) if isinstance(s, str) else s
+        if not isinstance(s, dict):
+            continue
+        ts = s.get("ts") or s.get("timestamp") or s.get("time")
+        if not ts:
+            continue
+        t = to_datetime(ts, utc=True, errors="coerce")
+        if t is None or str(t) == "NaT":
+            continue
+        h = (t - t0).total_seconds() / 3600.0
+        if h < -0.1:
+            continue
+        if (max_h is None) or (h > max_h):
+            max_h = h
+
+    return max_h
 
 # --- single-record feature aggregator (≤6h) ---
 FEATURE_ORDER = [
@@ -326,7 +378,6 @@ def main():
     q = {
         "stats_snapshots.0": {"$exists": True},
         "tracking.status": "tracking",   # chỉ lấy video đang tracking
-        # no tracking.status filter here => we score all videos with snapshots
     }
 
     if args.only_missing:
@@ -345,15 +396,38 @@ def main():
     buf: List[UpdateOne] = []
     n = 0
     n_up = 0
+    skipped_age = 0
+    skipped_feat = 0
+    scored = 0
+    low_count = 0
+
     for doc in cur:
         n += 1
         if n % 1000 == 0:
-            print(f"[DEBUG] scanned {n:,} docs...", flush=True)
+            print(
+                f"[DEBUG] scanned={n:,} "
+                f"skipped_age_lt_6h={skipped_age:,} "
+                f"skipped_no_feat={skipped_feat:,} "
+                f"scored={scored:,} low={low_count:,}",
+                flush=True,
+            )
+
+        # 🔒 Chỉ gán cờ nếu video đã >= 6 giờ
+        age_h = _age_hours(doc)
+        if age_h is None or age_h < 6.0 - 1e-6:
+            skipped_age += 1
+            continue
+
         x = features_6h(doc)
         if x is None:
+            skipped_feat += 1
             continue
+
         score = score_one(model, x)
         is_low = bool(score >= args.threshold)
+        scored += 1
+        if is_low:
+            low_count += 1
         
         tracking = doc.get("tracking") or {}
         cur_status = tracking.get("status")
@@ -375,15 +449,21 @@ def main():
             res = col.bulk_write(buf, ordered=False)
             n_up += res.modified_count
             buf.clear()
-            print(f"[INFO] processed={n:,} updated={n_up:,}")
+            print(f"[INFO] processed={n:,} updated={n_up:,} (scored={scored:,}, low={low_count:,})")
 
     if buf:
         res = col.bulk_write(buf, ordered=False)
         n_up += res.modified_count
 
-    print(f"[DONE] total_docs={n:,} total_updated={n_up:,}")
+    print(
+        "[DONE] "
+        f"total_docs={n:,} "
+        f"total_updated={n_up:,} "
+        f"scored={scored:,} low={low_count:,} "
+        f"skipped_age_lt_6h={skipped_age:,} "
+        f"skipped_no_feat={skipped_feat:,}"
+    )
 
 
 if __name__ == "__main__":
     main()
-

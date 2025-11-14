@@ -7,6 +7,25 @@ import plotly.express as px
 from components.db import get_db
 
 
+# =============== GLOBAL LAYOUT FIX ===============
+# Khóa lại block-container để tránh cảm giác "thụt vào" khi F5, nhất là với Theme Style 3
+st.markdown(
+    """
+<style>
+.main .block-container {
+    max-width: 1200px;
+    padding-top: 2rem;
+    padding-left: 2.5rem;
+    padding-right: 2.5rem;
+    margin-left: auto;
+    margin-right: auto;
+}
+</style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
 # =============== DATA LOADERS ===============
 
 @st.cache_data(ttl=60)
@@ -250,7 +269,7 @@ def render_style_2(kpis: dict):
 
 
 def render_style_3_glass(kpis: dict):
-    """Glassmorphism cards (Style 3)."""
+    """Glassmorphism cards (Theme Style 3)."""
     st.markdown(
         """
 <style>
@@ -333,7 +352,7 @@ except Exception as e:
     st.error(f"❌ Error loading KPIs: {e}")
     st.stop()
 
-# Top-level basic KPIs (chỉ còn 2 ô)
+# Top-level basic KPIs
 top1, top2 = st.columns(2)
 top1.metric("Total Videos", f"{kpis['total_videos']:,}")
 top2.metric("Total Channels", f"{kpis['total_channels']:,}")
@@ -346,7 +365,7 @@ with st.sidebar:
     style_choice = st.radio(
         "Theme style",
         ["Theme Style 1", "Theme Style 2", "Theme Style 3"],
-        index=2,  # mặc định chọn Theme Style 3 (Glass)
+        index=1,  # mặc định chọn Theme Style 3 (Glass)
     )
 
 st.markdown("### 🎯 Tracking & Completion Overview")
@@ -363,7 +382,6 @@ st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
 # === Outcome breakdown (donut chart) ===
 st.markdown("### 🥧 Outcome Breakdown (24h window)")
 
-# full DF (giữ cả Removed / Unavailable kể cả khi = 0)
 outcome_df_full = pd.DataFrame(
     {
         "Reason": [
@@ -379,7 +397,6 @@ outcome_df_full = pd.DataFrame(
     }
 )
 
-# DF dùng cho chart: bỏ các dòng Count = 0 để không có lát 0%
 outcome_df_pie = outcome_df_full[outcome_df_full["Count"] > 0]
 outcome_total = int(outcome_df_full["Count"].sum()) if not outcome_df_full.empty else 0
 
@@ -392,7 +409,6 @@ else:
         colors = px.colors.sequential.Blues
     elif style_choice.startswith("Theme Style 2"):
         template = "plotly_white"
-        # màu sắc match với gradient card: blue, green, yellow, red-ish
         colors = ["#2563eb", "#22c55e", "#facc15", "#ef4444"]
     else:  # Theme Style 3 (Glass) – pastel nhẹ
         template = "plotly_white"
