@@ -2,7 +2,7 @@
 
 import streamlit as st
 import pandas as pd
-import plotly.express as px  # vẫn dùng cho pie chart
+import plotly.express as px
 
 from components.db import get_db
 
@@ -87,7 +87,7 @@ def load_kpis() -> dict:
                     }
                 },
 
-                # stopped by low-quality filter
+                # stopped by low-quality filter (bất kỳ stop_reason chứa "low_quality")
                 "stopped_low_quality": {
                     "$sum": {
                         "$cond": [
@@ -95,9 +95,14 @@ def load_kpis() -> dict:
                                 "$and": [
                                     {"$eq": ["$tracking.status", "stopped"]},
                                     {
-                                        "$in": [
-                                            "$tracking.stop_reason",
-                                            ["low_quality", "ml_low_quality"],
+                                        "$gt": [
+                                            {
+                                                "$indexOfBytes": [
+                                                    "$tracking.stop_reason",
+                                                    "low_quality",
+                                                ]
+                                            },
+                                            -1,
                                         ]
                                     },
                                 ]
@@ -108,7 +113,7 @@ def load_kpis() -> dict:
                     }
                 },
 
-                # ML flags (optional)
+                # ML flags (optional – hiện không dùng ở UI)
                 "low_quality_flagged": {
                     "$sum": {
                         "$cond": [
@@ -328,61 +333,92 @@ except Exception as e:
     st.error(f"❌ Error loading KPIs: {e}")
     st.stop()
 
-# Top-level basic KPIs
-top1, top2, top3 = st.columns(3)
+# Top-level basic KPIs (chỉ còn 2 ô)
+top1, top2 = st.columns(2)
 top1.metric("Total Videos", f"{kpis['total_videos']:,}")
 top2.metric("Total Channels", f"{kpis['total_channels']:,}")
-top3.metric("Low-Quality Flagged (ML)", f"{kpis['low_quality_flagged']:,}")
 
 st.markdown("---")
 
-# === Tracking & completion with switchable style (in sidebar settings) ===
-
+# === Overview page settings in sidebar ===
 with st.sidebar:
     st.markdown("#### ⚙️ Overview page settings")
     style_choice = st.radio(
-        "Card style",
-        ["Style 1 – Simple", "Style 2 – Gradient", "Style 3 – Glass"],
-        index=2,  # mặc định chọn Glass
+        "Theme style",
+        ["Theme Style 1", "Theme Style 2", "Theme Style 3"],
+        index=2,  # mặc định chọn Theme Style 3 (Glass)
     )
 
 st.markdown("### 🎯 Tracking & Completion Overview")
 
-if style_choice.startswith("Style 1"):
+if style_choice.startswith("Theme Style 1"):
     render_style_1(kpis)
-elif style_choice.startswith("Style 2"):
+elif style_choice.startswith("Theme Style 2"):
     render_style_2(kpis)
 else:
     render_style_3_glass(kpis)
 
 st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
 
-# === Completed breakdown (donut chart) ===
-st.markdown("### 🥧 Completed Breakdown")
+# === Outcome breakdown (donut chart) ===
+st.markdown("### 🥧 Outcome Breakdown (24h window)")
 
-completed_total = kpis["completed_age24"] + kpis["completed_removed"]
-completed_df = pd.DataFrame(
+# full DF (giữ cả Removed / Unavailable kể cả khi = 0)
+outcome_df_full = pd.DataFrame(
     {
-        "Reason": ["Natural (24h reached)", "Removed / Unavailable"],
-        "Count": [kpis["completed_age24"], kpis["completed_removed"]],
+        "Reason": [
+            "Natural (24h reached)",
+            "Removed / Unavailable",
+            "Stopped early (Low quality)",
+        ],
+        "Count": [
+            kpis["completed_age24"],
+            kpis["completed_removed"],
+            kpis["stopped_low_quality"],
+        ],
     }
 )
 
-if completed_total == 0:
-    st.info("No completed videos yet — keep tracking to see the breakdown.")
+# DF dùng cho chart: bỏ các dòng Count = 0 để không có lát 0%
+outcome_df_pie = outcome_df_full[outcome_df_full["Count"] > 0]
+outcome_total = int(outcome_df_full["Count"].sum()) if not outcome_df_full.empty else 0
+
+if outcome_total == 0 or outcome_df_pie.empty:
+    st.info("No completed or stopped videos yet — keep tracking to see the breakdown.")
 else:
+    # Theme của pie chart tự động theo Theme Style
+    if style_choice.startswith("Theme Style 1"):
+        template = "plotly_white"
+        colors = px.colors.sequential.Blues
+    elif style_choice.startswith("Theme Style 2"):
+        template = "plotly_white"
+        # màu sắc match với gradient card: blue, green, yellow, red-ish
+        colors = ["#2563eb", "#22c55e", "#facc15", "#ef4444"]
+    else:  # Theme Style 3 (Glass) – pastel nhẹ
+        template = "plotly_white"
+        colors = px.colors.qualitative.Pastel
+
     fig_completed = px.pie(
-        completed_df,
+        outcome_df_pie,
         names="Reason",
         values="Count",
         hole=0.4,
-        title="Distribution of completed videos by stop reason",
+        title="Distribution of outcomes by stop reason",
+        color_discrete_sequence=colors,
     )
+    fig_completed.update_layout(template=template)
     fig_completed.update_traces(
         textinfo="value+percent",
         hovertemplate="%{label}<br>%{value} videos<br>%{percent}",
     )
     st.plotly_chart(fig_completed, use_container_width=True)
+
+# Summary bên dưới: luôn hiển thị đủ 3 loại, kể cả = 0
+st.markdown("#### Outcome summary")
+for _, row in outcome_df_full.iterrows():
+    st.markdown(
+        f"- **{row['Reason']}**: `{int(row['Count']):,}` video(s)"
+    )
 
 st.markdown("---")
 
