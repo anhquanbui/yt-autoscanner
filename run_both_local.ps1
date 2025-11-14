@@ -8,8 +8,8 @@
 # =======================
 # 🔁 Intervals (seconds)
 # =======================
-$DiscoverIntervalSeconds = 300   # 30 minutes between discover runs
-$TrackIntervalSeconds    = 15    # 30 seconds between track runs
+$DiscoverIntervalSeconds = 10  # seconds
+$TrackIntervalSeconds    = 5    # seconds
 $TickSleepSeconds        = 5      # main loop tick sleep
 
 # =======================
@@ -80,7 +80,7 @@ if ($env:MONGO_URI) {
 # 🌐 Runtime config (non-secret)
 # =======================
 if (-not $env:YT_SINCE_MINUTES) { $env:YT_SINCE_MINUTES = "10" }
-if (-not $env:YT_MAX_PAGES)     { $env:YT_MAX_PAGES     = "3"  }
+if (-not $env:YT_MAX_PAGES)     { $env:YT_MAX_PAGES     = "5"  }
 
 # Random region + weighted keywords
 if (-not $env:YT_RANDOM_PICK)        { $env:YT_RANDOM_PICK        = "1" }
