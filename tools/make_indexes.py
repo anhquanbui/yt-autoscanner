@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """
-make_indexes_v4.py — Smart MongoDB Index Manager (v4, tuned for process_data)
------------------------------------------------------------------------------
-- Builds on your v3 script with more coverage for process_data read/write paths.
-- Adds wildcard indexes for horizons & snapshot_features to support analytics.
-- Adds partial indexes for hot paths (tracking, active docs).
+make_indexes_v5.py — Smart MongoDB Index Manager (v5, tuned for new pipeline)
+-------------------------------------------------------------------------------
+- Based on your v4 script, updated for:
+    • New low_quality_v3_6h ML flags on `videos`.
+    • Current tracking queue pattern (track_once).
+    • New processed_videos schema (process_data output, horizons, snapshot_features).
+- Adds indexes to speed up low_quality_autoflag (stats_snapshots + ml_flags).
+- Keeps wildcard indexes for horizons & snapshot_features to support analytics.
 - Idempotent; supports --show-only and --drop-old; collection filtering.
 
 Usage:
-  python make_indexes_v4.py                              # create/verify all
-  python make_indexes_v4.py --show-only                  # dry run (no changes)
-  python make_indexes_v4.py --drop-old                   # drop indexes not in INDEX_MAP
-  python make_indexes_v4.py --collections videos,processed_videos
-  python make_indexes_v4.py --mongo-uri ... --db ytscan  # override env/URI db
+  python make_indexes_v5.py                              # create/verify all
+  python make_indexes_v5.py --show-only                  # dry run (no changes)
+  python make_indexes_v5.py --drop-old                   # drop indexes not in INDEX_MAP
+  python make_indexes_v5.py --collections videos,processed_videos
+  python make_indexes_v5.py --mongo-uri ... --db ytscan  # override env/URI db
 """
 
 import os
@@ -34,13 +37,33 @@ logging.getLogger("").addHandler(console)
 
 # ---------------- CLI ----------------
 def parse_args():
-    p = argparse.ArgumentParser(description="Smart MongoDB index manager (v4).")
-    p.add_argument("--mongo-uri", default=os.getenv("MONGO_URI", "mongodb://localhost:27017/ytscan"))
-    p.add_argument("--db", default=None, help="DB name (if omitted, taken from URI)")
-    p.add_argument("--show-only", action="store_true", help="Show what would be done, but make no changes.")
-    p.add_argument("--drop-old", action="store_true", help="Drop indexes not in the official INDEX_MAP.")
-    p.add_argument("--collections", type=str, default="all",
-                   help="Comma-separated list of collections (default: all).")
+    p = argparse.ArgumentParser(description="Smart MongoDB index manager (v5).")
+    p.add_argument(
+        "--mongo-uri",
+        default=os.getenv("MONGO_URI", "mongodb://localhost:27017/ytscan"),
+        help="MongoDB URI (default from MONGO_URI or mongodb://localhost:27017/ytscan)",
+    )
+    p.add_argument(
+        "--db",
+        default=None,
+        help="DB name (if omitted, taken from URI)",
+    )
+    p.add_argument(
+        "--show-only",
+        action="store_true",
+        help="Show what would be done, but make no changes.",
+    )
+    p.add_argument(
+        "--drop-old",
+        action="store_true",
+        help="Drop indexes not in the official INDEX_MAP.",
+    )
+    p.add_argument(
+        "--collections",
+        type=str,
+        default="all",
+        help="Comma-separated list of collections (default: all from INDEX_MAP).",
+    )
     return p.parse_args()
 
 # ---------------- Mongo ----------------
@@ -53,23 +76,28 @@ def get_db(mongo_uri: str, explicit_db: str | None):
 
 # ---------------- Index Map ----------------
 # Each index spec:
-# {"keys": [("field", 1 or -1), ...], "name": "optional", "unique": bool, "partial": dict}
+# {"keys": [("field", 1 or -1), ...],
+#  "name": "optional_name",
+#  "unique": bool,
+#  "partial": dict (partialFilterExpression)}
 INDEX_MAP: Dict[str, List[dict]] = {
     # === SOURCE COLLECTIONS ===
     "videos": [
-        # Tracker queues (full & active-only)
+        # --- Tracking queues (track_once) ---
+        # Full tracking queue: find by status + next_poll_after
         {"keys": [("tracking.status", 1), ("tracking.next_poll_after", 1)],
          "name": "trackStatus_nextPoll"},
 
+        # Hot-path tracking queue (only active-like states)
         {"keys": [("tracking.status", 1), ("tracking.next_poll_after", 1)],
-            "name": "trackStatus_nextPoll_activeOnly",
-            "partial": {"tracking.status": {"$in": ["queued", "tracking", "retry"]}}},
+         "name": "trackStatus_nextPoll_activeOnly",
+         "partial": {"tracking.status": {"$in": ["queued", "tracking", "retry"]}}},
 
-        # Status+time queries (common when selecting for processing windows)
+        # Status + publishedAt (general time-based scans)
         {"keys": [("tracking.status", 1), ("snippet.publishedAt", -1)],
          "name": "trackStatus_publishedAt_desc"},
 
-        # Channel latest
+        # Channel latest videos
         {"keys": [("snippet.channelId", 1), ("snippet.publishedAt", -1)],
          "name": "channelId_publishedAt_desc"},
 
@@ -77,36 +105,61 @@ INDEX_MAP: Dict[str, List[dict]] = {
         {"keys": [("source.regionCode", 1), ("snippet.publishedAt", -1)],
          "name": "region_publishedAt_desc"},
 
-        # Query + time (if you slice by query seed)
+        # Query seed + time (discover/report)
         {"keys": [("source.query", 1), ("snippet.publishedAt", -1)],
          "name": "query_publishedAt_desc",
          "partial": {"source.query": {"$exists": True, "$type": "string"}}},
 
-        # Category + length + time (analytics)
+        # Category + lengthBucket + time (analytics)
         {"keys": [("snippet.categoryId", 1),
                   ("snippet.lengthBucket", 1),
                   ("snippet.publishedAt", -1)],
          "name": "category_lengthBucket_publishedAt_desc"},
 
-        # Pure time sort (keep if you still do time-only scans)
-        {"keys": [("snippet.publishedAt", -1)], "name": "publishedAt_desc"},
+        # Pure time sort (fallback for time-only scans)
+        {"keys": [("snippet.publishedAt", -1)],
+         "name": "publishedAt_desc"},
+
+        # --- LOW_QUALITY_V3_6H ML PIPELINE ---
+
+        # Speed up low_quality_autoflag:
+        # q ~ { "stats_snapshots.0": { $exists: true }, ... }
+        {"keys": [("stats_snapshots.0", 1)],
+         "name": "lowq_snap0_exists"},
+
+        # Common combo for ML worker: filter by stats_snapshots.0 + tracking.status
+        {"keys": [("stats_snapshots.0", 1), ("tracking.status", 1)],
+         "name": "lowq_snap0_trackingStatus"},
+
+        # For --only-missing: updated_at missing or null – index on updated_at helps a lot
+        {"keys": [("stats_snapshots.0", 1), ("ml_flags.low_quality_v3_6h.updated_at", 1)],
+         "name": "lowq_snap0_updatedAt"},
+
+        # Analytics / quick lookups by ML decision + time
+        {"keys": [("ml_flags.low_quality_v3_6h.is_low", 1), ("snippet.publishedAt", -1)],
+         "name": "lowq_isLow_publishedAt_desc"},
     ],
 
     # === OUTPUT COLLECTIONS ===
-    # process_data writes to "processed_videos" by default
+    # process_data writes to "processed_videos"
     "processed_videos": [
         # 1-1 mapping by video_id
-        {"keys": [("video_id", 1)], "name": "uniq_video_id", "unique": True},
+        {"keys": [("video_id", 1)],
+         "name": "uniq_video_id",
+         "unique": True},
 
-        # Status and recency filters
+        # Status + recency filters (e.g. active vs complete)
         {"keys": [("status", 1), ("last_snapshot_ts", -1)],
          "name": "status_lastSnapshot_desc",
          "partial": {"status": {"$in": ["complete", "tracking"]}}},
 
+        # Processed status timeline (for process_data, training/export)
         {"keys": [("processed_status", 1), ("processed_at", -1)],
          "name": "processedStatus_processedAt_desc"},
 
-        {"keys": [("published_at", -1)], "name": "publishedAt_desc"},
+        # Published_at for global time scans/sorts
+        {"keys": [("published_at", -1)],
+         "name": "proc_publishedAt_desc"},
 
         # Source slicing for analytics
         {"keys": [("source_meta.region_code", 1), ("published_at", -1)],
@@ -121,12 +174,12 @@ INDEX_MAP: Dict[str, List[dict]] = {
          "name": "durationBucket_published_desc",
          "partial": {"source_meta.duration_bucket": {"$exists": True, "$type": "string"}}},
 
-        # Growth analytics
+        # Growth analytics (coverage & growth phases)
         {"keys": [("growth_phase", 1), ("coverage_score", -1), ("last_snapshot_ts", -1)],
          "name": "growthPhase_coverage_lastSnap_desc"},
 
         # Wildcard indexes for flexible queries in dashboards / ML exploration
-        # (MongoDB 4.2+). Use with care; these are scoped, not global.
+        # (MongoDB 4.2+). These are scoped to horizons & snapshot_features only.
         {"keys": [("horizons.$**", 1)],
          "name": "wild_horizons"},
 
@@ -134,11 +187,15 @@ INDEX_MAP: Dict[str, List[dict]] = {
          "name": "wild_snapshotFeatures"},
     ],
 
-    # Channels (unchanged, but keep here for completeness)
+    # === CHANNELS (unchanged, but kept for completeness) ===
     "channels": [
-        {"keys": [("handle", 1)], "name": "handle_uniq", "unique": True,
+        {"keys": [("handle", 1)],
+         "name": "handle_uniq",
+         "unique": True,
          "partial": {"handle": {"$exists": True, "$type": "string"}}},
-        {"keys": [("last_updated", -1)], "name": "lastUpdated_desc"},
+
+        {"keys": [("last_updated", -1)],
+         "name": "lastUpdated_desc"},
     ],
 }
 
@@ -155,7 +212,7 @@ def create_or_verify_collection_indexes(db, coll_name, specs, show_only=False):
     existing = _existing_indexes(coll)
     existing_sigs = {_index_signature(ix) for ix in existing}
 
-    logging.info(f"\\n📂 Collection: {coll_name}")
+    logging.info(f"\n📂 Collection: {coll_name}")
     created = skipped = 0
 
     for spec in specs:
@@ -217,12 +274,14 @@ def main():
     client, db = get_db(args.mongo_uri, args.db)
 
     # collections to process
-    collections = (list(INDEX_MAP.keys())
-                   if args.collections.lower() == "all"
-                   else [c.strip() for c in args.collections.split(",")])
+    collections = (
+        list(INDEX_MAP.keys())
+        if args.collections.lower() == "all"
+        else [c.strip() for c in args.collections.split(",")]
+    )
 
     total_created = total_skipped = 0
-    logging.info("🚀 Starting MongoDB index maintenance...\\n")
+    logging.info("🚀 Starting MongoDB index maintenance...\n")
     logging.info(f"Using DB: {db.name} (uri={args.mongo_uri})")
 
     for coll_name in collections:
@@ -240,9 +299,9 @@ def main():
         if args.drop_old and not args.show_only:
             drop_unused_indexes(db, coll_name, specs)
 
-    logging.info("\\n✅ Index maintenance complete.")
+    logging.info("\n✅ Index maintenance complete.")
     logging.info(f"   Total created: {total_created}")
-    logging.info(f"   Total skipped: {total_skipped}\\n")
+    logging.info(f"   Total skipped: {total_skipped}\n")
 
 if __name__ == "__main__":
     main()
