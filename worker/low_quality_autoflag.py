@@ -325,6 +325,7 @@ def main():
 
     q = {
         "stats_snapshots.0": {"$exists": True},
+        "tracking.status": "tracking",   # chỉ lấy video đang tracking
         # no tracking.status filter here => we score all videos with snapshots
     }
 
