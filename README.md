@@ -37,12 +37,6 @@ This README covers local development, environment config, the discover worker (v
 | 📌 [discover_once.md](docs/discover_once.md) | Discovers newly published videos via region + keyword pools |
 | 📈 [track_once.md](docs/track_once.md) | Collects early engagement time-series snapshots |
 
-### 🔄 Data Lifecycle — Maintain a Clean & Scalable Dataset
-| File | Description |
-|------|-------------|
-| 🧊 [archive_completed_videos.md](docs/archive_completed_videos.md) | Moves completed videos → cold storage (monthly partitions) |
-| 🗑️ [prune_unavailable_once.md](docs/prune_unavailable_once.md) | Removes private/deleted/no-data videos to reduce bloat |
-
 ### 🗄️ Database Schema & Performance
 | File | Description |
 |------|-------------|
