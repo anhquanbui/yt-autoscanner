@@ -62,6 +62,14 @@ This README covers local development, environment config, the discover worker (v
 | 🗺️ [pipeline_overview.md](docs/pipeline_overview.md) | Full pipeline flow: Discover → Track → Archive/Prune → ML |
 
 ---
+## What's New (Nov 13, 2025)
+
+- Added Streamlit dashboard (`app.py`, `db.py`, `01_Overview.py`)
+- Updated `run_local_loop.ps1` to run: discover + track + low-quality ML
+- Added theme styles (1/2/3) with auto-colored pie chart
+- Cleaned up UI layout and removed unused sidebar options
+
+---
 ## What's new (Nov 10 2025)
 - **Data Export System Added** — Introduced `path_utils.py` for centralized export path management, `mongo_to_parquet.py` for Parquet export, and `process_data.py` integration.
 
@@ -83,62 +91,70 @@ This README covers local development, environment config, the discover worker (v
 ## What's new (Oct 22 2025)
 - **make_indexes.py** — Version 2: Enhanced MongoDB index management
 
+FULL CHANGELOG HERE --> [CHANGELOG.md](CHANGELOG.md)
+
 ## Project structure
 ```
 YT-AUTOSCANNER/
-├─ api/                         # FastAPI backend
-│   └─ main.py
-│
-├─ docs/                        # Internal documentation (English ✅)
-│   ├─ discover_once.md
-│   ├─ track_once.md
-│   ├─ archive_completed_videos.md
-│   ├─ prune_unavailable_once.md
-│   ├─ ytscan_collections_overview.md
-│   ├─ pipeline_overview.md
-│   ├─ process_data_v6_usage.md
-│   ├─ make_indexes_v3.md
-│   ├─ Autorun_Scripts_Guide.md
-│   └─ mongodb_setup_for_beginners.md
-│
-├─ tools/                       # Data lifecycle & maintenance tools
-│   ├─ backfill_channels.py          # Rebuild channels collection
-│   ├─ backfill_missing_fields.py    # Fill missing fields in documents
-│   ├─ make_indexes.py               # Maintain indexes for MongoDB
-│   ├─ mongo_to_parquet.py           # Export MongoDB collection → Parquet (ML-ready)
-│   ├─ ml_flags_migrate.py           # CLI tool to migrate `videos.ml_flags` to nested schema
+├─ api/                             # FastAPI backend (optional)
+│   ├─ main.py
 │   └─ requirements.txt
 │
-├─ worker/                      # Video ingestion + tracking core
-│   ├─ discover_once.py              # Discover fresh videos
-│   ├─ track_once.py                 # Track early engagement stats
-│   ├─ process_data.py
-│   └─ requirements.txt
-│   
+├─ dashboard/                       # Streamlit Dashboard UI
+│   ├─ app.py                       # Main dashboard entry
+│   └─ pages/
+│       ├─ 01_Overview.py           # Overview KPIs & charts
+│       └─ (more pages added later)
 │
-├─ logs/                        # Worker/API logs (rotating daily)
-├─ .env                         # Mongo URI + YouTube API key + Export Path
-├─ CHANGELOG.md                 # Version history
-├─ README.md                    # You are here 👋
-├─ run_both_local.ps1           # Unified worker runner
-├─ run_track_one_loop_30s.ps1   # run track_once every 30 seconds
-└─ seed.py                      # Sample initializer or testing
+docs/
+├─ Autorun_Scripts_Guide.md         # Guide for automatic script runners
+├─ backfill_channels.md             # Rebuild the channels collection
+├─ discover_once.md                 # How discover_once collects new videos
+├─ explanation_processed_videos.md  # Structure of processed_videos collection
+├─ make_indexes_v3.md               # Required MongoDB indexes (v3)
+├─ mongo_to_parquet_guide.md        # Export Mongo → Parquet for ML
+├─ mongodb_setup_for_beginners.md   # MongoDB setup tutorial for beginners
+├─ pipeline_overview.md             # Full pipeline architecture overview
+├─ process_data_v6_usage.md         # How to use process_data v6
+├─ QA.md                            # Frequently asked questions
+├─ track_once.md                    # How track_once polls stats 0h→24h
+└─ ytscan_collections_overview.md   # Overview of all MongoDB collections
+│
+├─ tools/                           # Maintenance & export tools
+│   ├─ backfill_channels.py
+│   ├─ backfill_missing_fields.py
+│   ├─ make_indexes.py
+│   ├─ mongo_to_parquet.py
+│   ├─ ml_flags_migrate.py
+│   └─ requirements.txt
+│
+├─ worker/                          # Core ingestion pipeline
+│   ├─ discover_once.py             # Discover videos (0h)
+│   ├─ track_once.py                # Track stats (0 → 24h)
+│   ├─ low_quality_autoflag.py      # ML worker for low-quality filtering
+│   ├─ process_data.py              # Convert DB → ML features
+│   └─ requirements.txt
+│
+├─ models/                          # Machine Learning models
+│   └─ low_quality/                 # Low-quality classifier
+│       ├─ low_quality_model_6h.joblib
+│       └─ README.md                # Info about training & usage
+│
+├─ exports/                         # Output data (generated automatically)
+│   └─ *.parquet / *.json
+│
+├─ logs/                            # Worker/API logs (auto-rotated)
+│   └─ *.log
+│
+├─ seed.py                          # Sample initializer
+├─ CHANGELOG.md                     # Version history
+├─ README.md                        # Main documentation
+├─ .env                             # Secrets & environment configs
+│
+├─ run_local_loop.ps1               # Local continuous loop runner
+└─ run_track_one_loop_30s.ps1       # run track_once every 30 seconds
+
 ```
-
----
-
-## API Endpoints
-- `GET /health`
-- `GET /videos`
-- `GET /video/{id}`
-- `GET /tracking`
-- `GET /complete`
-- `GET /videos/count`
-- `GET /stats`
-
-*(future)* `/channels` — channel-level insights
-
----
 
 ## 🧬 Local Setup Guide
 ### 1️⃣ Virtual Environment

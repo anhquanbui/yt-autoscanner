@@ -2,6 +2,30 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
+## What's New — Nov 13, 2025
+
+### 🚀 Dashboard Enhancements
+- Added new Streamlit dashboard structure:
+  - `dashboard/app.py` — main dashboard entry
+  - `dashboard/components/db.py` — unified MongoDB connector
+  - `dashboard/pages/01_Overview.py` — new KPI overview page with cards & pie chart
+
+### 🔁 Updated Automation Pipeline
+- Updated `run_local_loop.ps1` to run the full workflow:
+  - `discover_once.py`
+  - `track_once.py`
+  - `low_quality_autoflag.py` (ML model for early low-quality detection)
+
+### 🎨 UI & Theming Improvements
+- Introduced **Theme Style 1 / 2 / 3** switcher in sidebar
+- Pie chart now auto-adjusts color palette based on selected theme
+- Removed deprecated UI options for cleaner layout
+
+### 🧹 Cleanup & Internal Improvements
+- Simplified layout rendering and card components
+- Minor fixes and documentation updates
+
+---
 
 ## [Nov 11 2025]
 
