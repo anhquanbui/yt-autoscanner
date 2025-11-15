@@ -82,62 +82,61 @@ def get_db(mongo_uri: str, explicit_db: str | None):
 #  "partial": dict (partialFilterExpression)}
 INDEX_MAP: Dict[str, List[dict]] = {
     # === SOURCE COLLECTIONS ===
-    "videos": [
+        "videos": [
         # --- Tracking queues (track_once) ---
-        # Full tracking queue: find by status + next_poll_after
         {"keys": [("tracking.status", 1), ("tracking.next_poll_after", 1)],
          "name": "trackStatus_nextPoll"},
 
-        # Hot-path tracking queue (only active-like states)
         {"keys": [("tracking.status", 1), ("tracking.next_poll_after", 1)],
          "name": "trackStatus_nextPoll_activeOnly",
          "partial": {"tracking.status": {"$in": ["queued", "tracking", "retry"]}}},
 
-        # Status + publishedAt (general time-based scans)
         {"keys": [("tracking.status", 1), ("snippet.publishedAt", -1)],
          "name": "trackStatus_publishedAt_desc"},
 
-        # Channel latest videos
         {"keys": [("snippet.channelId", 1), ("snippet.publishedAt", -1)],
          "name": "channelId_publishedAt_desc"},
 
-        # Region + time (discover/report)
         {"keys": [("source.regionCode", 1), ("snippet.publishedAt", -1)],
          "name": "region_publishedAt_desc"},
 
-        # Query seed + time (discover/report)
         {"keys": [("source.query", 1), ("snippet.publishedAt", -1)],
          "name": "query_publishedAt_desc",
          "partial": {"source.query": {"$exists": True, "$type": "string"}}},
 
-        # Category + lengthBucket + time (analytics)
         {"keys": [("snippet.categoryId", 1),
                   ("snippet.lengthBucket", 1),
                   ("snippet.publishedAt", -1)],
          "name": "category_lengthBucket_publishedAt_desc"},
 
-        # Pure time sort (fallback for time-only scans)
         {"keys": [("snippet.publishedAt", -1)],
          "name": "publishedAt_desc"},
 
         # --- LOW_QUALITY_V3_6H ML PIPELINE ---
-
-        # Speed up low_quality_autoflag:
-        # q ~ { "stats_snapshots.0": { $exists: true }, ... }
         {"keys": [("stats_snapshots.0", 1)],
          "name": "lowq_snap0_exists"},
 
-        # Common combo for ML worker: filter by stats_snapshots.0 + tracking.status
         {"keys": [("stats_snapshots.0", 1), ("tracking.status", 1)],
          "name": "lowq_snap0_trackingStatus"},
 
-        # For --only-missing: updated_at missing or null – index on updated_at helps a lot
         {"keys": [("stats_snapshots.0", 1), ("ml_flags.low_quality_v3_6h.updated_at", 1)],
          "name": "lowq_snap0_updatedAt"},
 
-        # Analytics / quick lookups by ML decision + time
         {"keys": [("ml_flags.low_quality_v3_6h.is_low", 1), ("snippet.publishedAt", -1)],
          "name": "lowq_isLow_publishedAt_desc"},
+
+        # --- NEW: LOW_QUALITY_V1_3H ML PIPELINE ---
+        {"keys": [("stats_snapshots.0", 1)],
+         "name": "lowq3h_snap0_exists"},
+
+        {"keys": [("stats_snapshots.0", 1), ("tracking.status", 1)],
+         "name": "lowq3h_snap0_trackingStatus"},
+
+        {"keys": [("stats_snapshots.0", 1), ("ml_flags.low_quality_v1_3h.updated_at", 1)],
+         "name": "lowq3h_snap0_updatedAt"},
+
+        {"keys": [("ml_flags.low_quality_v1_3h.is_low", 1), ("snippet.publishedAt", -1)],
+         "name": "lowq3h_isLow_publishedAt_desc"},
     ],
 
     # === OUTPUT COLLECTIONS ===
