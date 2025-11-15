@@ -1,9 +1,10 @@
-# worker/discover_once.py (v 4.3a) — VIDEO DISCOVERY (Near-now scan with categoryId + Duration Filter)
+# worker/discover_once.py (v4.4) — VIDEO DISCOVERY (Near-now scan with categoryId + Duration Filter)
 # ---------------------------------------------------------------------------------
-# CHANGELOG (v4.3a):
-#   - Remove channelTitle from snippet to reduce document size.
-#   - There is no channelHandle in this script; kept as-is (not stored).
-#   - Keep channelId in snippet for downstream linking/analytics.
+# CHANGELOG (v4.4):
+#   - Init ml_flags with 3 branches:
+#       * viral_v1
+#       * low_quality_v1_3h (3h early low-quality model)
+#       * low_quality_v3_6h (6h low-quality model)
 #   - All other behavior unchanged (duration/category enrichment, exclude live, etc.).
 
 from __future__ import annotations
@@ -25,6 +26,44 @@ except Exception:
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 load_dotenv(override=False)
+
+# ----- Logging go mongo (for log) -----
+def log_worker_run(worker_name: str, extra: dict | None = None):
+    """
+    Upsert a single document in `worker_runs` to record the last time
+    a worker finished successfully.
+    """
+    try:
+        load_dotenv()
+
+        mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/ytscan")
+        db_name_env = os.getenv("MONGO_DB")
+
+        # Detect DB name: prefer MONGO_DB, otherwise parse from URI
+        if db_name_env:
+            db_name = db_name_env
+        else:
+            tail = mongo_uri.rsplit("/", 1)[-1]
+            db_name = tail.split("?", 1)[0] or "ytscan"
+
+        client = MongoClient(mongo_uri)
+        db = client[db_name]
+
+        payload = {
+            "name": worker_name,
+            "last_run": datetime.now(timezone.utc),
+        }
+        if extra:
+            payload.update(extra)
+
+        db.worker_runs.update_one(
+            {"name": worker_name},
+            {"$set": payload},
+            upsert=True,
+        )
+    except Exception as e:
+        print(f"[WARN] Failed to log worker run for {worker_name}: {e}", file=sys.stderr)
+
 
 # ----- Config -----
 API_KEY   = os.getenv('YT_API_KEY')
@@ -189,11 +228,19 @@ def upsert_minimal(items: List[Dict[str, Any]], db, region_used: str, query_used
         sn  = it.get('snippet', {}) or {}
         if not vid or not sn:
             continue
+
+        # --- Default ML flags (new unified schema) ---
         ml_flags = {
             "viral_v1": {
                 "likely": False,
                 "confirmed": False,
                 "score": 0.0,
+                "updated_at": None,
+            },
+            "low_quality_v1_3h": {
+                "is_low": False,
+                "score": 0.0,
+                "threshold": None,
                 "updated_at": None,
             },
             "low_quality_v3_6h": {
@@ -246,6 +293,7 @@ def upsert_minimal(items: List[Dict[str, Any]], db, region_used: str, query_used
         return 0
     res = db.videos.bulk_write(ops, ordered=False)
     return int(res.upserted_count or 0)
+
 
 def main() -> int:
     print('>>> discover_once SCAN-ONLY (near-now + categoryId + duration filter) starting')
@@ -342,6 +390,17 @@ def main() -> int:
                 break
 
         print(f'>>> DONE. pages={pages}, total_found={total_found}, total_upserted={total_upserted}')
+        
+        # 👇 Log successful run here
+        log_worker_run(
+            "discover_once",
+            {
+                "status": "ok",
+                "pages": pages,
+                "total_found": total_found,
+                "total_upserted": total_upserted,
+            },
+        )
         return 0
 
     except requests.HTTPError as e:
@@ -358,11 +417,14 @@ def main() -> int:
             reason = reason or err.get('status') or err.get('message')
         if getattr(e.response, 'status_code', None) == 403 and str(reason) in {'quotaExceeded','dailyLimitExceeded','rateLimitExceeded','userRateLimitExceeded'}:
             print('YouTube quota exhausted — update YT_API_KEY.', file=sys.stderr)
+            log_worker_run("discover_once", {"status": "quota_exhausted", "reason": str(reason)})
             return EXIT_QUOTA
         print('YouTube API error:', body, file=sys.stderr)
+        log_worker_run("discover_once", {"status": "error_http", "reason": str(reason)})
         return 1
     except Exception as e:
         print('Error:', e, file=sys.stderr)
+        log_worker_run("discover_once", {"status": "error", "error": str(e)})
         return 1
 
 if __name__ == '__main__':

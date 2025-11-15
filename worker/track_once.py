@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-# worker/track_once.py (v3.2) — STATISTICS TRACKER (batch 50 IDs, milestones 1h→24h)
-# CHANGELOG (v3.2):
-#   - Removed channel handle backfill & any writes to `db.channels`.
-#   - Kept channelId usage for projections only; no enrichment of channel data.
-#   - All other behaviors preserved: milestones scheduling, stats snapshots, duration backfill, quota handling.
+# worker/track_once.py (v3.3) — STATISTICS TRACKER (batch 50 IDs, milestones 1h→24h)
+# CHANGELOG (v3.3):
+#   - Respect new ML flags schema with 2 low-quality branches:
+#       * ml_flags.low_quality_v1_3h
+#       * ml_flags.low_quality_v3_6h
+#   - Early-stop priority:
+#       1) If low_quality_v1_3h.is_low == True → stop_reason="ml.low_quality_v1_3h"
+#       2) Else if low_quality_v3_6h.is_low == True → stop_reason="ml.low_quality_v3_6h"
+#   - All other behaviors preserved (duration backfill, milestones, quota handling).
 
 from __future__ import annotations
 
@@ -33,6 +37,40 @@ MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/ytscan")
 TRACK_BATCH_SIZE = min(50, max(1, int(os.getenv("TRACK_BATCH_SIZE", "50"))))
 TRACK_MAX_DUE    = max(1, int(os.getenv("TRACK_MAX_DUE_PER_RUN", "5000")))
 LOG_SAMPLE       = max(0, int(os.getenv("TRACK_LOG_SAMPLE", "5")))
+
+# ---- Logging to mongo ----
+def log_worker_run(worker_name: str, extra: dict | None = None):
+    """
+    Upsert one document in `worker_runs` to record the last time
+    a worker finished (success or error).
+    """
+    try:
+        mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/ytscan")
+        db_name_env = os.getenv("MONGO_DB")
+
+        if db_name_env:
+            db_name = db_name_env
+        else:
+            tail = mongo_uri.rsplit("/", 1)[-1]
+            db_name = tail.split("?", 1)[0] or "ytscan"
+
+        client = MongoClient(mongo_uri)
+        db = client[db_name]
+
+        payload = {
+            "name": worker_name,
+            "last_run": datetime.now(timezone.utc),
+        }
+        if extra:
+            payload.update(extra)
+
+        db.worker_runs.update_one(
+            {"name": worker_name},
+            {"$set": payload},
+            upsert=True,
+        )
+    except Exception as e:
+        print(f"[WARN] Failed to log worker run for {worker_name}: {e}", file=sys.stderr)
 
 # Milestone plan (minutes since publishedAt)
 _PLAN_ENV = os.getenv("YT_TRACK_PLAN_MINUTES")
@@ -246,26 +284,50 @@ def main() -> int:
         ops: List[UpdateOne] = []
         for d in batch:
             vid = str(d["_id"])
-            
-            # 1) if flagged low_quality_v3_6h, stop track
-            mlf = (d.get("ml_flags") or {}).get("low_quality_v3_6h") or {}
-            if mlf.get("is_low") in (True, 1):
-                ops.append(UpdateOne(
-                    {"_id": vid},
-                    {
-                        "$set": {
-                            "tracking.status": "stopped",
-                            "tracking.stop_reason": "ml.low_quality_v3_6h",
-                            "tracking.last_polled_at": now_iso,
-                            "tracking.next_poll_after": None,
+
+            mlf_all = (d.get("ml_flags") or {})
+
+            # 0) safety: if 3h model already flagged low, stop immediately
+            mlf_3h = mlf_all.get("low_quality_v1_3h") or {}
+            if mlf_3h.get("is_low") in (True, 1):
+                ops.append(
+                    UpdateOne(
+                        {"_id": vid},
+                        {
+                            "$set": {
+                                "tracking.status": "stopped",
+                                "tracking.stop_reason": "ml.low_quality_v1_3h",
+                                "tracking.last_polled_at": now_iso,
+                                "tracking.next_poll_after": None,
+                            },
+                            "$inc": {"tracking.poll_count": 1},
                         },
-                        "$inc": {"tracking.poll_count": 1},
-                    },
-                ))
+                    )
+                )
                 completed += 1
-                continue  # stop fetching stats for this video
-            
-            # 2) Normal process: parse publishedAt & continue to process
+                continue
+
+            # 1) if flagged low_quality_v3_6h, stop track
+            mlf_6h = mlf_all.get("low_quality_v3_6h") or {}
+            if mlf_6h.get("is_low") in (True, 1):
+                ops.append(
+                    UpdateOne(
+                        {"_id": vid},
+                        {
+                            "$set": {
+                                "tracking.status": "stopped",
+                                "tracking.stop_reason": "ml.low_quality_v3_6h",
+                                "tracking.last_polled_at": now_iso,
+                                "tracking.next_poll_after": None,
+                            },
+                            "$inc": {"tracking.poll_count": 1},
+                        },
+                    )
+                )
+                completed += 1
+                continue
+
+            # 3) Normal process: parse publishedAt & continue to process
             sn = d.get("snippet", {}) or {}
             pub = parse_iso(sn.get("publishedAt") or "")
             if not pub:
@@ -283,6 +345,7 @@ def main() -> int:
                 ))
                 completed += 1
                 continue
+
             st = stats_map.get(vid)
             if not st:
                 ops.append(UpdateOne({"_id": vid}, {
@@ -337,6 +400,16 @@ def main() -> int:
             print(f" - {d['_id']} | prev next_poll_after={d.get('tracking',{}).get('next_poll_after')}")
 
     print(f"Processed: {processed}, completed: {completed}")
+    
+    # 🔎 Log successful run
+    log_worker_run(
+        "track_once",
+        {
+            "status": "ok",
+            "processed": processed,
+            "completed": completed,
+        },
+    )
     return 0
 
 
