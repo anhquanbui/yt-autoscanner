@@ -9,8 +9,25 @@ import numpy as np
 from pymongo import MongoClient, UpdateOne
 from pandas import to_datetime
 
+# ========= ENV LOADING ==========
 from dotenv import load_dotenv
 load_dotenv()
+
+ENV_MODEL_3H = os.getenv("LOWQ_MODEL_3H_PATH")
+ENV_MODEL_6H = os.getenv("LOWQ_MODEL_6H_PATH")
+
+ENV_THR_3H = os.getenv("LOWQ_THRESHOLD_3H") or os.getenv("LOWQ_MODEL_3H_THRESHOLD")
+ENV_THR_6H = os.getenv("LOWQ_THRESHOLD_6H") or os.getenv("LOWQ_MODEL_6H_THRESHOLD")
+
+ENV_ENABLED_3H = os.getenv("LOWQ_3H_ENABLED", "true").lower() == "true"
+ENV_ENABLED_6H = os.getenv("LOWQ_6H_ENABLED", "true").lower() == "true"
+
+ENV_ONLY_MISSING_3H = os.getenv("LOWQ_3H_ONLY_MISSING", "true").lower() == "true"
+ENV_ONLY_MISSING_6H = os.getenv("LOWQ_6H_ONLY_MISSING", "true").lower() == "true"
+
+ENV_STOP_3H = os.getenv("LOWQ_3H_STOP_IF_LOW", "true").lower() == "true"
+ENV_STOP_6H = os.getenv("LOWQ_6H_STOP_IF_LOW", "true").lower() == "true"
+
 
 import warnings
 from sklearn.exceptions import InconsistentVersionWarning
@@ -536,6 +553,9 @@ def score_one(model, feat: dict) -> float:
 # ==========================
 # Main worker
 # ==========================
+# ==========================
+# CLI Parser
+# ==========================
 def main():
     ap = argparse.ArgumentParser("low_quality_autoflag (3h + 6h)")
 
@@ -556,7 +576,9 @@ def main():
         help="Collection name (default from env MONGO_COL_VIDEOS or 'videos')",
     )
 
-    # Model paths
+    # -----------------------------
+    # MODEL PATHS (3h + 6h)
+    # -----------------------------
     ap.add_argument(
         "--model-3h",
         default=os.getenv("LOWQ_MODEL_3H_PATH"),
@@ -565,38 +587,55 @@ def main():
     ap.add_argument(
         "--model-6h",
         default=os.getenv("LOWQ_MODEL_6H_PATH") or os.getenv("LOWQ_MODEL_PATH"),
-        help="Model path for ≤6h (logistic joblib). If not set, fallback to LOWQ_MODEL_PATH.",
+        help="Model path for ≤6h (logistic joblib). If unset, fallback to LOWQ_MODEL_PATH.",
     )
 
-    # Backward-compat: old --model treated as 6h model if provided
+    # Backward-compat: old --model behaves as 6h model
     ap.add_argument(
         "--model",
         default=os.getenv("LOWQ_MODEL_PATH"),
-        help="[DEPRECATED] Backward-compat: used as --model-6h if --model-6h is not set.",
+        help="[DEPRECATED] Legacy single-model path (treated as 6h model).",
     )
 
-    # Thresholds
+    # -----------------------------
+    # THRESHOLDS (3h + 6h)
+    # -----------------------------
     ap.add_argument(
         "--threshold-3h",
         type=float,
-        default=None,
-        help="Override threshold for ≤3h model (default: auto from training/meta).",
+        default=(
+            float(os.getenv("LOWQ_THRESHOLD_3H"))
+            if os.getenv("LOWQ_THRESHOLD_3H")
+            else None
+        ),
+        help="Threshold for ≤3h model. If missing, auto-detect from meta.",
     )
     ap.add_argument(
         "--threshold-6h",
         type=float,
-        default=None,
-        help="Override threshold for ≤6h model (default: auto from training/meta or --threshold).",
+        default=(
+            float(os.getenv("LOWQ_THRESHOLD_6H"))
+            if os.getenv("LOWQ_THRESHOLD_6H")
+            else None
+        ),
+        help="Threshold for ≤6h model. If missing, auto-detect from meta.",
     )
 
-    # Backward-compat: old single threshold
+    # Backward-compat: old unified threshold
     ap.add_argument(
         "--threshold",
         type=float,
-        default=None,
-        help="[DEPRECATED] Single threshold (used as 6h fallback if --threshold-6h not set).",
+        default=(
+            float(os.getenv("LOWQ_THRESHOLD"))
+            if os.getenv("LOWQ_THRESHOLD")
+            else None
+        ),
+        help="[DEPRECATED] Single threshold (used for 6h fallback only).",
     )
 
+    # -----------------------------
+    # Worker configs
+    # -----------------------------
     ap.add_argument(
         "--batch-size",
         type=int,
@@ -606,20 +645,21 @@ def main():
     ap.add_argument(
         "--only-missing",
         action="store_true",
-        help="Only docs where 3h or 6h flags do not have updated_at.",
+        help="Only update docs missing 3h/6h updated_at.",
     )
+
     ap.add_argument(
         "--stop-if-low",
         dest="stop_if_low",
         action="store_true",
         default=True,
-        help="(default: ON) If low then stop tracking & set stop_reason.",
+        help="Stop video if low_quality (default ON).",
     )
     ap.add_argument(
         "--no-stop-if-low",
         dest="stop_if_low",
         action="store_false",
-        help="Disable stopping videos even if low_quality.",
+        help="Disable stopping even if low_quality.",
     )
 
     args = ap.parse_args()

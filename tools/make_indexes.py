@@ -209,7 +209,10 @@ def _existing_indexes(coll):
 def create_or_verify_collection_indexes(db, coll_name, specs, show_only=False):
     coll = db[coll_name]
     existing = _existing_indexes(coll)
-    existing_sigs = {_index_signature(ix) for ix in existing}
+
+    # map theo key và theo name để tránh đụng nhau
+    existing_by_keys = {_index_signature(ix): ix for ix in existing}
+    existing_by_name = {ix["name"]: ix for ix in existing}
 
     logging.info(f"\n📂 Collection: {coll_name}")
     created = skipped = 0
@@ -221,11 +224,26 @@ def create_or_verify_collection_indexes(db, coll_name, specs, show_only=False):
         partial = spec.get("partial")
         key_tuple = tuple(keys)
 
-        if key_tuple in existing_sigs:
-            # Already exists with these keys (ignore name/options differences)
-            logging.info(f"   ⏭️  Skipped existing index: {keys}")
+        # 1) Nếu đã có 1 index với cùng key → bỏ qua (kệ nó tên gì)
+        if key_tuple in existing_by_keys:
+            ix = existing_by_keys[key_tuple]
+            logging.info(
+                f"   ⏭️  Skipped existing index with same keys: {keys} "
+                f"(existing name={ix.get('name')})"
+            )
             skipped += 1
             continue
+
+        # 2) Nếu đã có index trùng name nhưng keys khác → cảnh báo & bỏ qua
+        if name and name in existing_by_name:
+            ix = existing_by_name[name]
+            if _index_signature(ix) != key_tuple:
+                logging.warning(
+                    f"   ⚠️ Existing index with name '{name}' has different keys "
+                    f"{list(ix['key'].items())}, skipping creation of {keys}."
+                )
+                skipped += 1
+                continue
 
         if show_only:
             logging.info(
@@ -244,14 +262,24 @@ def create_or_verify_collection_indexes(db, coll_name, specs, show_only=False):
         if partial:
             opts["partialFilterExpression"] = partial
 
-        coll.create_index(keys, **opts)
-        logging.info(
-            f"   ✅ Created index: {keys}"
-            + (f" [name={name}]" if name else "")
-            + (" [unique]" if unique else "")
-            + (f" [partial]" if partial else "")
-        )
-        created += 1
+        try:
+            coll.create_index(keys, **opts)
+            logging.info(
+                f"   ✅ Created index: {keys}"
+                + (f" [name={name}]" if name else "")
+                + (" [unique]" if unique else "")
+                + (f" [partial]" if partial else "")
+            )
+            created += 1
+        except OperationFailure as e:
+            # code 85: IndexOptionsConflict (index với cùng key/name đã tồn tại khác options)
+            if getattr(e, "code", None) == 85:
+                logging.warning(
+                    f"   ⚠️ Index conflict for {name or keys}: {e}. Skipping."
+                )
+                skipped += 1
+            else:
+                raise
 
     return created, skipped
 
