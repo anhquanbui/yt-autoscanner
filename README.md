@@ -1,153 +1,240 @@
+# 🎯 YouTube AutoScanner — VPS Deployment Edition (2025)
 
-# 🎯 YouTube AutoScanner — VPS Deployment Edition
-
-This repository powers an automated pipeline that:
-✅ Discovers newly published YouTube videos  
-✅ Tracks their performance in the first 24 hours  
-✅ Cleans + processes analytics data  
-✅ Exposes API endpoints for dashboards & BI tools  
-✅ Operates continuously inside a Linux VPS
+This repository powers a full 24/7 automation pipeline for discovering, tracking, and evaluating YouTube videos in their first 24 hours.  
+It is designed for **VPS deployment**, using `systemd`, `cron`, MongoDB, and Python workers.
 
 ---
 
-## 📂 Project Structure — VPS Version
+## 📦 Project Structure (2025 Updated)
 
 ```
 yt-autoscanner/
 │
-├── api/                         # FastAPI backend
-│   ├── main.py                  # Uvicorn server entry
-│   └── requirements.txt         # API dependencies
+├── api/
+│   ├── main.py
+│   └── config/
+│       └── path_utils.py
 │
-├── tools/                       # Support / admin scripts
-│   ├── auto_discover.sh         # Loop-discovery runner
-│   ├── auto_track.sh            # Loop-tracking runner
-│   ├── make_indexes.py          # MongoDB indexes
+├── config/
+│   └── path_utils.py
+│
+├── logs/
+│
+├── models/
+│   └── low_quality/
+│       ├── low_quality_model_3h.joblib
+│       └── low_quality_model_6h.joblib
+│
+├── tools/
+│   ├── auto_discover.sh
+│   ├── auto_quality.sh
+│   ├── auto_track.sh
+│   ├── make_indexes.py
 │   ├── backfill_channels.py
 │   ├── backfill_missing_fields.py
-│   └── mongo_backup.sh          # Scheduled DB backups
+│   ├── mongo_backup.sh
+│   └── mongo_backup-full.sh
 │
-├── worker/                      # Ingestion + tracking logic
-│   ├── discover_once.py         # Fetches new videos
-│   ├── track_once.py            # Tracks analytics over time
-│   ├── process_data.py          # Cleans & aggregates snapshots
-│   └── requirements.txt         # Worker dependencies
+├── worker/
+│   ├── discover_once.py
+│   ├── low_quality_autoflag.py
+│   ├── process_data.py
+│   └── track_once.py
 │
-├── mongo_backups/               # Automated backup storage
-│
-├── .venv/                       # Python virtual environment
-├── .gitignore
-├── CHANGELOG.md                 # Feature + version history
-├── run_discover_once.sh         # Manual one-shot discover
+├── README.md
+├── requirements-dev.txt
+└── .gitignore
 ```
 
 ---
 
-## 🔑 Configuration
+## 🔧 Key Components
 
-Environment variables must be set inside:
+### Discover Worker — `discover_once.py`
+Discovers new videos, inserts into MongoDB, schedules first tracking time.
+
+### Track Worker — `track_once.py`
+Tracks video performance from 0 → 24h using milestone scheduling.
+
+### Low-Quality ML — `low_quality_autoflag.py`
+Runs ML models at 3h & 6h to assign:
+```
+ml_flags.low_quality_v1_3h.is_low
+ml_flags.low_quality_v3_6h.is_low
+```
+Updates:
+```
+status = stopped
+stop_reason = "low_quality"
+```
+
+### process_data.py
+Cleans → aggregates → exports Parquet for dashboards + ML.
+
+### tools/
+Contains:
+- auto runners for systemd
+- index builder
+- backup scripts
+- backfill utilities
+
+---
+
+## 🔑 Environment Variables
+
+Stored at:
 
 ```
 /home/ytscan/.env
 ```
 
-Required:
+Example:
 
 ```
 YT_API_KEY=xxxx
-MONGO_URI=mongodb://localhost:27017/autoscanner
-DISCOVERY_MODE=random
-```
+MONGO_URI=mongodb://localhost:27017/ytscan
 
-Note: for authentication, please change MONGO_URI connection string
+YT_RANDOM_PICK=1
+YT_RANDOM_REGION_POOL=US,GB,CA,AU,IN,JP,VN,KR
+
+LOW_QUALITY_MODEL_3H=models/low_quality/low_quality_model_3h.joblib
+LOW_QUALITY_MODEL_6H=models/low_quality/low_quality_model_6h.joblib
+
+LOG_LEVEL=INFO
+```
 
 ---
 
-## 🚀 Services Running on VPS
-
-| Component | Method | Status Cmd |
-|----------|--------|------------|
-| Discover Worker | systemd | `systemctl status yt-auto-discover` |
-| Track Worker | systemd | `systemctl status yt-auto-track` |
-| Backups | cronjob | `crontab -l` |
-| API (FastAPI + Uvicorn) | systemd | `systemctl status yt-api` |
-
-Restart services:
-
-```
-sudo systemctl restart yt-auto-discover yt-auto-track
-```
-
-Note: please put away unavailable service
-
----
-
-## 📊 MongoDB Collections
+## 📚 MongoDB Collections
 
 | Collection | Purpose |
 |-----------|---------|
-| `videos` | All discovered YouTube videos |
-| `processed_videos` | Aggregated analytics + horizon stats |
-| `channels` | Channels metadata |
-| `dashboard_summary` | Cached BI metrics |
+| videos | full ingestion + tracking |
+| processed_videos | cleaned dataset |
+| channels | channel metadata |
+| dashboard_summary | cached dashboard data |
 
-Indexes are created via:
-
+Run indexes:
 ```
 python tools/make_indexes.py
 ```
 
 ---
 
-## 🔄 Automatic Processing Intervals
+## 🧠 Video Schema (Latest 2025)
 
-| Script | Interval | Purpose |
-|--------|----------|---------|
-| `discover_once.py` | 5 min | New upload detection |
-| `track_once.py` | 15 sec | 1h→24h early-signal tracking |
-| `process_data.py` | 6 hours | BI metric refresh | (not deployed yet)
+### Core Fields
+```
+video_id
+channelId
+title
+region_code
+duration_seconds
+publishedAt
+```
+
+### Tracking
+```
+status: tracking | complete | stopped
+stop_reason
+next_poll_after
+snapshots: [...]
+```
+
+### ML Flags
+```
+ml_flags: {
+  low_quality_v1_3h: { is_low, score },
+  low_quality_v3_6h: { is_low, score }
+}
+```
 
 ---
 
-## 🔍 Monitoring & Debugging
+## 🔄 Processing Intervals
 
-### Worker logs
+| Component | Frequency |
+|----------|-----------|
+| Discover | 10–12s |
+| Track | 5–6s |
+| ML | 10–15s |
+| Process Data | every 6h |
+
+---
+
+## 📺 API (FastAPI)
+
+```
+sudo systemctl restart yt-api
+```
+
+Endpoints:
+```
+/videos/recent
+/videos/stats
+/dashboard/summary
+/channels/info
+```
+
+---
+
+## 📉 Monitoring
+
 ```
 journalctl -u yt-auto-discover -f
 journalctl -u yt-auto-track -f
+journalctl -u yt-auto-quality -f
+journalctl -u yt-api -f
 ```
 
-### Check running processes
+System:
 ```
 htop
+df -h
+free -m
 ```
 
 ---
 
-## 🧠 Data Flow (Quick View)
+## 🔐 Backups
 
+Daily backup:
 ```
-Discover → Insert video → Track stats → Process → Dashboards
+tools/mongo_backup.sh
 ```
 
-This smooth pipeline powers real-time YouTube early-signal analytics.
+Full backup:
+```
+tools/mongo_backup-full.sh
+```
+
+Stored in:
+```
+/home/ytscan/mongo_backups/
+```
 
 ---
 
-## 🧩 Technology Stack
+## 🧩 Full Data Flow
 
-✅ Python (FastAPI + Workers)  
-✅ MongoDB  
-✅ systemd automation  
-✅ CRON backup  
-✅ Linux VPS (Cloudflare Tunnel supported)
+```
+Discover
+   ↓
+Insert videos
+   ↓
+Track (0→24h)
+   ↓
+ML Auto-Flag (3h / 6h)
+   ↓
+process_data → Parquet
+   ↓
+Dashboard / ML Training / API
+```
 
 ---
 
-### ✨ Author
+## ✨ Author
+
 Developed by **Anh Quan Bui**  
-(Post-Graduate Certificate — Data Analytics & AI)
-
----
-
-📌 This is the **official deployment structure** currently used on the VPS
+Post-Graduate Certificate — Data Analytics & AI  
+Saskatchewan Polytechnic, Canada
