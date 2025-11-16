@@ -1,110 +1,11 @@
-
-# worker/discover_once.py (v 4.3) — VIDEO DISCOVERY (Near-now scan with categoryId + Duration Filter)
+# worker/discover_once.py (v4.4) — VIDEO DISCOVERY (Near-now scan with categoryId + Duration Filter)
 # ---------------------------------------------------------------------------------
-# PURPOSE:
-#   Discover newly published YouTube videos (within a near-now window)
-#   and insert them into MongoDB for later tracking by track_once.py.
-#   It supports both deterministic time-slice (SINCE_MODE) and randomized
-#   discovery (RANDOM_MODE) with region and query pools.
-#
-#   ★ Update: Adds optional duration control (short/medium/long/any/mix) and
-#     enriches snippet with durationISO/durationSec/lengthBucket.
-#
-# ---------------------------------------------------------------------------------
-# OPERATING MODES
-#
-# 1️⃣ Random Mode (Exploratory / Weighted Sampling)
-#     Enabled when:  YT_RANDOM_MODE=1
-#
-#     Variables:
-#       - YT_RANDOM_LOOKBACK_MINUTES  : how far back to pick the random slice (default: 43200 = 30 days)
-#       - YT_RANDOM_WINDOW_MINUTES    : window length for that slice (default: 30)
-#       - YT_RANDOM_REGION_POOL       : comma-separated region list (e.g. "US,GB,JP,VN")
-#       - YT_RANDOM_QUERY_POOL        : weighted keyword list (e.g. "live:5,news:3,gaming:4,music:2")
-#
-#     Example:
-#       YT_RANDOM_MODE=1
-#       YT_RANDOM_REGION_POOL=US,GB,JP,VN
-#       YT_RANDOM_QUERY_POOL=live:5,news:3,gaming:4,music:2,trailer:1
-#
-#     Behavior:
-#       - Randomly selects a region from REGION_POOL
-#       - Randomly selects a keyword based on weighted probability
-#       - Picks a random time slice (e.g. 20–30 minutes window)
-#       - Quota use: ~101 units per page (50 results + category lookup)
-#
-# 2️⃣ Since Mode (Deterministic Near-now)
-#     Enabled when:  YT_RANDOM_MODE=0 or not set
-#
-#     Variables:
-#       - YT_SINCE_MODE        : "minutes" (default) | "lookback" | "local_midnight"
-#       - YT_SINCE_MINUTES     : how many minutes to look back (default: 20)
-#       - YT_REGION            : fixed region (default: US)
-#       - YT_QUERY             : fixed keyword (optional)
-#       - YT_LOCAL_TZ          : required only for local_midnight
-#
-#     Example:
-#       YT_SINCE_MODE=minutes
-#       YT_SINCE_MINUTES=10
-#       YT_REGION=US
-#       YT_QUERY=live
-#
-# ---------------------------------------------------------------------------------
-# QUOTA SAFETY
-#   - YT_MAX_PAGES limits the number of search pages (default: 1).
-#     Each page = 50 results (100 quota units for search + 1 for details lookup).
-#   - Recommended for scheduled runs: 1–3 pages per call.
-#
-# ---------------------------------------------------------------------------------
-# DATABASE STRUCTURE
-#   Each discovered video is inserted (upsert) into MongoDB:
-#     {
-#       _id: <videoId>,
-#       source: { query, regionCode, randomMode, filteredByCategoryId },
-#       snippet: {
-#         title, publishedAt, thumbnails, channelId, channelTitle, categoryId,
-#         durationISO, durationSec, lengthBucket
-#       },
-#       tracking: { status, discovered_at, next_poll_after, poll_count },
-#       stats_snapshots: [],
-#       ml_flags: { likely_viral, viral_confirmed, score }
-#     }
-#
-# ---------------------------------------------------------------------------------
-# EXIT CODES
-#   0  = success
-#   88 = YouTube quota exhausted (quotaExceeded / rateLimitExceeded)
-#   2  = missing API key
-#   1  = other errors
-#
-# ---------------------------------------------------------------------------------
-# RECOMMENDED ENV CONFIG (example .env)
-#
-#   YT_API_KEY=<your_youtube_api_key>
-#   MONGO_URI=mongodb://localhost:27017/ytscan
-#
-#   # --- Random mode (global weighted pool) ---
-#   YT_RANDOM_MODE=1
-#   YT_RANDOM_LOOKBACK_MINUTES=43200
-#   YT_RANDOM_WINDOW_MINUTES=30
-#   YT_RANDOM_REGION_POOL=US,GB,JP,VN,KR,IN,BR,CA,DE,FR
-#   YT_RANDOM_QUERY_POOL=live:5,news:3,gaming:4,music:3,highlights:4,shorts:2,trailer:2,stream:3,review:3,performance:2
-#
-#   # --- Duration control ---
-#   # any|short|medium|long|mix (mix randomly picks one per run using pool)
-#   YT_DURATION_MODE=any
-#   YT_DURATION_POOL="short:1,medium:2,long:2,any:0"
-#
-#   # --- Quota & interval ---
-#   YT_MAX_PAGES=1
-#   DISCOVER_INTERVAL_SECONDS=1800
-#
-# ---------------------------------------------------------------------------------
-# NOTE:
-#   - The script intentionally avoids collecting statistics to keep discovery cheap.
-#   - Detailed updates (stats, engagement, ML flags) are handled by track_once.py.
-#
-# ---------------------------------------------------------------------------------
+# CHANGELOG (v4.4):
+#   - Init ml_flags with 3 branches:
+#       * viral_v1
+#       * low_quality_v1_3h (3h early low-quality model)
+#       * low_quality_v3_6h (6h low-quality model)
+#   - All other behavior unchanged (duration/category enrichment, exclude live, etc.).
 
 from __future__ import annotations
 
@@ -114,8 +15,10 @@ from typing import Optional, Dict, Any, List, Tuple
 
 import requests
 from pymongo import MongoClient, UpdateOne
-from dotenv import load_dotenv
-from pathlib import Path
+
+# 🚀 Centralized env loader
+import config.path_utils
+
 
 # ----- Console UTF-8 (Windows-safe) -----
 try:
@@ -125,35 +28,42 @@ except Exception:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
-# ----- load .ENV file -----
-def load_project_env():
-    loaded = False
+# ----- Logging go mongo (for log) -----
+def log_worker_run(worker_name: str, extra: dict | None = None):
+    """
+    Upsert a single document in `worker_runs` to record the last time
+    a worker finished successfully.
+    """
+    try:
 
-    # 1) Priority .env in project's root folder (…/yt-autoscanner/.env)
-    proj_root = Path(__file__).resolve().parents[1] / ".env"
-    if proj_root.exists():
-        load_dotenv(dotenv_path=proj_root)
-        print(f"✅ Loaded .env from project root: {proj_root}")
-        loaded = True
+        mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/ytscan")
+        db_name_env = os.getenv("MONGO_DB")
 
-    # 2) Try .env in HOME folder (/home/ytscan/.env)
-    home_env = Path.home() / ".env"
-    if home_env.exists():
-        load_dotenv(dotenv_path=home_env, override=True)
-        print(f"✅ Loaded .env from home: {home_env}")
-        loaded = True
+        # Detect DB name: prefer MONGO_DB, otherwise parse from URI
+        if db_name_env:
+            db_name = db_name_env
+        else:
+            tail = mongo_uri.rsplit("/", 1)[-1]
+            db_name = tail.split("?", 1)[0] or "ytscan"
 
-    # 3) Try .env in current folder (CWD)
-    cwd_env = Path(".env").resolve()
-    if cwd_env.exists():
-        load_dotenv(dotenv_path=cwd_env, override=True)
-        print(f"✅ Loaded .env from CWD: {cwd_env}")
-        loaded = True
+        client = MongoClient(mongo_uri)
+        db = client[db_name]
 
-    if not loaded:
-        print("⚠️ No .env found. Using existing environment variables.")
+        payload = {
+            "name": worker_name,
+            "last_run": datetime.now(timezone.utc),
+        }
+        if extra:
+            payload.update(extra)
 
-load_project_env()
+        db.worker_runs.update_one(
+            {"name": worker_name},
+            {"$set": payload},
+            upsert=True,
+        )
+    except Exception as e:
+        print(f"[WARN] Failed to log worker run for {worker_name}: {e}", file=sys.stderr)
+
 
 # ----- Config -----
 API_KEY   = os.getenv('YT_API_KEY')
@@ -194,11 +104,6 @@ EXIT_QUOTA = 88
 
 
 def parse_weighted_pool(val: str) -> Tuple[List[str], List[float]]:
-    """
-    Parse a weighted CSV string into (choices, weights).
-    - Input format: "termA:5, termB:2, term C:1"  (weight defaults to 1 if omitted)
-    - Trims whitespace; ignores empty items and zero/negative weights.
-    """
     if not val:
         return [], []
     choices: List[str] = []
@@ -224,11 +129,6 @@ def parse_weighted_pool(val: str) -> Tuple[List[str], List[float]]:
 
 
 def pick_query_for_region(region_code: str) -> Optional[str]:
-    """
-    Choose a keyword for the given region using region-specific pool if present,
-    else fall back to global pool, else None (which means 'no q' param).
-    Region-specific env name: YT_RANDOM_QUERY_POOL_<REGION>, e.g., YT_RANDOM_QUERY_POOL_US
-    """
     env_name = f'YT_RANDOM_QUERY_POOL_{region_code.upper()}'
     val = os.getenv(env_name, '').strip()
     if not val:
@@ -263,9 +163,6 @@ def bucket_from_seconds(secs: Optional[int]) -> Optional[str]:
     return 'long'
 
 def pick_duration_param() -> Optional[str]:
-    """
-    Return short|medium|long|None (None means 'any') based on env YT_DURATION_MODE/POOL.
-    """
     mode = DURATION_MODE
     if mode == 'mix':
         choices, weights = parse_weighted_pool(DURATION_POOL)
@@ -295,7 +192,6 @@ def search_page(published_after_iso: str, region_code: str, query_str: Optional[
     }
     if query_str:
         params['q'] = query_str
-    # --- NEW: pass duration filter to search ---
     if video_duration in {'short','medium','long'}:
         params['videoDuration'] = video_duration
     if page_token:
@@ -306,7 +202,6 @@ def search_page(published_after_iso: str, region_code: str, query_str: Optional[
 
 
 def videos_details(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Return {videoId: {'snippet':..., 'contentDetails':...}} to enrich categoryId + duration (1 quota per 50 IDs)."""
     out: Dict[str, Dict[str, Any]] = {}
     if not video_ids:
         return out
@@ -326,9 +221,6 @@ def videos_details(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
 
 
 def upsert_minimal(items: List[Dict[str, Any]], db, region_used: str, query_used: Optional[str]) -> int:
-    """Insert minimal video docs; tracker will enrich/track later.
-    Fix: avoid MongoDB update path conflict on 'snippet' by NOT including it in $setOnInsert.
-    """
     ops = []
     now_iso = datetime.now(timezone.utc).isoformat()
     for it in items:
@@ -336,43 +228,67 @@ def upsert_minimal(items: List[Dict[str, Any]], db, region_used: str, query_used
         sn  = it.get('snippet', {}) or {}
         if not vid or not sn:
             continue
-        # Build full doc (for insert) then separate snippet into $set to prevent path conflict.
+
+        # --- Default ML flags (new unified schema) ---
+        ml_flags = {
+            "viral_v1": {
+                "likely": False,
+                "confirmed": False,
+                "score": 0.0,
+                "updated_at": None,
+            },
+            "low_quality_v1_3h": {
+                "is_low": False,
+                "score": 0.0,
+                "threshold": None,
+                "updated_at": None,
+            },
+            "low_quality_v3_6h": {
+                "is_low": False,
+                "score": 0.0,
+                "threshold": None,
+                "updated_at": None,
+            },
+        }
+
         full_doc = {
-            '_id': vid,
-            'source': {
-                'query': query_used,
-                'regionCode': region_used,
-                'randomMode': bool(RANDOM_PICK),
+            "_id": vid,
+            "source": {
+                "query": query_used,
+                "regionCode": region_used,
+                "randomMode": bool(RANDOM_PICK),
             },
-            'snippet': {
-                'title': sn.get('title'),
-                'publishedAt': sn.get('publishedAt'),
-                'thumbnails': sn.get('thumbnails', {}),
-                'channelId': sn.get('channelId'),
-                'channelTitle': sn.get('channelTitle'),
-                'categoryId': sn.get('categoryId'),   # set by enrichment above
-                'durationISO': sn.get('durationISO'),
-                'durationSec': sn.get('durationSec'),
-                'lengthBucket': sn.get('lengthBucket'),
+            "snippet": {
+                "title": sn.get("title"),
+                "publishedAt": sn.get("publishedAt"),
+                "thumbnails": sn.get("thumbnails", {}),
+                "channelId": sn.get("channelId"),
+                "categoryId": sn.get("categoryId"),
+                "durationISO": sn.get("durationISO"),
+                "durationSec": sn.get("durationSec"),
+                "lengthBucket": sn.get("lengthBucket"),
             },
-            'tracking': {
-                'status': 'tracking',
-                'discovered_at': now_iso,
-                'last_polled_at': None,
-                'next_poll_after': now_iso,
-                'poll_count': 0,
-                'stop_reason': None,
+            "tracking": {
+                "status": "tracking",
+                "discovered_at": now_iso,
+                "last_polled_at": None,
+                "next_poll_after": now_iso,
+                "poll_count": 0,
+                "stop_reason": None,
             },
-            'stats_snapshots': [],
-            'ml_flags': {'likely_viral': False, 'viral_confirmed': False, 'score': 0.0},
+            "stats_snapshots": [],
+            "ml_flags": ml_flags,
         }
+
+        # Upsert: set most fields only on insert, but always refresh snippet
         insert_doc = full_doc.copy()
-        insert_doc.pop('snippet', None)  # <-- critical: do not duplicate 'snippet' path in $setOnInsert
+        insert_doc.pop("snippet", None)
         update_doc = {
-            '$setOnInsert': insert_doc,
-            '$set': {'snippet': full_doc['snippet']},
+            "$setOnInsert": insert_doc,
+            "$set": {"snippet": full_doc["snippet"]},
         }
-        ops.append(UpdateOne({'_id': vid}, update_doc, upsert=True))
+        ops.append(UpdateOne({"_id": vid}, update_doc, upsert=True))
+
     if not ops:
         return 0
     res = db.videos.bulk_write(ops, ordered=False)
@@ -385,15 +301,13 @@ def main() -> int:
         print('Missing YT_API_KEY', file=sys.stderr)
         return 2
 
-    # region pick
     region_used = (random.choice(RANDOM_REGION_POOL) if RANDOM_PICK and RANDOM_REGION_POOL else REGION)
 
-    # query pick (region-specific weighted)
     query_used = None
     if RANDOM_PICK:
         query_used = pick_query_for_region(region_used)
     if not query_used:
-        query_used = QUERY  # may be None/empty → omit q
+        query_used = QUERY
 
     client = MongoClient(MONGO_URI)
     db = client.get_database()
@@ -418,7 +332,6 @@ def main() -> int:
             data = search_page(published_after, region_used, query_used, page_token, duration_used)
             items = data.get('items', [])
             found = len(items)
-            # --- NEW: Early filter to remove live/upcoming VOD placeholders
             filtered = 0
             if EXCLUDE_LIVE and found > 0:
                 before = len(items)
@@ -432,7 +345,6 @@ def main() -> int:
 
             total_found += len(items)
 
-            # Enrich categoryId + duration for ALL items (1 quota per 50)
             if items:
                 ids = [it.get('id', {}).get('videoId') for it in items if it.get('id', {}).get('videoId')]
                 det_map = videos_details(ids)
@@ -447,13 +359,11 @@ def main() -> int:
                     sn2 = det.get('snippet', {}) or {}
                     cd  = det.get('contentDetails', {}) or {}
 
-                    # categoryId
                     cate = sn2.get('categoryId')
                     if cate:
                         sn['categoryId'] = cate
                         enriched_cate += 1
 
-                    # --- NEW: duration enrichment
                     dur_iso = cd.get('duration')
                     secs = iso8601_to_seconds(dur_iso) if dur_iso else None
                     if dur_iso:
@@ -480,10 +390,20 @@ def main() -> int:
                 break
 
         print(f'>>> DONE. pages={pages}, total_found={total_found}, total_upserted={total_upserted}')
+        
+        # 👇 Log successful run here
+        log_worker_run(
+            "discover_once",
+            {
+                "status": "ok",
+                "pages": pages,
+                "total_found": total_found,
+                "total_upserted": total_upserted,
+            },
+        )
         return 0
 
     except requests.HTTPError as e:
-        # Detect quota exhaustion
         try:
             body = e.response.json()
         except Exception:
@@ -497,13 +417,15 @@ def main() -> int:
             reason = reason or err.get('status') or err.get('message')
         if getattr(e.response, 'status_code', None) == 403 and str(reason) in {'quotaExceeded','dailyLimitExceeded','rateLimitExceeded','userRateLimitExceeded'}:
             print('YouTube quota exhausted — update YT_API_KEY.', file=sys.stderr)
+            log_worker_run("discover_once", {"status": "quota_exhausted", "reason": str(reason)})
             return EXIT_QUOTA
         print('YouTube API error:', body, file=sys.stderr)
+        log_worker_run("discover_once", {"status": "error_http", "reason": str(reason)})
         return 1
     except Exception as e:
         print('Error:', e, file=sys.stderr)
+        log_worker_run("discover_once", {"status": "error", "error": str(e)})
         return 1
-
 
 if __name__ == '__main__':
     raise SystemExit(main())

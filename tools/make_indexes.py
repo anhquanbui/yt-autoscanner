@@ -14,6 +14,7 @@ Usage:
   python make_indexes_v5.py                              # create/verify all
   python make_indexes_v5.py --show-only                  # dry run (no changes)
   python make_indexes_v5.py --drop-old                   # drop indexes not in INDEX_MAP
+  python make_indexes_v5.py --rebuild                    # drop all and recreate from INDEX_MAP
   python make_indexes_v5.py --collections videos,processed_videos
   python make_indexes_v5.py --mongo-uri ... --db ytscan  # override env/URI db
 """
@@ -22,44 +23,19 @@ import os
 import argparse
 import logging
 from typing import Dict, List, Tuple
-from pymongo import MongoClient
-from pymongo.errors import OperationFailure
+
 from pathlib import Path
 from dotenv import load_dotenv
 
+from pymongo import MongoClient
+from pymongo.errors import OperationFailure
+
+
 # ----- load .ENV file -----
-def load_project_env():
-    loaded = False
 
-    # 1) Priority .env in project's root folder (…/yt-autoscanner/.env)
-    proj_root = Path(__file__).resolve().parents[1] / ".env"
-    if proj_root.exists():
-        load_dotenv(dotenv_path=proj_root)
-        print(f"✅ Loaded .env from project root: {proj_root}")
-        loaded = True
-
-    # 2) Try .env in HOME folder (/home/ytscan/.env)
-    home_env = Path.home() / ".env"
-    if home_env.exists():
-        load_dotenv(dotenv_path=home_env, override=True)
-        print(f"✅ Loaded .env from home: {home_env}")
-        loaded = True
-
-    # 3) Try .env in current folder (CWD)
-    cwd_env = Path(".env").resolve()
-    if cwd_env.exists():
-        load_dotenv(dotenv_path=cwd_env, override=True)
-        print(f"✅ Loaded .env from CWD: {cwd_env}")
-        loaded = True
-
-    if not loaded:
-        print("⚠️ No .env found. Using existing environment variables.")
-
-load_project_env()
+import config.path_utils
 
 # ---------------- Logging (Console Only) ----------------
-import logging
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(message)s",
@@ -90,12 +66,21 @@ def parse_args():
         help="Drop indexes not in the official INDEX_MAP.",
     )
     p.add_argument(
+        "--rebuild",
+        action="store_true",
+        help=(
+            "Drop all non-_id_ indexes on selected collections, then recreate "
+            "all indexes defined in INDEX_MAP."
+        ),
+    )
+    p.add_argument(
         "--collections",
         type=str,
         default="all",
         help="Comma-separated list of collections (default: all from INDEX_MAP).",
     )
     return p.parse_args()
+
 
 # ---------------- Mongo ----------------
 def get_db(mongo_uri: str, explicit_db: str | None):
@@ -105,6 +90,7 @@ def get_db(mongo_uri: str, explicit_db: str | None):
         db = client[explicit_db]
     return client, db
 
+
 # ---------------- Index Map ----------------
 # Each index spec:
 # {"keys": [("field", 1 or -1), ...],
@@ -113,7 +99,7 @@ def get_db(mongo_uri: str, explicit_db: str | None):
 #  "partial": dict (partialFilterExpression)}
 INDEX_MAP: Dict[str, List[dict]] = {
     # === SOURCE COLLECTIONS ===
-        "videos": [
+    "videos": [
         # --- Tracking queues (track_once) ---
         {"keys": [("tracking.status", 1), ("tracking.next_poll_after", 1)],
          "name": "trackStatus_nextPoll"},
@@ -229,13 +215,16 @@ INDEX_MAP: Dict[str, List[dict]] = {
     ],
 }
 
+
 # ------------- Helpers -------------
 def _index_signature(ixdoc) -> Tuple[Tuple[str, int], ...]:
     """Return a tuple that uniquely identifies an index by its key ordering."""
     return tuple(ixdoc["key"].items())
 
+
 def _existing_indexes(coll):
     return list(coll.list_indexes())
+
 
 def create_or_verify_collection_indexes(db, coll_name, specs, show_only=False):
     coll = db[coll_name]
@@ -314,6 +303,7 @@ def create_or_verify_collection_indexes(db, coll_name, specs, show_only=False):
 
     return created, skipped
 
+
 def drop_unused_indexes(db, coll_name, keep_specs):
     coll = db[coll_name]
     existing = _existing_indexes(coll)
@@ -326,10 +316,37 @@ def drop_unused_indexes(db, coll_name, keep_specs):
             coll.drop_index(ix["name"])
             logging.info(f"   🗑️  Dropped old index: {ix['name']}")
 
+
+def drop_all_indexes(db, coll_name, show_only=False):
+    """Drop all indexes on a collection except the default _id_ index."""
+    coll = db[coll_name]
+    existing = _existing_indexes(coll)
+
+    logging.info(f"\n🧨 Rebuilding indexes for collection: {coll_name}")
+    for ix in existing:
+        if ix["name"] == "_id_":
+            continue
+        if show_only:
+            logging.info(
+                f"   👀 Would drop index: {ix['name']} ({list(ix['key'].items())})"
+            )
+        else:
+            coll.drop_index(ix["name"])
+            logging.info(f"   🗑️  Dropped index: {ix['name']}")
+
+
 # ------------- Main -------------
+
+
 def main():
     args = parse_args()
     client, db = get_db(args.mongo_uri, args.db)
+
+    if args.rebuild and args.drop_old:
+        logging.warning(
+            "⚠️ Both --rebuild and --drop-old were specified. "
+            "--rebuild takes precedence for dropping indexes."
+        )
 
     # collections to process
     collections = (
@@ -348,18 +365,26 @@ def main():
             continue
 
         specs = INDEX_MAP[coll_name]
+
+        # Nếu --rebuild: drop toàn bộ index trước rồi tạo lại
+        if args.rebuild:
+            drop_all_indexes(db, coll_name, show_only=args.show_only)
+
+        # Tạo / verify index theo INDEX_MAP
         created, skipped = create_or_verify_collection_indexes(
             db, coll_name, specs, show_only=args.show_only
         )
         total_created += created
         total_skipped += skipped
 
-        if args.drop_old and not args.show_only:
+        # Nếu không rebuild mà có --drop-old → drop những index không nằm trong INDEX_MAP
+        if args.drop_old and not args.rebuild and not args.show_only:
             drop_unused_indexes(db, coll_name, specs)
 
     logging.info("\n✅ Index maintenance complete.")
     logging.info(f"   Total created: {total_created}")
     logging.info(f"   Total skipped: {total_skipped}\n")
+
 
 if __name__ == "__main__":
     main()

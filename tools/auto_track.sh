@@ -13,7 +13,7 @@ if [ ! -x "$VENV_PY" ]; then
   exit 1
 fi
 
-# === Load .env ===
+# === Load .env (optional, cho system-wide env) ===
 if [ -f "$ENV_FILE" ]; then
   set -a
   # shellcheck disable=SC1090
@@ -21,16 +21,24 @@ if [ -f "$ENV_FILE" ]; then
   set +a
 fi
 
-# === cd worker ===
-cd "$PROJECT_ROOT/worker"
+# === Luôn chạy từ project root ===
+cd "$PROJECT_ROOT"
 
 # === tracking loop ===
 while true; do
-  echo "[AutoTrack] $(date) starting track_once.py"
+  echo "[AutoTrack] $(date) starting worker.track_once"
 
-  # Alway run by interpreter in .venv
-  if ! "$VENV_PY" track_once.py; then
-    echo "[AutoTrack] track_once.py exited with non-zero code"
+  # luôn chạy bằng interpreter trong .venv, dưới dạng module
+  if ! "$VENV_PY" -m worker.track_once; then
+    rc=$?
+    echo "[AutoTrack] track_once exited with code $rc"
+
+    # tuỳ chọn: nếu code 88 là hết quota thì nghỉ lâu hơn
+    if [ "$rc" -eq 88 ]; then
+      echo "[AutoTrack] quota exhausted, sleeping 600s"
+      sleep 600
+      continue
+    fi
   fi
 
   echo "[AutoTrack] sleeping 15s"

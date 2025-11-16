@@ -5,19 +5,25 @@ PROJECT_ROOT="/home/ytscan/yt-autoscanner"
 VENV_PY="$PROJECT_ROOT/.venv/bin/python"
 ENV_FILE="/home/ytscan/.env"
 
+# === Guard: is venv exit ===
 if [ ! -x "$VENV_PY" ]; then
   echo "[FATAL] Python venv not found at: $VENV_PY"
+  echo "-> Run:  python3 -m venv $PROJECT_ROOT/.venv && source $PROJECT_ROOT/.venv/bin/activate && pip install -r worker/requirements.txt"
   exit 1
 fi
 
+# === Load ~/.env if available, for global env ===
 if [ -f "$ENV_FILE" ]; then
   set -a
+  # shellcheck disable=SC1090
   . "$ENV_FILE"
   set +a
 fi
 
-cd "$PROJECT_ROOT/worker"
+# 🚀 Always run from project root
+cd "$PROJECT_ROOT"
 
+# === random discover ===
 export YT_RANDOM_PICK="1"
 export YT_RANDOM_REGION_POOL="US,GB,CA,AU,IN,JP,VN,KR,FR,DE,BR,MX,ID,TH,ES,IT,NL,SG,MY,PH,TW,HK,AR,CL,TR,PL,SA,AE,EG,NG,KE,RU,SE,NO,FI,DK,IE,PT,GR,IL,ZA"
 
@@ -44,15 +50,27 @@ export YT_RANDOM_QUERY_POOL
 DURATIONS=("short" "medium" "long" "any")
 export YT_MAX_PAGES="5"
 
+SLEEP_SECONDS=30
+
+# === discover loop ===
 while true; do
   export YT_DURATION_MODE="${DURATIONS[$RANDOM % ${#DURATIONS[@]}]}"
-  echo "[AutoDiscover] $(date) starting discover_once.py"
+  echo "[AutoDiscover] $(date) running discover_once"
   echo "[AutoDiscover] YT_DURATION_MODE=$YT_DURATION_MODE"
 
-  if ! "$VENV_PY" discover_once.py; then
-    echo "[AutoDiscover] discover_once.py exited with non-zero code"
+  # Run by module to import config.path_utils OK
+  if ! "$VENV_PY" -m worker.discover_once; then
+    rc=$?
+    echo "[AutoDiscover] discover_once exited with code $rc"
+
+    # Code 88
+    if [ "$rc" -eq 88 ]; then
+      echo "[AutoDiscover] quota exhausted, sleeping 600s"
+      sleep 600
+      continue
+    fi
   fi
 
-  echo "[AutoDiscover] sleeping 30s"
-  sleep 30
+  echo "[AutoDiscover] sleeping ${SLEEP_SECONDS}s"
+  sleep "$SLEEP_SECONDS"
 done

@@ -7,30 +7,33 @@
 # module-specific requirements.txt files.
 
 # --- Core runtime ---
-python-dotenv>=1.0.1          # Load environment variables from .env file
-requests>=2.31.0              # HTTP requests to YouTube API and others
-typing-extensions>=4.14.1     # Ensure compatibility with FastAPI/Pydantic
-colorama>=0.4.6               # Colored logs in PowerShell or CMD (optional)
+python-dotenv>=1.0.1
+requests>=2.31.0
+typing-extensions>=4.14.1
+colorama>=0.4.6
 
 # --- Database layer ---
-pymongo==4.8.0                # MongoDB driver
-# dnspython>=2.6.1            # Uncomment if using MongoDB SRV URIs (mongodb+srv://)
+pymongo==4.8.0
+# dnspython>=2.6.1           # Only if using mongodb+srv://
 
 # --- Worker utilities ---
-schedule>=1.2.0               # Task scheduler for background workers
+schedule>=1.2.0
 
 # --- Web API (FastAPI backend) ---
-fastapi==0.115.0              # Backend framework for API endpoints
-uvicorn[standard]==0.30.6     # ASGI server for FastAPI
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
 
 # --- Data processing ---
-pandas>=2.2.2                 # Data manipulation and aggregation
-numpy>=1.26.4                 # Numerical computing and arrays
+pandas>=2.2.2
+numpy>=1.26.4
+pyarrow>=16.1.0             # Required for Parquet exports
+python-dateutil>=2.9.0      # (Optional but commonly required)
 
-# --- Machine Learning utilities (for virality prediction) ---
-scikit-learn>=1.5.0           # Classic ML toolkit (classification, regression)
-xgboost>=2.1.0                # Gradient boosting model used in prediction pipeline
+# --- Machine Learning ---
+scikit-learn>=1.5.0
+xgboost>=2.1.0
+joblib>=1.4.0               # Load/save ML models
+tqdm>=4.66.1                # Progress bars for long tasks
 
 # (Dashboard packages intentionally excluded)
-# Streamlit / Plotly should be installed in a separate venv
-# if you plan to run the analytics dashboard UI.
+# Install Streamlit/Plotly in a separate environment if needed.

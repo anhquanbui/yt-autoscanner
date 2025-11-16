@@ -1,6 +1,14 @@
+#!/usr/bin/env python3
+# worker/track_once.py (v3.3) — STATISTICS TRACKER (batch 50 IDs, milestones 1h→24h)
+# CHANGELOG (v3.3):
+#   - Respect new ML flags schema with 2 low-quality branches:
+#       * ml_flags.low_quality_v1_3h
+#       * ml_flags.low_quality_v3_6h
+#   - Early-stop priority:
+#       1) If low_quality_v1_3h.is_low == True → stop_reason="ml.low_quality_v1_3h"
+#       2) Else if low_quality_v3_6h.is_low == True → stop_reason="ml.low_quality_v3_6h"
+#   - All other behaviors preserved (duration backfill, milestones, quota handling).
 
-# worker/track_once.py (v3.1) — STATISTICS TRACKER (batch 50 IDs, milestones 1h→24h) + handle backfill + duration backfill
-# (see header in previous message for details)
 from __future__ import annotations
 
 import os, sys, io, re
@@ -9,8 +17,9 @@ from typing import List, Dict, Any, Optional
 
 import requests
 from pymongo import MongoClient, UpdateOne
-from dotenv import load_dotenv
-from pathlib import Path
+
+# 🚀 Centralized env / path loader (sẽ tự load .env khi import)
+import config.path_utils
 
 # Ensure UTF-8 console logging (Windows PowerShell safety)
 try:
@@ -20,47 +29,49 @@ except Exception:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
-# Load .env but DO NOT override existing ENV (server/cron wins)
-def load_project_env():
-    loaded = False
-
-    # 1) .env in root
-    proj_root = Path(__file__).resolve().parents[1] / ".env"
-    if proj_root.exists():
-        load_dotenv(dotenv_path=proj_root)
-        print(f"✅ Loaded .env from project root: {proj_root}")
-        loaded = True
-
-    # 2) Try .env in HOME
-    home_env = Path.home() / ".env"
-    if home_env.exists():
-        load_dotenv(dotenv_path=home_env, override=True)
-        print(f"✅ Loaded .env from home: {home_env}")
-        loaded = True
-
-    # 3) Try .env in current folder
-    cwd_env = Path(".env").resolve()
-    if cwd_env.exists():
-        load_dotenv(dotenv_path=cwd_env, override=True)
-        print(f"✅ Loaded .env from CWD: {cwd_env}")
-        loaded = True
-
-    if not loaded:
-        print("⚠️ No .env found. Using existing environment variables.")
-
-load_project_env()
-
-
 # ---- Config ----
 API_KEY   = os.getenv("YT_API_KEY")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/ytscan")
 
 TRACK_BATCH_SIZE = min(50, max(1, int(os.getenv("TRACK_BATCH_SIZE", "50"))))
-TRACK_MAX_DUE    = max(1, int(os.getenv("TRACK_MAX_DUE_PER_RUN", "10000")))
+TRACK_MAX_DUE    = max(1, int(os.getenv("TRACK_MAX_DUE_PER_RUN", "5000")))
 LOG_SAMPLE       = max(0, int(os.getenv("TRACK_LOG_SAMPLE", "5")))
 
-ENRICH_HANDLE_MODE = os.getenv("YT_ENRICH_HANDLE_MODE", "track").lower()  # track|discover|off
+# ---- Logging to mongo ----
+def log_worker_run(worker_name: str, extra: dict | None = None):
+    """
+    Upsert one document in `worker_runs` to record the last time
+    a worker finished (success or error).
+    """
+    try:
+        mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/ytscan")
+        db_name_env = os.getenv("MONGO_DB")
 
+        if db_name_env:
+            db_name = db_name_env
+        else:
+            tail = mongo_uri.rsplit("/", 1)[-1]
+            db_name = tail.split("?", 1)[0] or "ytscan"
+
+        client = MongoClient(mongo_uri)
+        db = client[db_name]
+
+        payload = {
+            "name": worker_name,
+            "last_run": datetime.now(timezone.utc),
+        }
+        if extra:
+            payload.update(extra)
+
+        db.worker_runs.update_one(
+            {"name": worker_name},
+            {"$set": payload},
+            upsert=True,
+        )
+    except Exception as e:
+        print(f"[WARN] Failed to log worker run for {worker_name}: {e}", file=sys.stderr)
+
+# Milestone plan (minutes since publishedAt)
 _PLAN_ENV = os.getenv("YT_TRACK_PLAN_MINUTES")
 if _PLAN_ENV:
     PLAN_MINUTES = [int(x) for x in _PLAN_ENV.split(",") if x.strip()]
@@ -72,8 +83,8 @@ else:
         list(range(780, 1440+1, 60))    # 12–24h
     )
 
+# YouTube Data API endpoints
 VIDEOS_URL   = "https://www.googleapis.com/youtube/v3/videos"
-CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 EXIT_QUOTA   = 88
 
 # --- Duration helpers (for backfill) ---
@@ -125,76 +136,6 @@ def fetch_stats(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
         if vid:
             out[vid] = it.get("statistics", {})
     return out
-
-
-def fetch_channel_handles(channel_ids: List[str]) -> Dict[str, str]:
-    if not channel_ids:
-        return {}
-    params = {"key": API_KEY, "part": "snippet", "id": ",".join(channel_ids[:50])}
-    r = requests.get(CHANNELS_URL, params=params, timeout=30)
-    r.raise_for_status()
-    out: Dict[str, str] = {}
-    for it in r.json().get("items", []):
-        cid = it.get("id")
-        handle = (it.get("snippet") or {}).get("customUrl")
-        if cid and handle:
-            out[cid] = handle
-    return out
-
-
-def backfill_handles_for_due_videos(due_docs: List[Dict[str, Any]], db) -> None:
-    if ENRICH_HANDLE_MODE in ("off", "discover"):
-        return
-    need: List[str] = []
-    for d in due_docs:
-        sn = d.get("snippet", {}) or {}
-        src = d.get("source", {}) or {}
-        cid = sn.get("channelId")
-        if not cid:
-            continue
-        if not sn.get("channelHandle") and not src.get("channelHandle"):
-            need.append(cid)
-    need = sorted(set(need))
-    if not need:
-        return
-
-    cached: Dict[str, str] = {c["_id"]: c.get("handle") for c in db.channels.find({"_id": {"$in": need}}, {"handle": 1})}
-    to_fetch = [cid for cid in need if not cached.get(cid)]
-
-    fetched: Dict[str, str] = {}
-    for i in range(0, len(to_fetch), 50):
-        batch = to_fetch[i:i+50]
-        fetched.update(fetch_channel_handles(batch))
-
-    handle_map = {**cached, **fetched}
-
-    if fetched:
-        now_iso = now_utc().isoformat()
-        ops = [
-            UpdateOne({"_id": cid}, {"$set": {"handle": h, "last_checked_at": now_iso}}, upsert=True)
-            for cid, h in fetched.items()
-        ]
-        if ops:
-            db.channels.bulk_write(ops, ordered=False)
-
-    ops = []
-    for d in due_docs:
-        vid = d.get("_id")
-        sn  = d.get("snippet", {}) or {}
-        src = d.get("source", {}) or {}
-        cid = sn.get("channelId")
-        if not vid or not cid:
-            continue
-        h = handle_map.get(cid)
-        if not h:
-            continue
-        ops.append(UpdateOne({"_id": vid}, {"$set": {
-            "snippet.channelHandle": h,
-            "source.channelHandle": src.get("channelHandle") or h
-        }}))
-
-    if ops:
-        db.videos.bulk_write(ops, ordered=False)
 
 
 def enrich_duration_for_missing_videos(due_docs: List[Dict[str, Any]], db) -> None:
@@ -267,10 +208,19 @@ def main() -> int:
     now = now_utc()
     now_iso = now.isoformat()
 
+    # NOTE: We still project snippet.channelId for internal use/filters, but do not fetch/write any channel data.
     due_cur = (db.videos.find({
         "tracking.status": "tracking",
         "tracking.next_poll_after": {"$lte": now_iso}
-    }, {"_id": 1, "snippet.publishedAt": 1, "snippet.channelId": 1, "snippet.channelHandle": 1, "source.channelHandle": 1, "tracking": 1, "snippet.durationISO": 1, "snippet.lengthBucket": 1})
+    }, {
+        "_id": 1, 
+        "snippet.publishedAt": 1, 
+        "snippet.channelId": 1, 
+        "tracking": 1, 
+        "snippet.durationISO": 1, 
+        "snippet.lengthBucket": 1,
+        "ml_flags": 1,
+        })
     .sort("tracking.next_poll_after", 1)
     .limit(TRACK_MAX_DUE))
 
@@ -282,8 +232,7 @@ def main() -> int:
     print(f"Due videos: {len(due_docs)}")
     print(f"Plan milestones (first 8): {PLAN_MINUTES[:8]}{' ...' if len(PLAN_MINUTES)>8 else ''}")
 
-    backfill_handles_for_due_videos(due_docs, db)
-
+    # Duration backfill (safe; no channel writes)
     try:
         enrich_duration_for_missing_videos(due_docs, db)
     except requests.HTTPError as e:
@@ -334,18 +283,65 @@ def main() -> int:
         ops: List[UpdateOne] = []
         for d in batch:
             vid = str(d["_id"])
+
+            mlf_all = (d.get("ml_flags") or {})
+
+            # 0) safety: if 3h model already flagged low, stop immediately
+            mlf_3h = mlf_all.get("low_quality_v1_3h") or {}
+            if mlf_3h.get("is_low") in (True, 1):
+                ops.append(
+                    UpdateOne(
+                        {"_id": vid},
+                        {
+                            "$set": {
+                                "tracking.status": "stopped",
+                                "tracking.stop_reason": "ml.low_quality_v1_3h",
+                                "tracking.last_polled_at": now_iso,
+                                "tracking.next_poll_after": None,
+                            },
+                            "$inc": {"tracking.poll_count": 1},
+                        },
+                    )
+                )
+                completed += 1
+                continue
+
+            # 1) if flagged low_quality_v3_6h, stop track
+            mlf_6h = mlf_all.get("low_quality_v3_6h") or {}
+            if mlf_6h.get("is_low") in (True, 1):
+                ops.append(
+                    UpdateOne(
+                        {"_id": vid},
+                        {
+                            "$set": {
+                                "tracking.status": "stopped",
+                                "tracking.stop_reason": "ml.low_quality_v3_6h",
+                                "tracking.last_polled_at": now_iso,
+                                "tracking.next_poll_after": None,
+                            },
+                            "$inc": {"tracking.poll_count": 1},
+                        },
+                    )
+                )
+                completed += 1
+                continue
+
+            # 3) Normal process: parse publishedAt & continue to process
             sn = d.get("snippet", {}) or {}
             pub = parse_iso(sn.get("publishedAt") or "")
             if not pub:
-                ops.append(UpdateOne({"_id": vid}, {
-                    "$set": {
-                        "tracking.status": "complete",
-                        "tracking.stop_reason": "no_publishedAt",
-                        "tracking.last_polled_at": now_iso,
-                        "tracking.next_poll_after": None
+                ops.append(UpdateOne(
+                    {"_id": vid},
+                    {
+                        "$set": {
+                            "tracking.status": "complete",
+                            "tracking.stop_reason": "no_publishedAt",
+                            "tracking.last_polled_at": now_iso,
+                            "tracking.next_poll_after": None,
+                        },
+                        "$inc": {"tracking.poll_count": 1},
                     },
-                    "$inc": {"tracking.poll_count": 1}
-                }))
+                ))
                 completed += 1
                 continue
 
@@ -354,7 +350,7 @@ def main() -> int:
                 ops.append(UpdateOne({"_id": vid}, {
                     "$set": {
                         "tracking.status": "complete",
-                        "tracking.stop_reason": "unavailable",
+                        "tracking.stop_reason": "removed",  # updated
                         "tracking.last_polled_at": now_iso,
                         "tracking.next_poll_after": None
                     },
@@ -403,6 +399,16 @@ def main() -> int:
             print(f" - {d['_id']} | prev next_poll_after={d.get('tracking',{}).get('next_poll_after')}")
 
     print(f"Processed: {processed}, completed: {completed}")
+    
+    # 🔎 Log successful run
+    log_worker_run(
+        "track_once",
+        {
+            "status": "ok",
+            "processed": processed,
+            "completed": completed,
+        },
+    )
     return 0
 
 
