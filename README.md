@@ -162,6 +162,33 @@ ml_flags: {
 
 ---
 
+## 🖥 Service Controls (Start / Stop / Restart)
+
+### ▶ Start all services
+```
+sudo systemctl start yt-auto-discover yt-auto-track yt-auto-quality yt-api
+```
+
+### ⏹ Stop all services
+```
+sudo systemctl stop yt-auto-discover yt-auto-track yt-auto-quality yt-api
+```
+
+### 🔄 Restart all services
+```
+sudo systemctl restart yt-auto-discover yt-auto-track yt-auto-quality yt-api
+```
+
+### Check status
+```
+systemctl status yt-auto-discover
+systemctl status yt-auto-track
+systemctl status yt-auto-quality
+systemctl status yt-api
+```
+
+---
+
 ## 📺 API (FastAPI)
 
 ```
