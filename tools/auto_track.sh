@@ -4,7 +4,7 @@ set -euo pipefail
 # === Paths ===
 PROJECT_ROOT="/home/ytscan/yt-autoscanner"
 VENV_PY="$PROJECT_ROOT/.venv/bin/python"
-ENV_FILE="/home/ytscan/.env"   # .env đặt ngoài repo cho an toàn
+ENV_FILE="/home/ytscan/.env"
 
 # === Guards ===
 if [ ! -x "$VENV_PY" ]; then
@@ -13,7 +13,7 @@ if [ ! -x "$VENV_PY" ]; then
   exit 1
 fi
 
-# === Load .env (nếu có) ===
+# === Load .env ===
 if [ -f "$ENV_FILE" ]; then
   set -a
   # shellcheck disable=SC1090
@@ -21,14 +21,14 @@ if [ -f "$ENV_FILE" ]; then
   set +a
 fi
 
-# === Vào thư mục worker ===
+# === cd worker ===
 cd "$PROJECT_ROOT/worker"
 
-# === Vòng lặp tracking ===
+# === tracking loop ===
 while true; do
   echo "[AutoTrack] $(date) starting track_once.py"
 
-  # Luôn chạy bằng interpreter trong .venv
+  # Alway run by interpreter in .venv
   if ! "$VENV_PY" track_once.py; then
     echo "[AutoTrack] track_once.py exited with non-zero code"
   fi
