@@ -23,6 +23,7 @@ import argparse
 import logging
 from typing import Dict, List, Tuple
 from pymongo import MongoClient
+from pymongo.errors import OperationFailure
 
 # ---------------- Logging (Console Only) ----------------
 import logging
