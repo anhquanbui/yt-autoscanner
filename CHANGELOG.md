@@ -1,6 +1,13 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+
+---
+## What's New — Nov 15, 2025
+- Removed deprecated documentation files to streamline the repository.
+- Cleaned up and refined several internal logic flows.
+- Reworked and refreshed the main README.md for better clarity and onboarding.
+
 ---
 ## What's New — Nov 13, 2025
 
