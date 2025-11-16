@@ -125,24 +125,25 @@ except Exception:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
+# ----- load .ENV file -----
 def load_project_env():
     loaded = False
 
-    # 1) Ưu tiên .env ở root dự án (…/yt-autoscanner/.env)
+    # 1) Priority .env in project's root folder (…/yt-autoscanner/.env)
     proj_root = Path(__file__).resolve().parents[1] / ".env"
     if proj_root.exists():
         load_dotenv(dotenv_path=proj_root)
         print(f"✅ Loaded .env from project root: {proj_root}")
         loaded = True
 
-    # 2) Thử .env ở HOME (ví dụ /home/ytscan/.env)
+    # 2) Try .env in HOME folder (/home/ytscan/.env)
     home_env = Path.home() / ".env"
     if home_env.exists():
         load_dotenv(dotenv_path=home_env, override=True)
         print(f"✅ Loaded .env from home: {home_env}")
         loaded = True
 
-    # 3) Thử .env tại thư mục đang chạy (CWD)
+    # 3) Try .env in current folder (CWD)
     cwd_env = Path(".env").resolve()
     if cwd_env.exists():
         load_dotenv(dotenv_path=cwd_env, override=True)
