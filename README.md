@@ -44,6 +44,28 @@ python -m venv venv
 pip install -r requirements-dev.txt
 ```
 
+### Configuration
+Add a `.env` file in your project root (please note to add your Youtube API Key V3)
+```
+MONGO_URI=mongodb://localhost:27017/ytscan
+YOUTUBE_API_KEY=YOUR_YOUTUBE_API_KEY
+EXPORT_DIR=./data_export
+
+# --------- 3H MODEL ----------
+LOWQ_MODEL_3H_PATH=models/low_quality/low_quality_model_3h.joblib
+LOWQ_THRESHOLD_3H=0.294
+LOWQ_3H_ENABLED=true
+LOWQ_3H_ONLY_MISSING=true
+LOWQ_3H_STOP_IF_LOW=true
+
+# --------- 6H MODEL ----------
+LOWQ_MODEL_6H_PATH=models/low_quality/low_quality_model_6h.joblib
+LOWQ_THRESHOLD_6H=0.281
+LOWQ_6H_ENABLED=true
+LOWQ_6H_ONLY_MISSING=true
+LOWQ_6H_STOP_IF_LOW=true
+```
+
 ### Check MongoDB
 ```powershell
 python test_mongo.py
@@ -62,17 +84,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 ---
 
-# ⚙️ **4. Configuration**
-Add a `.env` file in your project root:
-```
-MONGO_URI=mongodb://localhost:27017/ytscan
-YOUTUBE_API_KEY=YOUR_YOUTUBE_API_KEY
-EXPORT_DIR=D:/YT-EXPORTS
-```
-
----
-
-# 🏗️ **5. Architecture Overview**
+# 🏗️ **4. Architecture Overview**
 ```
           +-------------------+
           | YouTube API (v3) |
@@ -91,7 +103,7 @@ EXPORT_DIR=D:/YT-EXPORTS
 
 ---
 
-# 🧩 **6. Project Structure**
+# 🧩 **5. Project Structure**
 ```
 YT-AUTOSCANNER/
 ├── api/                              # FastAPI backend
@@ -113,18 +125,18 @@ YT-AUTOSCANNER/
 ├── data_export/                      # Exported Parquet/JSON for ML
 │
 ├── docs/                             # Documentation for pipeline + workers
-│   ├── Autorun_Scripts_Guide.md
-│   ├── backfill_channels.md
-│   ├── discover_once.md
-│   ├── explanation_processed_videos.md
-│   ├── make_indexes_v3.md
-│   ├── mongo_to_parquet_guide.md
-│   ├── mongodb_setup_for_beginners.md
-│   ├── pipeline_overview.md
-│   ├── process_data_v6_usage.md
+│   ├── 01_initial_setup_guide.md
+│   ├── 02_collection_overview.md
 │   ├── QA.md
-│   ├── track_once.md
-│   └── ytscan_collections_overview.md
+│   ├── 
+│   ├── 
+│   ├── 
+│   ├── 
+│   ├── 
+│   ├── 
+│   ├── 
+│   ├── 
+│   └── 
 │
 ├── logs/                             # Worker + system logs
 │
@@ -164,7 +176,7 @@ YT-AUTOSCANNER/
 
 ---
 
-# ▶️ **7. Running the System**
+# ▶️ **6. Running the System**
 ## Run workers manually
 ```powershell
 python worker/discover_once.py
@@ -197,7 +209,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 ---
 
-# 📚 **8. Documentation Index**
+# 📚 **7. Documentation Index**
 Inside `docs/`:
 - [01_initial_setup_guide.md](docs/01_initial_setup_guide.md)
 - [02_collection_overview.md](docs/02_collection_overview.md)
@@ -205,7 +217,7 @@ Inside `docs/`:
 
 ---
 
-# 📌 **9. Roadmap**
+# 📌 **8. Roadmap**
 | Feature | Status |
 |---------|--------|
 | Viral prediction model | 🔄 In progress |
@@ -216,7 +228,7 @@ Inside `docs/`:
 
 ---
 
-# ❤️ **10. Credits**
+# ❤️ **9. Credits**
 Developed by:
 - **Anh Quan Bui** — System Architect / ML Engineer
 - **Eneyi Simeni** — Data Engineer

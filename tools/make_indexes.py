@@ -24,16 +24,14 @@ import logging
 from typing import Dict, List, Tuple
 from pymongo import MongoClient
 
-# ---------------- Logging ----------------
+# ---------------- Logging (Console Only) ----------------
+import logging
+
 logging.basicConfig(
-    filename="index_maintenance.log",
     level=logging.INFO,
-    format="[%(asctime)s] %(message)s",
+    format="%(message)s",
 )
-console = logging.StreamHandler()
-console.setLevel(logging.INFO)
-console.setFormatter(logging.Formatter("%(message)s"))
-logging.getLogger("").addHandler(console)
+
 
 # ---------------- CLI ----------------
 def parse_args():
