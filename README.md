@@ -81,32 +81,80 @@ EXPORT_DIR=D:/YT-EXPORTS
           |   track_once.py   |
           |  1h→24h snapshots |
           +---------+---------+
-                    |
-          +---------v---------+
-          | process_data.py   |
-          | Feature Engineering|
-          +---------+---------+
-                    |
-          +---------v---------+
-          | Parquet Export    |
-          +---------+---------+
-                    |
-          +---------v---------+
-          |  ML Models (6h)   |
-          +-------------------+
+
 ```
 
 ---
 
-# 🧩 **6. Project Structure (PRO Version)**
+# 🧩 **6. Project Structure**
 ```
-api/                → FastAPI backend
-dashboard/          → Streamlit analytics UI
-tools/              → Indexing, exports, migrations
-worker/             → Discovery, tracking, ML auto-flagging
-docs/               → Full documentation set
-models/             → Saved ML models (joblib)
-exports/            → Auto-generated parquet/json outputs
+YT-AUTOSCANNER/
+├── api/                              # FastAPI backend
+│   ├── main.py                       # API entrypoint
+│   └── __pycache__/                  # Python cache
+│
+├── config/                           # Shared configuration utilities
+│   ├── __init__.py                   # Enables module imports
+│   └── path_utils.py                 # Path + directory helpers
+│
+├── dashboard/                        # Streamlit monitoring dashboard
+│   ├── app.py                        # Main Streamlit app
+│   ├── components/                   # UI components
+│   │   ├── db.py                     # MongoDB connection layer
+│   │   └── __pycache__/              # Streamlit component cache
+│   └── pages/                        # Dashboard pages
+│       └── 01_Overview.py            # KPI overview page
+│
+├── data_export/                      # Exported Parquet/JSON for ML
+│
+├── docs/                             # Documentation for pipeline + workers
+│   ├── Autorun_Scripts_Guide.md
+│   ├── backfill_channels.md
+│   ├── discover_once.md
+│   ├── explanation_processed_videos.md
+│   ├── make_indexes_v3.md
+│   ├── mongo_to_parquet_guide.md
+│   ├── mongodb_setup_for_beginners.md
+│   ├── pipeline_overview.md
+│   ├── process_data_v6_usage.md
+│   ├── QA.md
+│   ├── track_once.md
+│   └── ytscan_collections_overview.md
+│
+├── logs/                             # Worker + system logs
+│
+├── models/                           # Machine learning model storage
+│   └── low_quality/
+│       ├── low_quality_model_3h.joblib   # 3h model
+│       └── low_quality_model_6h.joblib   # 6h model
+│
+├── tools/                            # Maintenance + data-processing scripts
+│   ├── __init__.py                   # Module init
+│   ├── backfill_channels.py          # Fill missing channel data
+│   ├── backfill_missing_fields.py    # Fix missing fields in DB
+│   ├── index_maintenance.log         # Index check log
+│   ├── make_indexes.py               # Create MongoDB indexes
+│   ├── ml_flags_migrate.py           # Migrate ML flag schema
+│   └── mongo_to_parquet.py           # Export Mongo → Parquet
+│
+├── worker/                           # Core data ingestion + tracking system
+│   ├── __init__.py                   # Module init
+│   ├── discover_once.py              # YouTube discovery worker
+│   ├── low_quality_autoflag.py       # ML auto-flag worker
+│   ├── process_data.py               # ML feature-engineering processor
+│   └── track_once.py                 # Tracking worker (1h → 24h snapshots)
+│
+├── run_local_loop.ps1                # Unified discovery + tracking loop
+├── run_track_one_loop_30s.ps1        # Track-only loop (debug)
+│
+├── seed.py                           # Test data generator
+│
+├── requirements.txt                  # Prod dependencies
+├── requirements-dev.txt              # Dev dependencies
+├── README.md                         # Main documentation
+├── .env                              # Environment config (API keys, Mongo URI, Machine Learning configuration)
+└── .gitignore                        # Git ignore rules
+
 ```
 
 ---
@@ -137,36 +185,12 @@ Automatically executes:
 ### Windows Authorization Fix
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-Unblock-File -Path ./run_both_local.ps1
+./run_both_local.ps1
 ```
 
 ---
 
-# 🤖 **8. ML Workflow**
-### 1. Generate ML features
-```powershell
-python worker/process_data.py
-```
-
-### 2. Export MongoDB → Parquet
-```powershell
-python tools/mongo_to_parquet.py --chunk 50000
-```
-
-### 3. Train model (example: XGBoost)
-```python
-import xgboost as xgb
-```
-
-### 4. Save model → /models
-### 5. Auto‑flag videos
-```powershell
-python worker/low_quality_autoflag.py
-```
-
----
-
-# 📚 **9. Documentation Index**
+# 📚 **8. Documentation Index**
 Inside `docs/`:
 - discover_once.md
 - track_once.md
@@ -178,7 +202,7 @@ Inside `docs/`:
 
 ---
 
-# 📌 **10. Roadmap**
+# 📌 **9. Roadmap**
 | Feature | Status |
 |---------|--------|
 | Viral prediction model | 🔄 In progress |
@@ -189,14 +213,10 @@ Inside `docs/`:
 
 ---
 
-# 📝 **11. License**
-MIT / Apache‑2.0 / or your preferred license.
-
----
-
-# ❤️ **12. Credits**
+# ❤️ **10. Credits**
 Developed by:
 - **Anh Quan Bui** — System Architect / ML Engineer
 - **Eneyi Simeni** — Data Engineer
 - **Nguyen Ha Dung** — ML Developer
 
+📅 **Last Updated:** **Nov 15 2025**

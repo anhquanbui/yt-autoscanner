@@ -11,7 +11,7 @@
 # =======================
 $DiscoverIntervalSeconds = 10     # seconds
 $TrackIntervalSeconds    = 5      # seconds
-$LowQIntervalSeconds     = 1800   # 1 giờ = 3600 giây
+$LowQIntervalSeconds     = 1800   # seconds
 $TickSleepSeconds        = 5      # main loop tick sleep
 
 # =======================
