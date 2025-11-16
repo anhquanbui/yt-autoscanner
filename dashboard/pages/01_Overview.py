@@ -140,6 +140,10 @@ def load_kpis() -> dict:
                         "$cond": [
                             {
                                 "$or": [
+                                    # 3h model
+                                    {"$eq": ["$ml_flags.low_quality_v1_3h.is_low", True]},
+                                    {"$eq": ["$ml_flags.low_quality_v1_3h.is_low", 1]},
+                                    # 6h model
                                     {"$eq": ["$ml_flags.low_quality_v3_6h.is_low", True]},
                                     {"$eq": ["$ml_flags.low_quality_v3_6h.is_low", 1]},
                                 ]
