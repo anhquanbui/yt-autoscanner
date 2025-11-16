@@ -37,21 +37,26 @@ Originally developed as part of a **Data Analytics & AI research project** at **
 
 # ⚡ **3. Quick Start (5 Steps)**
 ```powershell
-git clone https://github.com/yourrepo/yt-autoscanner.git
+git clone https://github.com/anhquanbui/yt-autoscanner.git
 cd yt-autoscanner
 python -m venv venv
 ./venv/Scripts/Activate.ps1
 pip install -r requirements-dev.txt
 ```
 
-### Start MongoDB (Docker)
+### Check MongoDB
 ```powershell
-docker run -d --name ytscan-mongo -p 27017:27017 mongo:7
+python test_mongo.py
+```
+
+### Create indexes for collections (your dataset)
+```powershell
 python tools/make_indexes.py
 ```
 
 ### Launch the unified runner
 ```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ./run_both_local.ps1
 ```
 
@@ -160,16 +165,18 @@ YT-AUTOSCANNER/
 ---
 
 # ▶️ **7. Running the System**
-## Start API
-```powershell
-cd api
-uvicorn main:app --reload
-```
-
 ## Run workers manually
 ```powershell
 python worker/discover_once.py
 python worker/track_once.py
+python worker/low_quality_autoflag.py
+```
+
+## Run tools manually
+```powershell
+python tools/name_of_tool.py
+or
+python -m tools.name_of_tool # mainly for export tools, run if `python tools/...` does not work
 ```
 
 ## Unified Local Runner
@@ -192,13 +199,9 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 # 📚 **8. Documentation Index**
 Inside `docs/`:
-- discover_once.md
-- track_once.md
-- make_indexes_v3.md
-- mongo_to_parquet_guide.md
-- explanation_processed_videos.md
-- pipeline_overview.md
-- Autorun_Scripts_Guide.md
+- [01_initial_setup_guide.md](docs/01_initial_setup_guide.md)
+- [02_collection_overview.md](docs/02_collection_overview.md)
+- [QA.md](docs/QA.md) #For beginner and my team
 
 ---
 
