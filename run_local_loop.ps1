@@ -1,9 +1,9 @@
 <# 
-  run_both_local.ps1 (v6.0) — Local runner for:
-    - discover_once.py        (foreground, đúng tiến độ)
-    - track_once.py           (foreground, đúng tiến độ)
-    - low_quality_autoflag.py (background, không block vòng lặp)
-    - compute_dashboard_kpis.py (background, không block vòng lặp)
+  run_local_loop.ps1 (v6.1) — Local runner for:
+    - worker.discover_once        (foreground, đúng tiến độ)
+    - worker.track_once           (foreground, đúng tiến độ)
+    - worker.low_quality_autoflag (background, không block vòng lặp, --only-missing)
+    - worker.compute_dashboard_kpis (background, không block vòng lặp)
 
   - discover_once: quét video mới
   - track_once: cập nhật stats cho video đang tracking
@@ -16,8 +16,8 @@
 # =======================
 # 🔁 Intervals (seconds)
 # =======================
-$DiscoverIntervalSeconds = 10      # discover_once every 10s
-$TrackIntervalSeconds    = 5       # track_once every 5s
+$DiscoverIntervalSeconds = 300      # discover_once every 10s
+$TrackIntervalSeconds    = 15       # track_once every 5s
 $LowQIntervalSeconds     = 1800    # low_quality_autoflag every 30 minutes
 $KpiIntervalSeconds      = 300     # compute_dashboard_kpis every 5 minutes
 $TickSleepSeconds        = 5       # main loop tick sleep
@@ -174,13 +174,26 @@ function Pick-DurationBucket() {
 }
 
 # =======================
+# 🔗 Map script → module
+# =======================
+function Get-WorkerModule([string]$ScriptRelPath) {
+    switch ($ScriptRelPath) {
+        "discover_once.py"         { return "worker.discover_once" }
+        "track_once.py"            { return "worker.track_once" }
+        "low_quality_autoflag.py"  { return "worker.low_quality_autoflag" }
+        "compute_dashboard_kpis.py"{ return "worker.compute_dashboard_kpis" }
+        default                    { return $null }
+    }
+}
+
+# =======================
 # 🏃 Foreground step (blocking)
 # =======================
 function Run-ForegroundStep([string]$Name, [string]$ScriptRelPath) {
     try {
-        $full = Join-Path $WorkerDir $ScriptRelPath
-        if (-not (Test-Path $full)) {
-            Write-Log "Script not found: $full" "ERROR"
+        $module = Get-WorkerModule $ScriptRelPath
+        if (-not $module) {
+            Write-Log ("No module mapping for {0} (script={1})" -f $Name, $ScriptRelPath) "ERROR"
             return
         }
 
@@ -190,9 +203,9 @@ function Run-ForegroundStep([string]$Name, [string]$ScriptRelPath) {
             Write-Log ("Duration bucket this run: {0}" -f $bucket)
         }
 
-        Write-Log "Running $Name (foreground) - $full"
+        Write-Log ("Running {0} (foreground) as module {1}" -f $Name, $module)
         Push-Location $RepoRoot
-        & $PythonExe $full
+        & $PythonExe "-m" $module
         $code = $LASTEXITCODE
         Pop-Location
 
@@ -229,17 +242,18 @@ function Ensure-BackgroundWorker {
             return
         }
 
-        $full = Join-Path $WorkerDir $ScriptRelPath
-        if (-not (Test-Path $full)) {
-            Write-Log ("Script not found for {0}: {1}" -f $Name, $full) "ERROR"
+        $module = Get-WorkerModule $ScriptRelPath
+        if (-not $module) {
+            Write-Log ("No module mapping for {0} (script={1})" -f $Name, $ScriptRelPath) "ERROR"
             return
         }
 
-        Write-Log "Starting $Name in background ($full)"
+        Write-Log ("Starting {0} in background as module {1}" -f $Name, $module)
 
-        # Build argument list: script path + optional extra args
+        # Build argument list: -m worker.xxx + optional extra args
         $psiArgs = @()
-        $psiArgs += $full
+        $psiArgs += "-m"
+        $psiArgs += $module
         if ($ExtraArgs -and $ExtraArgs.Trim().Length -gt 0) {
             $splitArgs = $ExtraArgs -split '\s+'
             $psiArgs += $splitArgs

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""
-worker/compute_dashboard_kpis.py (v2)
+"""worker/compute_dashboard_kpis.py (v3)
 
 Background worker that computes dashboard KPIs from `videos`
 and stores them into `dashboard_kpis` (materialized KPI snapshots).
+Keeps only the latest 100 snapshots and updates worker_runs.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Dict, Any
 
 from pymongo.collection import Collection
 
-from config.db import get_db  # ✅ dùng db.get_db, không dùng path_utils
+from config.db import get_db  # use central DB helper
 
 
 # =========================
@@ -28,7 +28,8 @@ formatter = logging.Formatter(
     "[%(asctime)s] [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"
 )
 handler.setFormatter(formatter)
-logger.addHandler(handler)
+if not logger.handlers:
+    logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
 
@@ -104,7 +105,12 @@ def build_kpi_pipeline() -> list:
                                     {"$eq": ["$tracking.status", "stopped"]},
                                     {
                                         "$gt": [
-                                            {"$indexOfBytes": ["$tracking.stop_reason", "low_quality"]},
+                                            {
+                                                "$indexOfBytes": [
+                                                    "$tracking.stop_reason",
+                                                    "low_quality",
+                                                ]
+                                            },
                                             -1,
                                         ]
                                     },
@@ -176,12 +182,33 @@ def compute_kpis(videos_col: Collection) -> Dict[str, Any]:
 
 
 def save_snapshot(kpis_col: Collection, kpi_doc: Dict[str, Any]):
-    """Insert KPI snapshot into dashboard_kpis."""
+    """Insert KPI snapshot into dashboard_kpis and keep only latest 100."""
     kpi = dict(kpi_doc)
     kpi["ts"] = datetime.now(timezone.utc)
 
     res = kpis_col.insert_one(kpi)
     logger.info("Saved KPI snapshot: %s at %s", res.inserted_id, kpi["ts"].isoformat())
+
+    # Cleanup: keep only latest 100 snapshots
+    try:
+        latest_ids = [
+            d["_id"]
+            for d in kpis_col.find({}, {"_id": 1})
+                            .sort("_id", -1)
+                            .limit(100)
+        ]
+
+        delete_result = kpis_col.delete_many({
+            "_id": {"$nin": latest_ids}
+        })
+
+        logger.info(
+            "Cleanup: removed %s old KPI snapshots",
+            delete_result.deleted_count,
+        )
+
+    except Exception as cleanup_err:
+        logger.warning("KPI cleanup failed: %s", cleanup_err)
 
 
 def main() -> int:
@@ -203,6 +230,16 @@ def main() -> int:
     )
 
     save_snapshot(kpis_col, kpis)
+
+    # Heartbeat cho Overview: worker_runs
+    try:
+        db.worker_runs.update_one(
+            {"name": "compute_dashboard_kpis"},
+            {"$set": {"last_run": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning("Failed to update worker_runs: %s", e)
 
     logger.info("Worker completed OK.")
     return 0

@@ -104,16 +104,22 @@ def load_kpis() -> dict:
 def load_worker_last_runs():
     """
     Read latest run timestamps for each worker from `worker_runs`
-    and return already humanized "Last run" strings.
+    and return humanized "Last run" strings with friendly names.
     """
     db = get_db()
-    workers = ["discover_once", "track_once", "low_quality_autoflag"]
-    results = []
+
+    workers = [
+        ("discover_once", "Discover new videos"),
+        ("track_once", "Track stats & snapshots"),
+        ("low_quality_autoflag", "ML low-quality scoring"),
+        ("compute_dashboard_kpis", "Dashboard KPI snapshot"),
+    ]
 
     now = datetime.now(timezone.utc)
+    results = []
 
-    for w in workers:
-        doc = db.worker_runs.find_one({"name": w}, sort=[("last_run", -1)])
+    for key, label in workers:
+        doc = db.worker_runs.find_one({"name": key}, sort=[("last_run", -1)])
         if doc and "last_run" in doc:
             ts = doc["last_run"]
 
@@ -140,7 +146,7 @@ def load_worker_last_runs():
         else:
             pretty = "No data"
 
-        results.append({"Worker": w, "Last run": pretty})
+        results.append({"Worker": label, "Last run": pretty})
 
     return results
 
@@ -352,13 +358,6 @@ def compute_system_status(kpis: dict):
 st.title("📊 YouTube AutoScanner — Overview")
 st.subheader("📌 System KPIs")
 
-ref_col1, ref_col2 = st.columns([1, 3])
-with ref_col1:
-    if st.button("🔄 Refresh now"):
-        load_kpis.clear()
-        load_worker_last_runs.clear()
-        st.experimental_rerun()
-
 try:
     kpis = load_kpis()
 except Exception as e:
@@ -525,8 +524,7 @@ st.markdown("#### Worker last runs")
 
 worker_rows = load_worker_last_runs()
 df_workers = pd.DataFrame(worker_rows)
-
-st.table(df_workers)
+st.dataframe(df_workers, hide_index=True, use_container_width=True)
 
 st.markdown("---")
 
