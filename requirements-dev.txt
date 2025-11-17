@@ -35,5 +35,9 @@ xgboost>=2.1.0
 joblib>=1.4.0               # Load/save ML models
 tqdm>=4.66.1                # Progress bars for long tasks
 
+# --- Dashboard (Streamlit + Plotly) ---
+streamlit>=1.38.0
+plotly>=5.22.0
+
 # (Dashboard packages intentionally excluded)
 # Install Streamlit/Plotly in a separate environment if needed.

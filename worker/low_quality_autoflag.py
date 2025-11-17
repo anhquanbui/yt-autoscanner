@@ -92,7 +92,7 @@ EPS = 1e-6
 # Generic helpers
 # ==========================
 def _now_utc_iso() -> str:
-    return datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _safe_int(x):
