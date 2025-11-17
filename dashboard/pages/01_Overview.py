@@ -5,7 +5,6 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime, timezone
 
-
 from components.db import get_db
 
 
@@ -30,162 +29,75 @@ st.markdown(
 
 # =============== DATA LOADERS ===============
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=10)
 def load_kpis() -> dict:
-    """Aggregate all high-level KPIs in a single Mongo pipeline."""
+    """
+    Load latest KPI snapshot from `dashboard_kpis`.
+
+    This assumes a background worker (compute_dashboard_kpis)
+    periodically aggregates KPIs from `videos` and inserts docs like:
+
+      {
+        total_videos,
+        total_channels,
+        tracking_active,
+        completed_total,
+        stopped_total,
+        completed_age24,
+        completed_removed,
+        stopped_low_quality,
+        low_quality_flagged,
+        ts: <datetime>
+      }
+    """
     db = get_db()
+    doc = db.dashboard_kpis.find_one(sort=[("ts", -1)])
 
-    pipeline = [
-        {
-            "$group": {
-                "_id": None,
+    # Base structure with safe defaults
+    base = {
+        "total_videos": 0,
+        "total_channels": 0,
+        "tracking_active": 0,
+        "completed_total": 0,
+        "stopped_total": 0,
+        "completed_age24": 0,
+        "completed_removed": 0,
+        "stopped_low_quality": 0,
+        "low_quality_flagged": 0,
+        "snapshot_ts": None,
+    }
 
-                # total counts
-                "total_videos": {"$sum": 1},
-                "total_channels_set": {"$addToSet": "$snippet.channelId"},
+    if not doc:
+        return base
 
-                # tracking status
-                "tracking_active": {
-                    "$sum": {
-                        "$cond": [
-                            {"$eq": ["$tracking.status", "tracking"]},
-                            1,
-                            0,
-                        ]
-                    }
-                },
-                "completed_total": {
-                    "$sum": {
-                        "$cond": [
-                            {"$eq": ["$tracking.status", "complete"]},
-                            1,
-                            0,
-                        ]
-                    }
-                },
-                "stopped_total": {
-                    "$sum": {
-                        "$cond": [
-                            {"$eq": ["$tracking.status", "stopped"]},
-                            1,
-                            0,
-                        ]
-                    }
-                },
+    # Copy numeric fields defensively
+    for key in [
+        "total_videos",
+        "total_channels",
+        "tracking_active",
+        "completed_total",
+        "stopped_total",
+        "completed_age24",
+        "completed_removed",
+        "stopped_low_quality",
+        "low_quality_flagged",
+    ]:
+        value = doc.get(key, 0)
+        try:
+            base[key] = int(value)
+        except Exception:
+            base[key] = 0
 
-                # completed by stop_reason
-                "completed_age24": {
-                    "$sum": {
-                        "$cond": [
-                            {
-                                "$and": [
-                                    {"$eq": ["$tracking.status", "complete"]},
-                                    {"$eq": ["$tracking.stop_reason", "age>=24h"]},
-                                ]
-                            },
-                            1,
-                            0,
-                        ]
-                    }
-                },
-                "completed_removed": {
-                    "$sum": {
-                        "$cond": [
-                            {
-                                "$and": [
-                                    {"$eq": ["$tracking.status", "complete"]},
-                                    {
-                                        "$in": [
-                                            "$tracking.stop_reason",
-                                            ["removed", "unavailable", "deleted", "not_found"],
-                                        ]
-                                    },
-                                ]
-                            },
-                            1,
-                            0,
-                        ]
-                    }
-                },
+    # Snapshot timestamp (string for display)
+    ts = doc.get("ts")
+    if isinstance(ts, datetime):
+        # Normalize to UTC string for display
+        ts = ts.astimezone(timezone.utc)
+        base["snapshot_ts"] = ts.strftime("%Y-%m-%d %H:%M UTC")
+    elif ts is not None:
+        base["snapshot_ts"] = str(ts)
 
-                # stopped by low-quality filter (any stop_reason containing "low_quality")
-                "stopped_low_quality": {
-                    "$sum": {
-                        "$cond": [
-                            {
-                                "$and": [
-                                    {"$eq": ["$tracking.status", "stopped"]},
-                                    {
-                                        "$gt": [
-                                            {
-                                                "$indexOfBytes": [
-                                                    "$tracking.stop_reason",
-                                                    "low_quality",
-                                                ]
-                                            },
-                                            -1,
-                                        ]
-                                    },
-                                ]
-                            },
-                            1,
-                            0,
-                        ]
-                    }
-                },
-
-                # ML flags (low_quality_v3_6h.is_low == True/1)
-                "low_quality_flagged": {
-                    "$sum": {
-                        "$cond": [
-                            {
-                                "$or": [
-                                    # 3h model
-                                    {"$eq": ["$ml_flags.low_quality_v1_3h.is_low", True]},
-                                    {"$eq": ["$ml_flags.low_quality_v1_3h.is_low", 1]},
-                                    # 6h model
-                                    {"$eq": ["$ml_flags.low_quality_v3_6h.is_low", True]},
-                                    {"$eq": ["$ml_flags.low_quality_v3_6h.is_low", 1]},
-                                ]
-                            },
-                            1,
-                            0,
-                        ]
-                    }
-                },
-            }
-        },
-        {
-            "$project": {
-                "_id": 0,
-                "total_videos": 1,
-                "total_channels": {"$size": "$total_channels_set"},
-                "tracking_active": 1,
-                "completed_total": 1,
-                "stopped_total": 1,
-                "completed_age24": 1,
-                "completed_removed": 1,
-                "stopped_low_quality": 1,
-                "low_quality_flagged": 1,
-            }
-        },
-    ]
-
-    db_result = list(db.videos.aggregate(pipeline))
-    if not db_result:
-        return {
-            "total_videos": 0,
-            "total_channels": 0,
-            "tracking_active": 0,
-            "completed_total": 0,
-            "stopped_total": 0,
-            "completed_age24": 0,
-            "completed_removed": 0,
-            "stopped_low_quality": 0,
-            "low_quality_flagged": 0,
-        }
-
-    return db_result[0]
+    return base
 
 
 @st.cache_data(ttl=60)
@@ -335,7 +247,6 @@ def render_style_2(kpis: dict):
         )
 
 
-
 def render_style_3_glass(kpis: dict):
     """Glassmorphism cards (Theme Style 3)."""
     st.markdown(
@@ -441,11 +352,23 @@ def compute_system_status(kpis: dict):
 st.title("📊 YouTube AutoScanner — Overview")
 st.subheader("📌 System KPIs")
 
+ref_col1, ref_col2 = st.columns([1, 3])
+with ref_col1:
+    if st.button("🔄 Refresh now"):
+        load_kpis.clear()
+        load_worker_last_runs.clear()
+        st.experimental_rerun()
+
 try:
     kpis = load_kpis()
 except Exception as e:
     st.error(f"❌ Error loading KPIs: {e}")
     st.stop()
+
+# Show snapshot timestamp if available
+snapshot_ts = kpis.get("snapshot_ts")
+if snapshot_ts:
+    st.caption(f"Last KPI snapshot: {snapshot_ts}")
 
 # Top-level basic KPIs
 top1, top2 = st.columns(2)

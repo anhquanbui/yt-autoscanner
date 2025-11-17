@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""
+worker/compute_dashboard_kpis.py (v2)
+
+Background worker that computes dashboard KPIs from `videos`
+and stores them into `dashboard_kpis` (materialized KPI snapshots).
+"""
+
+from __future__ import annotations
+
+import sys
+import logging
+from datetime import datetime, timezone
+from typing import Dict, Any
+
+from pymongo.collection import Collection
+
+from config.db import get_db  # ✅ dùng db.get_db, không dùng path_utils
+
+
+# =========================
+# Logging setup
+# =========================
+
+logger = logging.getLogger("compute_dashboard_kpis")
+handler = logging.StreamHandler(sys.stdout)
+formatter = logging.Formatter(
+    "[%(asctime)s] [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"
+)
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+
+# =========================
+# KPI aggregation pipeline
+# =========================
+
+def build_kpi_pipeline() -> list:
+    """Mongo aggregation pipeline to compute global KPIs."""
+    return [
+        {
+            "$group": {
+                "_id": None,
+                "total_videos": {"$sum": 1},
+
+                # Unique channels
+                "total_channels_set": {"$addToSet": "$snippet.channelId"},
+
+                # Status counters
+                "tracking_active": {
+                    "$sum": {"$cond": [{"$eq": ["$tracking.status", "tracking"]}, 1, 0]}
+                },
+                "completed_total": {
+                    "$sum": {"$cond": [{"$eq": ["$tracking.status", "complete"]}, 1, 0]}
+                },
+                "stopped_total": {
+                    "$sum": {"$cond": [{"$eq": ["$tracking.status", "stopped"]}, 1, 0]}
+                },
+
+                # Complete due to age >= 24h
+                "completed_age24": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {"$eq": ["$tracking.status", "complete"]},
+                                    {"$eq": ["$tracking.stop_reason", "age>=24h"]},
+                                ]
+                            },
+                            1,
+                            0,
+                        ]
+                    }
+                },
+
+                # Completed due to removal / unavailable / deleted / not_found
+                "completed_removed": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {"$eq": ["$tracking.status", "complete"]},
+                                    {
+                                        "$in": [
+                                            "$tracking.stop_reason",
+                                            ["removed", "unavailable", "deleted", "not_found"],
+                                        ]
+                                    },
+                                ]
+                            },
+                            1,
+                            0,
+                        ]
+                    }
+                },
+
+                # Stopped due to low_quality
+                "stopped_low_quality": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {"$eq": ["$tracking.status", "stopped"]},
+                                    {
+                                        "$gt": [
+                                            {"$indexOfBytes": ["$tracking.stop_reason", "low_quality"]},
+                                            -1,
+                                        ]
+                                    },
+                                ]
+                            },
+                            1,
+                            0,
+                        ]
+                    }
+                },
+
+                # ML flags (3h/6h)
+                "low_quality_flagged": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$or": [
+                                    {"$eq": ["$ml_flags.low_quality_v1_3h.is_low", True]},
+                                    {"$eq": ["$ml_flags.low_quality_v1_3h.is_low", 1]},
+                                    {"$eq": ["$ml_flags.low_quality_v3_6h.is_low", True]},
+                                    {"$eq": ["$ml_flags.low_quality_v3_6h.is_low", 1]},
+                                ]
+                            },
+                            1,
+                            0,
+                        ]
+                    }
+                },
+            }
+        },
+        {
+            "$project": {
+                "_id": 0,
+                "total_videos": 1,
+                "total_channels": {"$size": "$total_channels_set"},
+                "tracking_active": 1,
+                "completed_total": 1,
+                "stopped_total": 1,
+                "completed_age24": 1,
+                "completed_removed": 1,
+                "stopped_low_quality": 1,
+                "low_quality_flagged": 1,
+            }
+        },
+    ]
+
+
+def compute_kpis(videos_col: Collection) -> Dict[str, Any]:
+    """Run the KPI aggregation pipeline."""
+    logger.info("Running KPI aggregation...")
+    pipeline = build_kpi_pipeline()
+
+    result = list(videos_col.aggregate(pipeline, allowDiskUse=True))
+    if not result:
+        logger.warning("Aggregation returned no results. Using zeros.")
+        return {
+            "total_videos": 0,
+            "total_channels": 0,
+            "tracking_active": 0,
+            "completed_total": 0,
+            "stopped_total": 0,
+            "completed_age24": 0,
+            "completed_removed": 0,
+            "stopped_low_quality": 0,
+            "low_quality_flagged": 0,
+        }
+
+    return result[0]
+
+
+def save_snapshot(kpis_col: Collection, kpi_doc: Dict[str, Any]):
+    """Insert KPI snapshot into dashboard_kpis."""
+    kpi = dict(kpi_doc)
+    kpi["ts"] = datetime.now(timezone.utc)
+
+    res = kpis_col.insert_one(kpi)
+    logger.info("Saved KPI snapshot: %s at %s", res.inserted_id, kpi["ts"].isoformat())
+
+
+def main() -> int:
+    logger.info("Starting compute_dashboard_kpis worker…")
+
+    db = get_db()
+    videos = db.videos
+    kpis_col = db.dashboard_kpis
+
+    kpis = compute_kpis(videos)
+
+    logger.info(
+        "KPIs: videos=%s | channels=%s | tracking=%s | complete=%s | stopped=%s",
+        kpis["total_videos"],
+        kpis["total_channels"],
+        kpis["tracking_active"],
+        kpis["completed_total"],
+        kpis["stopped_total"],
+    )
+
+    save_snapshot(kpis_col, kpis)
+
+    logger.info("Worker completed OK.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
