@@ -192,18 +192,6 @@ YT_RANDOM_REGION_POOL=US,GB,CA,AU,IN,JP,VN,KR,FR,DE
 YT_RANDOM_QUERY_POOL=music:5,news:4,gaming:5,ai:4,travel:3
 # Optional region-specific overrides:
 # YT_RANDOM_QUERY_POOL_US=breaking news:5,live:4,stock market:3
-
-# =========================
-# 📌 track_once Settings
-# =========================
-TRACK_LIMIT=300
-TRACK_MAX_SNAPSHOTS=64
-TRACK_STOP_IF_AGE_MIN=1440
-TRACK_IGNORE_ERRORS=true
-TRACK_PRINT_PROGRESS=true
-
-YT_SLEEP_BETWEEN_CALLS=0.2
-YT_SLOWDOWN_AFTER=1000
 ```
 
 ---
