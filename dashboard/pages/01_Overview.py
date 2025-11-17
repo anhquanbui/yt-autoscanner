@@ -358,6 +358,14 @@ def compute_system_status(kpis: dict):
 st.title("📊 YouTube AutoScanner — Overview")
 st.subheader("📌 System KPIs")
 
+# Refresh button
+ref_col1, ref_col2 = st.columns([1, 3])
+with ref_col1:
+    if st.button("🔄 Refresh now"):
+        load_kpis.clear()
+        load_worker_last_runs.clear()
+        st.experimental_rerun()
+
 try:
     kpis = load_kpis()
 except Exception as e:

@@ -1,13 +1,15 @@
-<# 
-  run_local_loop.ps1 (v6.1) — Local runner for:
-    - worker.discover_once        (foreground, đúng tiến độ)
-    - worker.track_once           (foreground, đúng tiến độ)
-    - worker.low_quality_autoflag (background, không block vòng lặp, --only-missing)
-    - worker.compute_dashboard_kpis (background, không block vòng lặp)
+<#
+  run_local_loop.ps1 (v7.0) — Local runner for:
+    - worker.discover_once           (foreground, đúng tiến độ)
+    - worker.track_once              (foreground, đúng tiến độ)
+    - worker.low_quality_3h_worker   (background, không block vòng lặp, --only-missing)
+    - worker.low_quality_6h_worker   (background, không block vòng lặp, --only-missing)
+    - worker.compute_dashboard_kpis  (background, không block vòng lặp)
 
   - discover_once: quét video mới
   - track_once: cập nhật stats cho video đang tracking
-  - low_quality_autoflag: chấm điểm & auto dừng video low_quality
+  - low_quality_3h_worker: chấm điểm model 3h cho video 3h–<6h
+  - low_quality_6h_worker: chấm điểm model 6h cho video ≥6h
   - compute_dashboard_kpis: snapshot KPI cho dashboard Overview
 
   PowerShell 5 compatible (no '??' operator).
@@ -16,11 +18,14 @@
 # =======================
 # 🔁 Intervals (seconds)
 # =======================
-$DiscoverIntervalSeconds = 300      # discover_once every 10s
-$TrackIntervalSeconds    = 15       # track_once every 5s
-$LowQIntervalSeconds     = 1800    # low_quality_autoflag every 30 minutes
-$KpiIntervalSeconds      = 300     # compute_dashboard_kpis every 5 minutes
-$TickSleepSeconds        = 5       # main loop tick sleep
+$DiscoverIntervalSeconds = 300      # discover_once every 5 minutes
+$TrackIntervalSeconds    = 15       # track_once every 15 seconds
+
+$LowQ3hIntervalSeconds   = 900      # low_quality_3h_worker every 15 minutes
+$LowQ6hIntervalSeconds   = 3600     # low_quality_6h_worker every 60 minutes
+
+$KpiIntervalSeconds      = 300      # compute_dashboard_kpis every 5 minutes
+$TickSleepSeconds        = 5        # main loop tick sleep
 
 # =======================
 # 🛤️ Paths
@@ -178,11 +183,13 @@ function Pick-DurationBucket() {
 # =======================
 function Get-WorkerModule([string]$ScriptRelPath) {
     switch ($ScriptRelPath) {
-        "discover_once.py"         { return "worker.discover_once" }
-        "track_once.py"            { return "worker.track_once" }
-        "low_quality_autoflag.py"  { return "worker.low_quality_autoflag" }
-        "compute_dashboard_kpis.py"{ return "worker.compute_dashboard_kpis" }
-        default                    { return $null }
+        "discover_once.py"           { return "worker.discover_once" }
+        "track_once.py"              { return "worker.track_once" }
+        "low_quality_autoflag.py"    { return "worker.low_quality_autoflag" } # legacy
+        "low_quality_3h_worker.py"   { return "worker.low_quality_3h_worker" }
+        "low_quality_6h_worker.py"   { return "worker.low_quality_6h_worker" }
+        "compute_dashboard_kpis.py"  { return "worker.compute_dashboard_kpis" }
+        default                      { return $null }
     }
 }
 
@@ -224,8 +231,9 @@ function Run-ForegroundStep([string]$Name, [string]$ScriptRelPath) {
 # 🏃‍♂️ Background worker (non-blocking, no overlap)
 # =======================
 # Global process handles to avoid overlapping runs
-$Global:LowQProcess = $null
-$Global:KpiProcess  = $null
+$Global:LowQ3hProcess = $null
+$Global:LowQ6hProcess = $null
+$Global:KpiProcess    = $null
 
 function Ensure-BackgroundWorker {
     param(
@@ -278,13 +286,14 @@ function Ensure-BackgroundWorker {
 # =======================
 # 🚀 Main loop
 # =======================
-Write-Log ("Starting combined runner (discover + track + low_quality + KPI). " +
-          "Intervals: discover={0}s, track={1}s, low_quality={2}s, kpi={3}s" -f `
-          $DiscoverIntervalSeconds, $TrackIntervalSeconds, $LowQIntervalSeconds, $KpiIntervalSeconds)
+Write-Log ("Starting combined runner (discover + track + low_quality_3h + low_quality_6h + KPI). " +
+          "Intervals: discover={0}s, track={1}s, low_quality_3h={2}s, low_quality_6h={3}s, kpi={4}s" -f `
+          $DiscoverIntervalSeconds, $TrackIntervalSeconds, $LowQ3hIntervalSeconds, $LowQ6hIntervalSeconds, $KpiIntervalSeconds)
 
 $NextDiscover = Get-Date
 $NextTrack    = Get-Date
-$NextLowQ     = Get-Date
+$NextLowQ3h   = Get-Date
+$NextLowQ6h   = Get-Date
 $NextKpi      = Get-Date
 
 while ($true) {
@@ -302,12 +311,20 @@ while ($true) {
     }
 
     # ---- Background workers (non-blocking, no overlap) ----
-    if ($now -ge $NextLowQ) {
-        Ensure-BackgroundWorker -Name "low_quality_autoflag" `
-                                -ScriptRelPath "low_quality_autoflag.py" `
-                                -ProcVar ([ref]$Global:LowQProcess) `
+    if ($now -ge $NextLowQ3h) {
+        Ensure-BackgroundWorker -Name "low_quality_3h" `
+                                -ScriptRelPath "low_quality_3h_worker.py" `
+                                -ProcVar ([ref]$Global:LowQ3hProcess) `
                                 -ExtraArgs "--only-missing"
-        $NextLowQ = $now.AddSeconds($LowQIntervalSeconds)
+        $NextLowQ3h = $now.AddSeconds($LowQ3hIntervalSeconds)
+    }
+
+    if ($now -ge $NextLowQ6h) {
+        Ensure-BackgroundWorker -Name "low_quality_6h" `
+                                -ScriptRelPath "low_quality_6h_worker.py" `
+                                -ProcVar ([ref]$Global:LowQ6hProcess) `
+                                -ExtraArgs "--only-missing"
+        $NextLowQ6h = $now.AddSeconds($LowQ6hIntervalSeconds)
     }
 
     if ($now -ge $NextKpi) {

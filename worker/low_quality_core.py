@@ -1,7 +1,29 @@
-# worker/low_quality_autoflag.py
 #!/usr/bin/env python3
+"""
+low_quality_core.py
+
+Core logic for low-quality autoflag worker, supporting 3 modes:
+
+- mode="both"    : 3h window + 6h window (3h for [3h,6h), 6h for >=6h)
+- mode="3h-only" : only run 3h model for videos with 3h <= age < 6h
+- mode="6h-only" : only run 6h model for videos with age >= 6h
+
+Extra:
+- --include-all-status  : bỏ filter tracking.status="tracking"
+- --status-in ...       : lọc theo nhiều status cụ thể (tracking, complete, stopped,...)
+
+Intended usage:
+  - Thin wrappers can import `run_low_quality` and call it with a chosen mode.
+  - This file can still be used as a CLI script with `--mode`.
+
+"""
+
 from __future__ import annotations
-import os, sys, json, math, argparse
+import os
+import sys
+import json
+import math
+import argparse
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -9,10 +31,11 @@ import numpy as np
 from pymongo import MongoClient, UpdateOne
 from pandas import to_datetime
 
-# ========= ENV LOADING ==========
 from dotenv import load_dotenv
+
 load_dotenv()
 
+# Optional envs (kept for compatibility, but not forced in logic)
 ENV_MODEL_3H = os.getenv("LOWQ_MODEL_3H_PATH")
 ENV_MODEL_6H = os.getenv("LOWQ_MODEL_6H_PATH")
 
@@ -27,7 +50,6 @@ ENV_ONLY_MISSING_6H = os.getenv("LOWQ_6H_ONLY_MISSING", "true").lower() == "true
 
 ENV_STOP_3H = os.getenv("LOWQ_3H_STOP_IF_LOW", "true").lower() == "true"
 ENV_STOP_6H = os.getenv("LOWQ_6H_STOP_IF_LOW", "true").lower() == "true"
-
 
 import warnings
 from sklearn.exceptions import InconsistentVersionWarning
@@ -509,7 +531,7 @@ def score_one(model, feat: dict) -> float:
         for name in names:
             if name.startswith("len_"):
                 # one-hot for lengthBucket
-                cat = name[len("len_") :]  # live / long / medium / short / nan ...
+                cat = name[len("len_"):]  # live / long / medium / short / nan ...
                 if cat == "nan":
                     val = 1.0 if not len_raw else 0.0
                 else:
@@ -551,13 +573,333 @@ def score_one(model, feat: dict) -> float:
 
 
 # ==========================
-# Main worker
+# Core worker runner
 # ==========================
+def build_query(
+    mode: str,
+    only_missing: bool,
+    include_all_status: bool,
+    status_in: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Build Mongo query based on mode + only_missing + status semantics.
+    - Always require: has snapshots
+    - if status_in given: tracking.status in status_in
+    - elif not include_all_status: tracking.status = 'tracking'
+    - else: no status filter
+    - only_missing:
+        - 3h-only  → only docs missing 3h.updated_at
+        - 6h-only  → only docs missing 6h.updated_at
+        - both     → docs missing either 3h or 6h
+    """
+    q: Dict[str, Any] = {
+        "stats_snapshots.0": {"$exists": True},
+    }
+
+    # Status filter
+    if status_in:
+        q["tracking.status"] = {"$in": status_in}
+    elif not include_all_status:
+        q["tracking.status"] = "tracking"
+
+    if not only_missing:
+        return q
+
+    or_list: List[Dict[str, Any]] = []
+
+    if mode in ("3h-only", "both"):
+        or_list.append({"ml_flags.low_quality_v1_3h.updated_at": {"$exists": False}})
+        or_list.append({"ml_flags.low_quality_v1_3h.updated_at": None})
+
+    if mode in ("6h-only", "both"):
+        or_list.append({"ml_flags.low_quality_v3_6h.updated_at": {"$exists": False}})
+        or_list.append({"ml_flags.low_quality_v3_6h.updated_at": None})
+
+    if or_list:
+        q["$or"] = or_list
+
+    return q
+
+
+def run_low_quality(
+    *,
+    mode: str,
+    mongo_uri: str,
+    db_name: str,
+    col_name: str,
+    model_3h_path: str,
+    model_6h_path: str,
+    thr3: Optional[float] = None,
+    thr6: Optional[float] = None,
+    batch_size: int = 500,
+    only_missing: bool = False,
+    stop_if_low: bool = True,
+    include_all_status: bool = False,
+    status_in: Optional[List[str]] = None,
+):
+    """
+    Core runner for low-quality ML flags.
+
+    mode:
+      - "both"    : 3h for [3h,6h) + 6h for >=6h
+      - "3h-only" : only 3h model for [3h,6h)
+      - "6h-only" : only 6h model for >=6h
+
+    include_all_status:
+      - True  -> không lọc tracking.status, chấm cả complete/stopped/...
+      - False -> nếu status_in không set thì mặc định chỉ tracking
+
+    status_in:
+      - Nếu truyền vào (ví dụ ["tracking", "complete"]) thì override include_all_status logic
+      - Query sẽ có: {"tracking.status": {"$in": status_in}}
+    """
+    mode = mode or "both"
+    if mode not in ("both", "3h-only", "6h-only"):
+        raise ValueError(f"Invalid mode: {mode}")
+
+    # Load models
+    model3, kind3 = load_model(model_3h_path)
+    model6, kind6 = load_model(model_6h_path)
+
+    # Auto thresholds
+    default_thr3 = thr3 if thr3 is not None else 0.5
+    default_thr6 = thr6 if thr6 is not None else 0.5
+
+    thr3_final = auto_threshold_from_model_or_meta(model3, model_3h_path, default_thr3)
+    thr6_final = auto_threshold_from_model_or_meta(model6, model_6h_path, default_thr6)
+
+    print(f"[INFO] Mode: {mode}")
+    print(f"[INFO] Loaded 3h model ({kind3}): {model_3h_path}")
+    print(f"[INFO] 3h threshold: {thr3_final:.4f}")
+    print(f"[INFO] Loaded 6h model ({kind6}): {model_6h_path}")
+    print(f"[INFO] 6h threshold: {thr6_final:.4f}")
+
+    mc = MongoClient(mongo_uri)
+    col = mc[db_name][col_name]
+
+    q = build_query(
+        mode=mode,
+        only_missing=only_missing,
+        include_all_status=include_all_status,
+        status_in=status_in,
+    )
+    print(f"[INFO] Mongo query: {q}")
+
+    cur = col.find(
+        q,
+        {
+            "_id": 1,
+            "snippet": 1,
+            "stats_snapshots": 1,
+            "stats.snapshots": 1,
+            "ml_flags": 1,
+            "tracking": 1,
+        },
+        no_cursor_timeout=True,
+    )
+
+    buf: List[UpdateOne] = []
+    n = 0
+    n_up = 0
+
+    skipped_age_lt_3h = 0
+    skipped_age_lt_6h = 0
+    skipped_feat_3h = 0
+    skipped_feat_6h = 0
+
+    scored_3h = 0
+    scored_6h = 0
+    low_3h = 0
+    low_6h = 0
+
+    try:
+        for doc in cur:
+            n += 1
+            if n % 1000 == 0:
+                print(
+                    f"[DEBUG] scanned={n:,} "
+                    f"skipped_age_lt_3h={skipped_age_lt_3h:,} "
+                    f"skipped_age_lt_6h={skipped_age_lt_6h:,} "
+                    f"skipped_feat_3h={skipped_feat_3h:,} "
+                    f"skipped_feat_6h={skipped_feat_6h:,} "
+                    f"scored_3h={scored_3h:,} low_3h={low_3h:,} "
+                    f"scored_6h={scored_6h:,} low_6h={low_6h:,}",
+                    flush=True,
+                )
+
+            age_h = _age_hours(doc)
+            if age_h is None:
+                # no valid age → treat as <3h for stats
+                skipped_age_lt_3h += 1
+                continue
+
+            tracking = doc.get("tracking") or {}
+            cur_status = tracking.get("status")
+
+            update: Dict[str, Any] = {}
+
+            # ======================
+            # 3h model: only for [3h, 6h) if mode allows
+            # ======================
+            if mode in ("both", "3h-only"):
+                ran_3h = False
+                is_low_3h = False
+
+                if age_h < 3.0 - 1e-6:
+                    skipped_age_lt_3h += 1
+                elif age_h < 6.0 - 1e-6:
+                    x3 = features_3h(doc)
+                    if x3 is None:
+                        skipped_feat_3h += 1
+                    else:
+                        ran_3h = True
+                        score3 = score_one(model3, x3)
+                        is_low_3h = bool(score3 >= thr3_final)
+                        scored_3h += 1
+                        if is_low_3h:
+                            low_3h += 1
+
+                        update.update(
+                            {
+                                "ml_flags.low_quality_v1_3h.score": float(
+                                    round(score3, 6)
+                                ),
+                                "ml_flags.low_quality_v1_3h.threshold": float(
+                                    thr3_final
+                                ),
+                                "ml_flags.low_quality_v1_3h.is_low": is_low_3h,
+                                "ml_flags.low_quality_v1_3h.updated_at": _now_utc_iso(),
+                            }
+                        )
+
+                        # Early-stop if 3h model flags as low
+                        if stop_if_low and is_low_3h and cur_status == "tracking":
+                            update["tracking.status"] = "stopped"
+                            update["tracking.stop_reason"] = "ml.low_quality_v1_3h"
+                else:
+                    # age_h >= 6h → không chạy 3h nữa theo design
+                    pass
+
+                # Nếu 3h đã stop video → không cần chạy 6h
+                if update.get("tracking.status") == "stopped":
+                    buf.append(
+                        UpdateOne({"_id": doc["_id"]}, {"$set": update}, upsert=False)
+                    )
+                    if len(buf) >= batch_size:
+                        res = col.bulk_write(buf, ordered=False)
+                        n_up += res.modified_count
+                        buf.clear()
+                        print(
+                            f"[INFO] processed={n:,} updated={n_up:,} "
+                            f"(scored_3h={scored_3h:,}, low_3h={low_3h:,}, "
+                            f"scored_6h={scored_6h:,}, low_6h={low_6h:,})"
+                        )
+                    continue
+
+            # ======================
+            # 6h model: only for age >= 6h if mode allows
+            # ======================
+            if mode in ("both", "6h-only"):
+                if age_h < 6.0 - 1e-6:
+                    skipped_age_lt_6h += 1
+                else:
+                    x6 = features_6h(doc)
+                    if x6 is None:
+                        skipped_feat_6h += 1
+                    else:
+                        score6 = score_one(model6, x6)
+                        is_low_6h = bool(score6 >= thr6_final)
+                        scored_6h += 1
+                        if is_low_6h:
+                            low_6h += 1
+
+                        update.update(
+                            {
+                                "ml_flags.low_quality_v3_6h.score": float(
+                                    round(score6, 6)
+                                ),
+                                "ml_flags.low_quality_v3_6h.threshold": float(
+                                    thr6_final
+                                ),
+                                "ml_flags.low_quality_v3_6h.is_low": is_low_6h,
+                                "ml_flags.low_quality_v3_6h.updated_at": _now_utc_iso(),
+                            }
+                        )
+
+                        if stop_if_low and is_low_6h and cur_status == "tracking":
+                            update["tracking.status"] = "stopped"
+                            update["tracking.stop_reason"] = "ml.low_quality_v3_6h"
+
+            if update:
+                buf.append(
+                    UpdateOne({"_id": doc["_id"]}, {"$set": update}, upsert=False)
+                )
+            if len(buf) >= batch_size:
+                res = col.bulk_write(buf, ordered=False)
+                n_up += res.modified_count
+                buf.clear()
+                print(
+                    f"[INFO] processed={n:,} updated={n_up:,} "
+                    f"(scored_3h={scored_3h:,}, low_3h={low_3h:,}, "
+                    f"scored_6h={scored_6h:,}, low_6h={low_6h:,})"
+                )
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+    if buf:
+        res = col.bulk_write(buf, ordered=False)
+        n_up += res.modified_count
+
+    print(
+        "[DONE] "
+        f"mode={mode} "
+        f"total_docs={n:,} "
+        f"total_updated={n_up:,} "
+        f"scored_3h={scored_3h:,} low_3h={low_3h:,} "
+        f"scored_6h={scored_6h:,} low_6h={low_6h:,} "
+        f"skipped_age_lt_3h={skipped_age_lt_3h:,} "
+        f"skipped_age_lt_6h={skipped_age_lt_6h:,} "
+        f"skipped_feat_3h={skipped_feat_3h:,} "
+        f"skipped_feat_6h={skipped_feat_6h:,}"
+    )
+
+    # Worker name for worker_runs
+    if mode == "3h-only":
+        worker_name = "low_quality_autoflag_3h"
+    elif mode == "6h-only":
+        worker_name = "low_quality_autoflag_6h"
+    else:
+        worker_name = "low_quality_autoflag_both"
+
+    log_worker_run(
+        worker_name,
+        {
+            "status": "ok",
+            "mode": mode,
+            "total_docs": n,
+            "total_updated": n_up,
+            "scored_3h": scored_3h,
+            "low_3h": low_3h,
+            "scored_6h": scored_6h,
+            "low_6h": low_6h,
+            "skipped_age_lt_3h": skipped_age_lt_3h,
+            "skipped_age_lt_6h": skipped_age_lt_6h,
+            "skipped_feat_3h": skipped_feat_3h,
+            "skipped_feat_6h": skipped_feat_6h,
+            "include_all_status": include_all_status,
+            "status_in": status_in,
+        },
+    )
+
+
 # ==========================
-# CLI Parser
+# CLI entry (optional)
 # ==========================
-def main():
-    ap = argparse.ArgumentParser("low_quality_autoflag (3h + 6h)")
+def main(argv=None):
+    ap = argparse.ArgumentParser("low_quality_core (3h + 6h)")
 
     # Mongo / collection
     ap.add_argument(
@@ -576,18 +918,24 @@ def main():
         help="Collection name (default from env MONGO_COL_VIDEOS or 'videos')",
     )
 
-    # -----------------------------
+    # MODE
+    ap.add_argument(
+        "--mode",
+        choices=["both", "3h-only", "6h-only"],
+        default=os.getenv("LOWQ_MODE", "both"),
+        help="Run mode: 'both' (3h [3,6) + 6h >=6), '3h-only', or '6h-only'",
+    )
+
     # MODEL PATHS (3h + 6h)
-    # -----------------------------
     ap.add_argument(
         "--model-3h",
         default=os.getenv("LOWQ_MODEL_3H_PATH"),
-        help="Model path for ≤3h (logistic joblib).",
+        help="Model path for ≤3h (logistic joblib / xgb).",
     )
     ap.add_argument(
         "--model-6h",
         default=os.getenv("LOWQ_MODEL_6H_PATH") or os.getenv("LOWQ_MODEL_PATH"),
-        help="Model path for ≤6h (logistic joblib). If unset, fallback to LOWQ_MODEL_PATH.",
+        help="Model path for ≤6h. If unset, fallback to LOWQ_MODEL_PATH.",
     )
 
     # Backward-compat: old --model behaves as 6h model
@@ -597,9 +945,7 @@ def main():
         help="[DEPRECATED] Legacy single-model path (treated as 6h model).",
     )
 
-    # -----------------------------
-    # THRESHOLDS (3h + 6h)
-    # -----------------------------
+    # THRESHOLDS
     ap.add_argument(
         "--threshold-3h",
         type=float,
@@ -620,8 +966,6 @@ def main():
         ),
         help="Threshold for ≤6h model. If missing, auto-detect from meta.",
     )
-
-    # Backward-compat: old unified threshold
     ap.add_argument(
         "--threshold",
         type=float,
@@ -633,9 +977,7 @@ def main():
         help="[DEPRECATED] Single threshold (used for 6h fallback only).",
     )
 
-    # -----------------------------
     # Worker configs
-    # -----------------------------
     ap.add_argument(
         "--batch-size",
         type=int,
@@ -645,7 +987,7 @@ def main():
     ap.add_argument(
         "--only-missing",
         action="store_true",
-        help="Only update docs missing 3h/6h updated_at.",
+        help="Only update docs missing 3h/6h updated_at (depending on mode).",
     )
 
     ap.add_argument(
@@ -662,7 +1004,20 @@ def main():
         help="Disable stopping even if low_quality.",
     )
 
-    args = ap.parse_args()
+    ap.add_argument(
+        "--include-all-status",
+        action="store_true",
+        help="Include videos even if tracking.status != 'tracking' (includes 'complete', 'stopped', etc.).",
+    )
+
+    ap.add_argument(
+        "--status-in",
+        nargs="+",
+        help="Optional list of tracking.status values to include (e.g. --status-in tracking complete). "
+             "If set, overrides include_all_status logic.",
+    )
+
+    args = ap.parse_args(argv)
 
     # Basic validations
     if not args.mongo_uri:
@@ -676,208 +1031,42 @@ def main():
     if not model_3h_path:
         ap.error("Missing 3h model path: pass --model-3h or set LOWQ_MODEL_3H_PATH in .env")
     if not model_6h_path:
-        ap.error("Missing 6h model path: pass --model-6h or set LOWQ_MODEL_6H_PATH/LOWQ_MODEL_PATH in .env")
+        ap.error(
+            "Missing 6h model path: pass --model-6h or set LOWQ_MODEL_6H_PATH/LOWQ_MODEL_PATH in .env"
+        )
 
-    model3, kind3 = load_model(model_3h_path)
-    model6, kind6 = load_model(model_6h_path)
+    # Resolve thresholds
+    thr3 = args.threshold_3h
+    if thr3 is None and ENV_THR_3H is not None:
+        try:
+            thr3 = float(ENV_THR_3H)
+        except Exception:
+            pass
 
-    # Auto thresholds
-    default_thr3 = args.threshold_3h if args.threshold_3h is not None else 0.5
-    default_thr6 = (
-        args.threshold_6h
-        if args.threshold_6h is not None
-        else (args.threshold if args.threshold is not None else 0.5)
-    )
+    thr6 = args.threshold_6h
+    if thr6 is None:
+        if args.threshold is not None:
+            thr6 = args.threshold
+        elif ENV_THR_6H is not None:
+            try:
+                thr6 = float(ENV_THR_6H)
+            except Exception:
+                thr6 = None
 
-    thr3 = auto_threshold_from_model_or_meta(model3, model_3h_path, default_thr3)
-    thr6 = auto_threshold_from_model_or_meta(model6, model_6h_path, default_thr6)
-
-    print(f"[INFO] Loaded 3h model ({kind3}): {model_3h_path}")
-    print(f"[INFO] 3h threshold: {thr3:.4f}")
-    print(f"[INFO] Loaded 6h model ({kind6}): {model_6h_path}")
-    print(f"[INFO] 6h threshold: {thr6:.4f}")
-
-    mc = MongoClient(args.mongo_uri)
-    col = mc[args.db][args.col]
-
-    q: Dict[str, Any] = {
-        "stats_snapshots.0": {"$exists": True},
-        "tracking.status": "tracking",  # only actively tracking videos
-    }
-
-    if args.only_missing:
-        # Only videos missing either 3h or 6h updated_at
-        q["$or"] = [
-            {"ml_flags.low_quality_v1_3h.updated_at": {"$exists": False}},
-            {"ml_flags.low_quality_v1_3h.updated_at": None},
-            {"ml_flags.low_quality_v3_6h.updated_at": {"$exists": False}},
-            {"ml_flags.low_quality_v3_6h.updated_at": None},
-        ]
-
-    cur = col.find(
-        q,
-        {"_id": 1, "snippet": 1, "stats_snapshots": 1, "stats.snapshots": 1, "ml_flags": 1, "tracking": 1},
-        no_cursor_timeout=True,
-    )
-
-    buf: List[UpdateOne] = []
-    n = 0
-    n_up = 0
-
-    skipped_age_lt_3h = 0
-    skipped_age_lt_6h = 0
-    skipped_feat_3h = 0
-    skipped_feat_6h = 0
-
-    scored_3h = 0
-    scored_6h = 0
-    low_3h = 0
-    low_6h = 0
-
-    for doc in cur:
-        n += 1
-        if n % 1000 == 0:
-            print(
-                f"[DEBUG] scanned={n:,} "
-                f"skipped_age_lt_3h={skipped_age_lt_3h:,} "
-                f"skipped_age_lt_6h={skipped_age_lt_6h:,} "
-                f"skipped_feat_3h={skipped_feat_3h:,} "
-                f"skipped_feat_6h={skipped_feat_6h:,} "
-                f"scored_3h={scored_3h:,} low_3h={low_3h:,} "
-                f"scored_6h={scored_6h:,} low_6h={low_6h:,}",
-                flush=True,
-            )
-
-        age_h = _age_hours(doc)
-        if age_h is None:
-            skipped_age_lt_3h += 1
-            continue
-
-        tracking = doc.get("tracking") or {}
-        cur_status = tracking.get("status")
-
-        update: Dict[str, Any] = {}
-
-        # ======================
-        # First: 3h model
-        # ======================
-        ran_3h = False
-        is_low_3h = False
-
-        if age_h < 3.0 - 1e-6:
-            skipped_age_lt_3h += 1
-        else:
-            x3 = features_3h(doc)
-            if x3 is None:
-                skipped_feat_3h += 1
-            else:
-                ran_3h = True
-                score3 = score_one(model3, x3)
-                is_low_3h = bool(score3 >= thr3)
-                scored_3h += 1
-                if is_low_3h:
-                    low_3h += 1
-
-                update.update(
-                    {
-                        "ml_flags.low_quality_v1_3h.score": float(round(score3, 6)),
-                        "ml_flags.low_quality_v1_3h.threshold": float(thr3),
-                        "ml_flags.low_quality_v1_3h.is_low": is_low_3h,
-                        "ml_flags.low_quality_v1_3h.updated_at": _now_utc_iso(),
-                    }
-                )
-
-                # Early-stop if 3h model flags as low
-                if args.stop_if_low and is_low_3h and cur_status not in ("complete", "stopped"):
-                    update["tracking.status"] = "stopped"
-                    update["tracking.stop_reason"] = "ml.low_quality_v1_3h"
-
-        # If 3h already stopped, no need to run 6h
-        if update.get("tracking.status") == "stopped":
-            buf.append(UpdateOne({"_id": doc["_id"]}, {"$set": update}, upsert=False))
-            if len(buf) >= args.batch_size:
-                res = col.bulk_write(buf, ordered=False)
-                n_up += res.modified_count
-                buf.clear()
-                print(
-                    f"[INFO] processed={n:,} updated={n_up:,} "
-                    f"(scored_3h={scored_3h:,}, low_3h={low_3h:,}, "
-                    f"scored_6h={scored_6h:,}, low_6h={low_6h:,})"
-                )
-            continue
-
-        # ======================
-        # Second: 6h model (only if not low at 3h)
-        # ======================
-        if age_h < 6.0 - 1e-6:
-            skipped_age_lt_6h += 1
-        else:
-            x6 = features_6h(doc)
-            if x6 is None:
-                skipped_feat_6h += 1
-            else:
-                score6 = score_one(model6, x6)
-                is_low_6h = bool(score6 >= thr6)
-                scored_6h += 1
-                if is_low_6h:
-                    low_6h += 1
-
-                update.update(
-                    {
-                        "ml_flags.low_quality_v3_6h.score": float(round(score6, 6)),
-                        "ml_flags.low_quality_v3_6h.threshold": float(thr6),
-                        "ml_flags.low_quality_v3_6h.is_low": is_low_6h,
-                        "ml_flags.low_quality_v3_6h.updated_at": _now_utc_iso(),
-                    }
-                )
-
-                if args.stop_if_low and is_low_6h and cur_status not in ("complete", "stopped"):
-                    update["tracking.status"] = "stopped"
-                    update["tracking.stop_reason"] = "ml.low_quality_v3_6h"
-
-        if update:
-            buf.append(UpdateOne({"_id": doc["_id"]}, {"$set": update}, upsert=False))
-        if len(buf) >= args.batch_size:
-            res = col.bulk_write(buf, ordered=False)
-            n_up += res.modified_count
-            buf.clear()
-            print(
-                f"[INFO] processed={n:,} updated={n_up:,} "
-                f"(scored_3h={scored_3h:,}, low_3h={low_3h:,}, "
-                f"scored_6h={scored_6h:,}, low_6h={low_6h:,})"
-            )
-
-    if buf:
-        res = col.bulk_write(buf, ordered=False)
-        n_up += res.modified_count
-
-    print(
-        "[DONE] "
-        f"total_docs={n:,} "
-        f"total_updated={n_up:,} "
-        f"scored_3h={scored_3h:,} low_3h={low_3h:,} "
-        f"scored_6h={scored_6h:,} low_6h={low_6h:,} "
-        f"skipped_age_lt_3h={skipped_age_lt_3h:,} "
-        f"skipped_age_lt_6h={skipped_age_lt_6h:,} "
-        f"skipped_feat_3h={skipped_feat_3h:,} "
-        f"skipped_feat_6h={skipped_feat_6h:,}"
-    )
-
-    log_worker_run(
-        "low_quality_autoflag",
-        {
-            "status": "ok",
-            "total_docs": n,
-            "total_updated": n_up,
-            "scored_3h": scored_3h,
-            "low_3h": low_3h,
-            "scored_6h": scored_6h,
-            "low_6h": low_6h,
-            "skipped_age_lt_3h": skipped_age_lt_3h,
-            "skipped_age_lt_6h": skipped_age_lt_6h,
-            "skipped_feat_3h": skipped_feat_3h,
-            "skipped_feat_6h": skipped_feat_6h,
-        },
+    run_low_quality(
+        mode=args.mode,
+        mongo_uri=args.mongo_uri,
+        db_name=args.db,
+        col_name=args.col,
+        model_3h_path=model_3h_path,
+        model_6h_path=model_6h_path,
+        thr3=thr3,
+        thr6=thr6,
+        batch_size=args.batch_size,
+        only_missing=args.only_missing,
+        stop_if_low=args.stop_if_low,
+        include_all_status=args.include_all_status,
+        status_in=args.status_in,
     )
 
 
