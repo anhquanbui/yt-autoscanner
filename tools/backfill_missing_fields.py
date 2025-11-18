@@ -1,53 +1,74 @@
-# tools/backfill_missing_fields.py (v1.0) — one-shot BACKFILL tool (handles + duration)
-# ---------------------------------------------------------------------------------
-# PURPOSE
-#   Chạy thủ công khi cần để backfill các trường còn thiếu cho video:
-#   - Channel handle (@customUrl)  → snippet.channelHandle & source.channelHandle
-#   - Duration (durationISO, durationSec) → và phân loại lengthBucket (short/medium/long/live)
-#
-#   ✅ Tách riêng khỏi track_once.py để không ảnh hưởng luồng tracking.
-#   ✅ An toàn quota: chạy theo lô 50 ID, có LIMIT & filter rõ ràng.
-#   ✅ Có DRY-RUN để test trước khi ghi DB.
-#
-# USAGE (PowerShell ví dụ):
-#   $env:YT_API_KEY="..."
-#   $env:MONGO_URI="mongodb://localhost:27017/ytscan"
-#   # Chỉ backfill video đã complete, tối đa 800 items, bỏ qua live
-#   $env:BF_TARGET="complete"
-#   $env:BF_LIMIT="800"
-#   $env:BF_SKIP_LIVE="1"
-#   python tools/backfill_missing_fields.py
-#
-# ENV OPTIONS
-#   Required:
-#     - YT_API_KEY
-#     - MONGO_URI              (vd: mongodb://localhost:27017/ytscan)
-#
-#   Optional:
-#     - BF_TARGET              all | complete | tracking        (default: all)
-#     - BF_LIMIT               số lượng tối đa tài liệu quét    (default: 1000)
-#     - BF_BATCH_SIZE          batch size khi gọi API           (default: 50; max 50)
-#     - BF_FILL_HANDLE         1/0 bật tắt backfill handle      (default: 1)
-#     - BF_FILL_DURATION       1/0 bật tắt backfill duration    (default: 1)
-#     - BF_SKIP_LIVE           1/0 bỏ qua item lengthBucket=live (default: 1)
-#     - BF_LOG_SAMPLE          số dòng sample để in ra          (default: 5)
-#     - BF_DRY_RUN             1/0 chỉ in log, KHÔNG ghi DB     (default: 0)
-#
-# Mongo indexes (khuyến nghị):
-#   db.videos.createIndex({ "tracking.status": 1, "tracking.next_poll_after": 1 })
-#   db.videos.createIndex({ "snippet.publishedAt": -1 })
-#
+#!/usr/bin/env python3
+"""
+tools/backfill_missing_fields.py (v2.0) — one-shot BACKFILL tool (handles + duration)
+
+Purpose
+-------
+Run manually when you want to backfill missing fields on `videos` documents:
+
+  - Channel handle (@customUrl)
+        → snippet.channelHandle
+        → source.channelHandle
+
+  - Duration (durationISO, durationSec)
+        → snippet.durationISO
+        → snippet.durationSec
+        → snippet.lengthBucket  (short / medium / long / live)
+
+Key properties
+--------------
+  ✅ Completely separated from track_once.py (does not affect tracking loop).
+  ✅ Quota-safe: batches of 50 IDs (YouTube API limit).
+  ✅ Has DRY-RUN mode to inspect changes before writing to MongoDB.
+
+Environment variables
+---------------------
+Required:
+  - YT_API_KEY
+  - MONGO_URI      (e.g. mongodb://localhost:27017/ytscan)
+
+Optional:
+  - BF_TARGET        all | complete | tracking           (default: all)
+  - BF_LIMIT         max number of docs to scan          (default: 1000)
+  - BF_BATCH_SIZE    batch size for API calls (<= 50)    (default: 50)
+  - BF_FILL_HANDLE   1/0 toggle channel handle backfill  (default: 1)
+  - BF_FILL_DURATION 1/0 toggle duration backfill        (default: 1)
+  - BF_SKIP_LIVE     1/0 skip items with lengthBucket=live (default: 1)
+  - BF_LOG_SAMPLE    number of sample docs to print      (default: 5)
+  - BF_DRY_RUN       1/0 log only, DO NOT write to DB    (default: 0)
+
+Usage (recommended)
+-------------------
+Set env (PowerShell example):
+
+    $env:YT_API_KEY="..."
+    $env:MONGO_URI="mongodb://localhost:27017/ytscan"
+    $env:BF_TARGET="complete"
+    $env:BF_LIMIT="800"
+    $env:BF_SKIP_LIVE="1"
+
+Run as a module from project root:
+
+    python -m tools.backfill_missing_fields
+"""
+
 from __future__ import annotations
 
-import os, sys, io, re
+import os
+import sys
+import io
+import re
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 import requests
 from pymongo import MongoClient, UpdateOne
-from dotenv import load_dotenv
 
-# Console UTF-8 safety
+from config.env import load_env, get_env
+
+# ------------------------------------------------------------------------------
+# Console UTF-8 safety (Windows PowerShell etc.)
+# ------------------------------------------------------------------------------
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -55,27 +76,51 @@ except Exception:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
-load_dotenv(override=False)
+
+# ------------------------------------------------------------------------------
+# Environment loading (via config.env)
+# ------------------------------------------------------------------------------
+load_env()  # idempotent; respects priority search from env.py
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    """Return True/False for a boolean-like env var (1/true/yes)."""
+    val = (get_env(name, default) or "").strip().lower()
+    return val in ("1", "true", "yes")
+
+
+def _env_int(name: str, default: str) -> int:
+    """Read an int env var with a safe string default."""
+    raw = get_env(name, default) or default
+    try:
+        return int(raw)
+    except Exception:
+        return int(default)
+
 
 # ---- Config ----
-API_KEY   = os.getenv("YT_API_KEY")
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/ytscan")
+API_KEY = get_env("YT_API_KEY")
+MONGO_URI = get_env("MONGO_URI", "mongodb://localhost:27017/ytscan")
 
-BF_TARGET        = os.getenv("BF_TARGET", "all").lower()           # all|complete|tracking
-BF_LIMIT         = max(1, int(os.getenv("BF_LIMIT", "1000")))
-BF_BATCH_SIZE    = min(50, max(1, int(os.getenv("BF_BATCH_SIZE", "50"))))
-BF_FILL_HANDLE   = os.getenv("BF_FILL_HANDLE", "1").lower() in ("1","true","yes")
-BF_FILL_DURATION = os.getenv("BF_FILL_DURATION", "1").lower() in ("1","true","yes")
-BF_SKIP_LIVE     = os.getenv("BF_SKIP_LIVE", "1").lower() in ("1","true","yes")
-BF_LOG_SAMPLE    = max(0, int(os.getenv("BF_LOG_SAMPLE", "5")))
-BF_DRY_RUN       = os.getenv("BF_DRY_RUN", "0").lower() in ("1","true","yes")
+BF_TARGET = (get_env("BF_TARGET", "all") or "all").lower()   # all|complete|tracking
+BF_LIMIT = max(1, _env_int("BF_LIMIT", "1000"))
+BF_BATCH_SIZE = min(50, max(1, _env_int("BF_BATCH_SIZE", "50")))
 
-VIDEOS_URL   = "https://www.googleapis.com/youtube/v3/videos"
+BF_FILL_HANDLE = _env_flag("BF_FILL_HANDLE", "1")
+BF_FILL_DURATION = _env_flag("BF_FILL_DURATION", "1")
+BF_SKIP_LIVE = _env_flag("BF_SKIP_LIVE", "1")
+BF_LOG_SAMPLE = max(0, _env_int("BF_LOG_SAMPLE", "5"))
+BF_DRY_RUN = _env_flag("BF_DRY_RUN", "0")
+
+VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
-EXIT_QUOTA   = 88
+EXIT_QUOTA = 88
 
-# --- Duration helpers ---
-_DUR_RE = re.compile(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$', re.I)
+# ------------------------------------------------------------------------------
+# Duration helpers
+# ------------------------------------------------------------------------------
+_DUR_RE = re.compile(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$", re.I)
+
 
 def iso8601_to_seconds(s: Optional[str]) -> Optional[int]:
     if not s:
@@ -86,26 +131,76 @@ def iso8601_to_seconds(s: Optional[str]) -> Optional[int]:
     h, mnt, sec = (int(x) if x else 0 for x in m.groups())
     return h * 3600 + mnt * 60 + sec
 
+
 def bucket_from_seconds(secs: Optional[int]) -> Optional[str]:
     if secs is None:
         return None
-    if secs < 4*60:
+    if secs < 4 * 60:
         return "short"
-    if secs <= 20*60:
+    if secs <= 20 * 60:
         return "medium"
     return "long"
+
 
 def now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-# --- API helpers ---
+
+# ------------------------------------------------------------------------------
+# YouTube API helpers
+# ------------------------------------------------------------------------------
+def _handle_quota_http_error(e: requests.HTTPError, context: str) -> None:
+    """Inspect an HTTPError and exit with EXIT_QUOTA if it's a quota issue."""
+    try:
+        body = e.response.json()
+    except Exception:
+        body = {"error": str(e)}
+
+    reason = None
+    err = body.get("error") if isinstance(body, dict) else None
+    if isinstance(err, dict):
+        errs = err.get("errors") or []
+        if isinstance(errs, list) and errs:
+            reason = errs[0].get("reason")
+        reason = reason or err.get("status") or err.get("message")
+
+    quota_reasons = {
+        "quotaExceeded",
+        "dailyLimitExceeded",
+        "rateLimitExceeded",
+        "userRateLimitExceeded",
+    }
+
+    if str(reason) in quota_reasons:
+        print(f"[ERROR] YouTube quota exhausted during {context}.", file=sys.stderr)
+        raise SystemExit(EXIT_QUOTA)
+    else:
+        print(f"[ERROR] YouTube API error during {context}: {body}", file=sys.stderr)
+        raise
+
+
 def fetch_channel_handles(channel_ids: List[str]) -> Dict[str, str]:
-    """Return {channelId: '@handle'} via channels.list(snippet.customUrl)."""
+    """
+    Call channels.list(snippet) and return a map: {channelId: '@handle'}.
+
+    We rely on snippet.customUrl, which is the @handle / legacy custom URL.
+    """
     if not channel_ids:
         return {}
-    params = {"key": API_KEY, "part": "snippet", "id": ",".join(channel_ids[:50])}
-    r = requests.get(CHANNELS_URL, params=params, timeout=30)
-    r.raise_for_status()
+
+    params = {
+        "key": API_KEY,
+        "part": "snippet",
+        "id": ",".join(channel_ids[:50]),
+    }
+
+    try:
+        r = requests.get(CHANNELS_URL, params=params, timeout=30)
+        r.raise_for_status()
+    except requests.HTTPError as e:
+        _handle_quota_http_error(e, "fetch_channel_handles")
+        return {}
+
     out: Dict[str, str] = {}
     for it in r.json().get("items", []):
         cid = it.get("id")
@@ -114,204 +209,222 @@ def fetch_channel_handles(channel_ids: List[str]) -> Dict[str, str]:
             out[cid] = handle
     return out
 
-def fetch_video_details(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Return {videoId: {contentDetails, liveStreamingDetails}}"""
+
+def fetch_durations(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """
+    Call videos.list(contentDetails, liveStreamingDetails) and return:
+
+      {
+        videoId: {
+          "durationISO": "PT...",
+          "durationSec": 123,
+          "lengthBucket": "short|medium|long|live",
+        },
+        ...
+      }
+    """
     if not video_ids:
         return {}
-    params = {"key": API_KEY, "part": "contentDetails,liveStreamingDetails", "id": ",".join(video_ids[:50])}
-    r = requests.get(VIDEOS_URL, params=params, timeout=30)
-    r.raise_for_status()
+
+    params = {
+        "key": API_KEY,
+        "part": "contentDetails,liveStreamingDetails",
+        "id": ",".join(video_ids[:50]),
+    }
+
+    try:
+        r = requests.get(VIDEOS_URL, params=params, timeout=30)
+        r.raise_for_status()
+    except requests.HTTPError as e:
+        _handle_quota_http_error(e, "fetch_durations")
+        return {}
+
     out: Dict[str, Dict[str, Any]] = {}
     for it in r.json().get("items", []):
         vid = it.get("id")
+        cd = it.get("contentDetails") or {}
+        lsd = it.get("liveStreamingDetails") or {}
+
+        dur_iso = cd.get("duration")
+        dur_sec = iso8601_to_seconds(dur_iso) if dur_iso else None
+
+        length_bucket: Optional[str] = None
+        if dur_sec is not None:
+            length_bucket = bucket_from_seconds(dur_sec)
+        elif lsd.get("actualStartTime") or lsd.get("scheduledStartTime"):
+            length_bucket = "live"
+
         if vid:
             out[vid] = {
-                "contentDetails": it.get("contentDetails", {}) or {},
-                "liveStreamingDetails": it.get("liveStreamingDetails", {}) or {},
+                "durationISO": dur_iso,
+                "durationSec": dur_sec,
+                "lengthBucket": length_bucket,
             }
+
     return out
 
-# --- Backfill ops ---
-def backfill_handles(candidates: List[Dict[str, Any]], db) -> None:
+
+# ------------------------------------------------------------------------------
+# Backfill handlers
+# ------------------------------------------------------------------------------
+def backfill_channel_handles(candidates: List[Dict[str, Any]], db) -> None:
+    """Backfill snippet.channelHandle & source.channelHandle if enabled."""
     if not BF_FILL_HANDLE:
         return
 
-    need: List[str] = []
+    channel_ids: List[str] = []
     for d in candidates:
-        sn = d.get("snippet", {}) or {}
-        src = d.get("source", {}) or {}
-        cid = sn.get("channelId")
-        if not cid:
-            continue
-        if not sn.get("channelHandle") and not src.get("channelHandle"):
-            need.append(cid)
-    need = sorted(set(need))
-    if not need:
-        print("Handles: nothing to backfill.")
+        sn = d.get("snippet") or {}
+        src = d.get("source") or {}
+        if BF_FILL_HANDLE:
+            if not sn.get("channelHandle") or not src.get("channelHandle"):
+                cid = sn.get("channelId")
+                if cid:
+                    channel_ids.append(cid)
+
+    channel_ids = sorted(set(channel_ids))
+    if not channel_ids:
+        print("[INFO] No candidates need channelHandle backfill.")
         return
 
-    # Cache
-    cached: Dict[str, str] = {c["_id"]: c.get("handle") for c in db.channels.find({"_id": {"$in": need}}, {"handle": 1})}
-    to_fetch = [cid for cid in need if not cached.get(cid)]
+    print(f"[INFO] Backfilling handles for {len(channel_ids)} unique channels...")
 
-    fetched: Dict[str, str] = {}
-    for i in range(0, len(to_fetch), 50):
-        batch = to_fetch[i:i+50]
-        try:
-            fetched.update(fetch_channel_handles(batch))
-        except requests.HTTPError as e:
-            try:
-                body = e.response.json()
-            except Exception:
-                body = {"error": str(e)}
-            reason = None
-            err = body.get("error") if isinstance(body, dict) else None
-            if isinstance(err, dict):
-                errs = err.get("errors") or []
-                if isinstance(errs, list) and errs:
-                    reason = errs[0].get("reason")
-                reason = reason or err.get("status") or err.get("message")
-            if str(reason) in {"quotaExceeded","dailyLimitExceeded","rateLimitExceeded","userRateLimitExceeded"}:
-                print("Handles: quota exhausted — stop.", file=sys.stderr)
-                raise SystemExit(EXIT_QUOTA)
-            print("Handles: YouTube API error:", body, file=sys.stderr)
-            raise SystemExit(1)
+    handle_map: Dict[str, str] = {}
+    for i in range(0, len(channel_ids), BF_BATCH_SIZE):
+        batch = channel_ids[i : i + BF_BATCH_SIZE]
+        batch_map = fetch_channel_handles(batch)
+        handle_map.update(batch_map)
+        print(f"[INFO]   fetched {len(batch_map)} handles (batch {i//BF_BATCH_SIZE+1})")
 
-    handle_map = {**cached, **fetched}
-
-    # write cache
-    if fetched and not BF_DRY_RUN:
-        now_iso = now_utc_iso()
-        ops = [
-            UpdateOne({"_id": cid}, {"$set": {"handle": h, "last_checked_at": now_iso}}, upsert=True)
-            for cid, h in fetched.items()
-        ]
-        if ops:
-            db.channels.bulk_write(ops, ordered=False)
-
-    # update videos
-    ops = []
+    ops: List[UpdateOne] = []
     for d in candidates:
-        vid = d.get("_id")
-        sn  = d.get("snippet", {}) or {}
-        src = d.get("source", {}) or {}
+        vid = str(d.get("_id"))
+        sn = d.get("snippet") or {}
+        src = d.get("source") or {}
         cid = sn.get("channelId")
         if not vid or not cid:
             continue
-        h = handle_map.get(cid)
-        if not h:
-            continue
-        ops.append(UpdateOne({"_id": vid}, {"$set": {
-            "snippet.channelHandle": h,
-            "source.channelHandle": src.get("channelHandle") or h
-        }}))
 
-    if ops:
-        if BF_DRY_RUN:
-            print(f"[DRY-RUN] Would update handles for {len(ops)} videos")
-        else:
-            db.videos.bulk_write(ops, ordered=False)
-            print(f"Handles: updated {len(ops)} videos.")
+        handle = handle_map.get(cid)
+        if not handle:
+            continue
+
+        update_fields: Dict[str, Any] = {}
+        if not sn.get("channelHandle"):
+            update_fields["snippet.channelHandle"] = handle
+        if not src.get("channelHandle"):
+            update_fields["source.channelHandle"] = handle
+
+        if update_fields:
+            ops.append(UpdateOne({"_id": vid}, {"$set": update_fields}))
+
+    if not ops:
+        print("[INFO] No handle updates to apply.")
+        return
+
+    if BF_DRY_RUN:
+        print(f"[DRY-RUN] Would update handles for {len(ops)} videos")
+    else:
+        db.videos.bulk_write(ops, ordered=False)
+        print(f"[INFO] Handles: updated {len(ops)} videos.")
+
 
 def backfill_duration(candidates: List[Dict[str, Any]], db) -> None:
+    """Backfill durationISO / durationSec / lengthBucket if enabled."""
     if not BF_FILL_DURATION:
         return
 
-    # pick ids missing duration or bucket
-    need: List[str] = []
+    need_ids: List[str] = []
     for d in candidates:
-        sn = d.get("snippet", {}) or {}
+        vid = str(d.get("_id"))
+        sn = d.get("snippet") or {}
+        if not vid:
+            continue
+
+        # Skip explicit live if requested
         if BF_SKIP_LIVE and sn.get("lengthBucket") == "live":
             continue
-        if (not sn.get("durationISO")) or (not sn.get("lengthBucket")):
-            need.append(str(d["_id"]))
 
-    if not need:
-        print("Duration: nothing to backfill.")
+        # Need duration if ISO or lengthBucket is missing
+        if not sn.get("durationISO") or not sn.get("lengthBucket"):
+            need_ids.append(vid)
+
+    need_ids = sorted(set(need_ids))
+    if not need_ids:
+        print("[INFO] No candidates need duration backfill.")
         return
 
-    updated = 0
-    for i in range(0, len(need), 50):
-        batch = need[i:i+50]
-        try:
-            det = fetch_video_details(batch)
-        except requests.HTTPError as e:
-            try:
-                body = e.response.json()
-            except Exception:
-                body = {"error": str(e)}
-            reason = None
-            err = body.get("error") if isinstance(body, dict) else None
-            if isinstance(err, dict):
-                errs = err.get("errors") or []
-                if isinstance(errs, list) and errs:
-                    reason = errs[0].get("reason")
-                reason = reason or err.get("status") or err.get("message")
-            if str(reason) in {"quotaExceeded","dailyLimitExceeded","rateLimitExceeded","userRateLimitExceeded"}:
-                print("Duration: quota exhausted — stop.", file=sys.stderr)
-                raise SystemExit(EXIT_QUOTA)
-            print("Duration: YouTube API error:", body, file=sys.stderr)
-            raise SystemExit(1)
+    print(f"[INFO] Backfilling duration for {len(need_ids)} videos...")
 
-        ops = []
+    ops: List[UpdateOne] = []
+    for i in range(0, len(need_ids), BF_BATCH_SIZE):
+        batch = need_ids[i : i + BF_BATCH_SIZE]
+        dur_map = fetch_durations(batch)
+        print(f"[INFO]   fetched durations for {len(dur_map)} videos (batch {i//BF_BATCH_SIZE+1})")
+
         for vid in batch:
-            d = det.get(vid) or {}
-            cd = d.get("contentDetails", {}) or {}
-            lsd = d.get("liveStreamingDetails", {}) or {}
+            info = dur_map.get(vid)
+            if not info:
+                continue
 
-            dur_iso = cd.get("duration")
-            dur_sec = iso8601_to_seconds(dur_iso) if dur_iso else None
+            set_fields: Dict[str, Any] = {}
 
-            length_bucket = None
-            if dur_sec is not None:
-                length_bucket = bucket_from_seconds(dur_sec)
-            elif lsd.get("actualStartTime") or lsd.get("scheduledStartTime"):
-                length_bucket = "live"
+            if info.get("durationISO"):
+                set_fields["snippet.durationISO"] = info["durationISO"]
+            if info.get("durationSec") is not None:
+                set_fields["snippet.durationSec"] = info["durationSec"]
+            if info.get("lengthBucket"):
+                set_fields["snippet.lengthBucket"] = info["lengthBucket"]
 
-            update_fields: Dict[str, Any] = {}
-            if dur_iso:
-                update_fields["snippet.durationISO"] = dur_iso
-            if dur_sec is not None:
-                update_fields["snippet.durationSec"] = dur_sec
-            if length_bucket and (not BF_SKIP_LIVE or length_bucket != "live"):
-                update_fields["snippet.lengthBucket"] = length_bucket
+            if set_fields:
+                ops.append(UpdateOne({"_id": vid}, {"$set": set_fields}))
 
-            if update_fields:
-                if BF_DRY_RUN:
-                    print(f"[DRY-RUN] {vid} set {update_fields}")
-                else:
-                    ops.append(UpdateOne({"_id": vid}, {"$set": update_fields}))
+    if not ops:
+        print("[INFO] No duration updates to apply.")
+        return
 
-        if ops:
-            if BF_DRY_RUN:
-                print(f"[DRY-RUN] Would update {len(ops)} videos in this batch")
-            else:
-                db.videos.bulk_write(ops, ordered=False)
-                updated += len(ops)
+    if BF_DRY_RUN:
+        print(f"[DRY-RUN] Would update duration for {len(ops)} videos")
+    else:
+        db.videos.bulk_write(ops, ordered=False)
+        print(f"[INFO] Duration: updated {len(ops)} videos.")
 
-    if not BF_DRY_RUN:
-        print(f"Duration: updated {updated} videos.")
 
-# --- Query candidates ---
+# ------------------------------------------------------------------------------
+# Query builder
+# ------------------------------------------------------------------------------
 def build_query() -> Dict[str, Any]:
-    status_filter = {}
+    """
+    Build the MongoDB filter used to select candidate videos for backfill.
+
+    - BF_TARGET:
+        * all       → {"tracking.status": {"$in": ["complete", "tracking"]}}
+        * complete  → {"tracking.status": "complete"}
+        * tracking  → {"tracking.status": "tracking"}
+    - BF_FILL_HANDLE:
+        require any of snippet.channelHandle or source.channelHandle missing.
+    - BF_FILL_DURATION:
+        require any of snippet.durationISO or snippet.lengthBucket missing.
+        If BF_SKIP_LIVE, we also add a filter lengthBucket != "live".
+    """
+    # base status filter
     if BF_TARGET == "complete":
-        status_filter = {"tracking.status": "complete"}
+        status_filter: Dict[str, Any] = {"tracking.status": "complete"}
     elif BF_TARGET == "tracking":
         status_filter = {"tracking.status": "tracking"}
     else:
-        status_filter = {"tracking.status": {"$in": ["tracking", "complete"]}}
+        status_filter = {"tracking.status": {"$in": ["complete", "tracking"]}}
 
-    # missing conditions
-    # Note: tạo cấu trúc $or/$and phù hợp với tùy chọn bật/tắt
-    ors = []
-    ands = [status_filter]
+    ors: List[Dict[str, Any]] = []
+    ands: List[Dict[str, Any]] = [status_filter]
 
     if BF_FILL_HANDLE:
-        ors.extend([
-            {"snippet.channelHandle": {"$exists": False}},
-            {"source.channelHandle": {"$exists": False}},
-        ])
+        ors.extend(
+            [
+                {"snippet.channelHandle": {"$exists": False}},
+                {"source.channelHandle": {"$exists": False}},
+            ]
+        )
 
     if BF_FILL_DURATION:
         dur_missing = [
@@ -323,47 +436,60 @@ def build_query() -> Dict[str, Any]:
         ors.extend(dur_missing)
 
     if not ors:
-        # không có nhu cầu backfill nào → trả về query không match
+        # No backfill requested → return a filter that matches nothing
         return {"_id": None}
 
     return {"$and": ands + [{"$or": ors}]}
 
+
+# ------------------------------------------------------------------------------
+# Main
+# ------------------------------------------------------------------------------
 def main() -> int:
     print(">>> backfill_missing_fields starting")
+
     if not API_KEY:
         print("Missing YT_API_KEY", file=sys.stderr)
         return 2
+
     client = MongoClient(MONGO_URI)
     db = client.get_database()
 
     query = build_query()
-    proj = {
+
+    projection = {
         "_id": 1,
-        "source.channelHandle": 1,
         "snippet.channelId": 1,
         "snippet.channelHandle": 1,
+        "source.channelHandle": 1,
         "snippet.durationISO": 1,
         "snippet.durationSec": 1,
         "snippet.lengthBucket": 1,
         "tracking.status": 1,
+        "snippet.publishedAt": 1,
     }
-    cur = db.videos.find(query, proj).sort([("_id", 1)]).limit(BF_LIMIT)
+
+    cur = (
+        db.videos.find(query, projection)
+        .sort("snippet.publishedAt", -1)
+        .limit(BF_LIMIT)
+    )
     candidates = list(cur)
-    print(f"Candidates: {len(candidates)} (target={BF_TARGET}, limit={BF_LIMIT})")
 
     if not candidates:
-        print("Nothing to backfill.")
+        print("[INFO] No candidate videos found for backfill.")
         return 0
 
+    print(f"[INFO] Candidates fetched: {len(candidates)} (limit={BF_LIMIT})")
     if BF_LOG_SAMPLE and candidates:
-        print("Sample:")
-        for d in candidates[:BF_LOG_SAMPLE]:
-            sn = d.get("snippet", {}) or {}
-            print(f" - {d['_id']} | status={d.get('tracking',{}).get('status')} | handle={sn.get('channelHandle')} | len={sn.get('lengthBucket')} | durISO={sn.get('durationISO')}")
+        sample_n = min(BF_LOG_SAMPLE, len(candidates))
+        print(f"[INFO] Sample {sample_n} candidates (ids only):")
+        for d in candidates[:sample_n]:
+            print(f"   - {d.get('_id')} | status={d.get('tracking', {}).get('status')}")
 
     # 1) Handles
     try:
-        backfill_handles(candidates, db)
+        backfill_channel_handles(candidates, db)
     except SystemExit as e:
         return e.code if isinstance(e.code, int) else EXIT_QUOTA
 
@@ -373,8 +499,9 @@ def main() -> int:
     except SystemExit as e:
         return e.code if isinstance(e.code, int) else EXIT_QUOTA
 
-    print("Backfill done.")
+    print("[INFO] Backfill done.")
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

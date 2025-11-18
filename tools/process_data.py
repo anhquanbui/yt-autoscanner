@@ -25,6 +25,7 @@ import itertools
 import pandas as pd
 
 from config.path_utils import get_export_dir
+from config.env import load_env, get_env  # unified env loader
 
 # Optional pymongo imports
 try:
@@ -34,16 +35,10 @@ except Exception:
     UpdateOne = None
     ReplaceOne = None
 
-# Optional dotenv loader
-try:
-    from dotenv import load_dotenv
-except Exception:
-    def load_dotenv(dotenv_path=None):
-        ...
-
 # ------------------------- Plan & constants -------------------------
 
 def default_plan_minutes() -> List[int]:
+    """Default tracking plan in minutes: 0–24h with mixed resolution."""
     plan: List[int] = []
     plan += list(range(5, 120 + 1, 5))     # 0–2h: every 5 min
     plan += list(range(135, 360 + 1, 15))  # 2–6h: every 15 min
@@ -51,21 +46,27 @@ def default_plan_minutes() -> List[int]:
     plan += list(range(780, 1440 + 1, 60)) # 12–24h: every 60 min
     return plan
 
-# ENV like track_once (YT_TRACK_PLAN_MINUTES="5,10,15,...")
+
+# ENV override similar to track_once (YT_TRACK_PLAN_MINUTES="5,10,15,...")
 _PLAN_ENV = os.getenv("YT_TRACK_PLAN_MINUTES")
 if _PLAN_ENV:
     PLAN_MINUTES = [int(x) for x in _PLAN_ENV.split(",") if x.strip()]
 else:
     PLAN_MINUTES = default_plan_minutes()
-HORIZONS = [60, 180, 360, 720, 1440]  # 1h,3h,6h,12h,24h
+
+# Horizons (minutes) for summary features: 1h,3h,6h,12h,24h
+HORIZONS = [60, 180, 360, 720, 1440]
+
+# When using ceil interpolation, allowed distance from cutoff in minutes
 CEIL_TOLERANCE_MIN = 30
 
-# Extended features default: ON (disable with --no-extended-features)
+# Extended per-horizon features default: ON (disable with --no-extended-features)
 DO_EXTENDED = True
 
 # --------------------------- Utilities -----------------------------
 
 def parse_iso(s: Optional[str]) -> Optional[datetime]:
+    """Parse ISO-8601 string into timezone-aware UTC datetime."""
     if not s:
         return None
     try:
@@ -73,17 +74,23 @@ def parse_iso(s: Optional[str]) -> Optional[datetime]:
     except Exception:
         return None
 
+
 def iso(dt: Optional[datetime]) -> Optional[str]:
+    """Format datetime back into ISO-8601 string (UTC, 'Z' suffix)."""
     return dt.astimezone(timezone.utc).isoformat().replace('+00:00','Z') if dt else None
+
 
 @dataclass
 class Snapshot:
+    """Single stats snapshot (views/likes/comments at a given timestamp)."""
     ts: datetime
     viewCount: int
     likeCount: Optional[int] = None
     commentCount: Optional[int] = None
 
+
 def coerce_snap(s: Dict[str,Any]) -> Optional[Snapshot]:
+    """Convert raw snapshot dict into Snapshot dataclass with safe defaults."""
     ts = parse_iso(s.get('ts'))
     if not ts:
         return None
@@ -102,17 +109,33 @@ def coerce_snap(s: Dict[str,Any]) -> Optional[Snapshot]:
         cm = None
     return Snapshot(ts=ts, viewCount=max(0, v), likeCount=lk, commentCount=cm)
 
+
 def expected_count_up_to(h:int)->int:
+    """Expected number of snapshots up to horizon h (minutes) from PLAN_MINUTES."""
     return sum(1 for m in PLAN_MINUTES if m<=h)
 
+
 def enforce_non_decreasing(snaps:List[Snapshot])->None:
+    """
+    Ensure viewCount is non-decreasing over time.
+    If a snapshot viewCount goes backwards, clamp it to the last maximum.
+    """
     vmax=0
     for s in sorted(snaps,key=lambda x:x.ts):
         if s.viewCount<vmax:
             s.viewCount=vmax
         vmax=s.viewCount
 
+
 def floor_ceil_value(snaps:List[Snapshot], pub:Optional[datetime], h:int):
+    """
+    Given snapshots & publishedAt, find the view snapshot at horizon h (minutes).
+
+    Strategy:
+      - Try to use the last snapshot BEFORE or AT the cutoff (floor).
+      - If none, allow a snapshot AFTER cutoff within CEIL_TOLERANCE_MIN (ceil).
+      - Otherwise return (None, 'missing').
+    """
     if not pub:
         return (None,'missing')
     cutoff=pub+timedelta(minutes=h)
@@ -130,7 +153,9 @@ def floor_ceil_value(snaps:List[Snapshot], pub:Optional[datetime], h:int):
             return (s,'ceil')
     return (None,'missing')
 
+
 def coverage_ratio(snaps:List[Snapshot], pub:Optional[datetime], h:int)->float:
+    """Fraction of expected snapshots that actually exist up to horizon h."""
     if not pub:
         return 0.0
     cutoff=pub+timedelta(minutes=h)
@@ -147,9 +172,22 @@ def _views_at_cutoff(snaps: List[Snapshot], published: Optional[datetime], minut
     s, _m = floor_ceil_value(snaps, published, minutes)
     return int(s.viewCount) if s else 0
 
-def _is_plateau_segment(snaps: List[Snapshot], start_ts: datetime, end_ts: datetime,
-                        last_n: int = 3, threshold: int = 0) -> bool:
-    """Plateau computed only within (start_ts, end_ts] segment."""
+
+def _is_plateau_segment(
+    snaps: List[Snapshot],
+    start_ts: datetime,
+    end_ts: datetime,
+    last_n: int = 3,
+    threshold: int = 0
+) -> bool:
+    """
+    Detect plateau within a segment (start_ts, end_ts].
+
+    Rules:
+      - Build the list of views within the segment.
+      - Compute increments between consecutive snapshots.
+      - If the last `last_n` increments are <= threshold, mark as plateau.
+    """
     seg = [max(0, int(s.viewCount)) for s in sorted(snaps, key=lambda x: x.ts)
            if s.ts > start_ts and s.ts <= end_ts]
     if len(seg) < last_n + 1:
@@ -161,10 +199,20 @@ def _is_plateau_segment(snaps: List[Snapshot], start_ts: datetime, end_ts: datet
 # ---------------- v7: snapshot feature helpers ----------------
 
 def _hours_since(a: datetime, b: datetime) -> float:
+    """Return positive hours difference between `a` and `b` (a - b)."""
     return max((a - b).total_seconds() / 3600.0, 0.0)
 
+
 def _slope_stats(xs: List[float], ys: List[int]) -> Tuple[float,float,float,float]:
-    """Return mean_slope, max_slope, std_slope, accel_mean. Safe defaults=0.0."""
+    """
+    Compute slope-related stats over a time series.
+
+    Returns:
+      - mean_slope
+      - max_slope
+      - std_slope
+      - accel_mean (average change in slope)
+    """
     if len(xs) < 2:
         return 0.0, 0.0, 0.0, 0.0
     slopes: List[float] = []
@@ -184,7 +232,13 @@ def _slope_stats(xs: List[float], ys: List[int]) -> Tuple[float,float,float,floa
     accel_mean = (sum(accs)/len(accs)) if accs else 0.0
     return mean_slope, max_slope, std_slope, accel_mean
 
+
 def compute_snapshot_features(snaps: List[Snapshot], published: Optional[datetime]) -> Dict[str, Optional[float]]:
+    """
+    Global snapshot-based features across the full 24h window.
+
+    Includes view velocity/acceleration and time-to-first thresholds (1k/10k).
+    """
     out = {
         "v_slope_mean": 0.0,
         "v_slope_max": 0.0,
@@ -211,22 +265,31 @@ def compute_snapshot_features(snaps: List[Snapshot], published: Optional[datetim
     def _time_to_threshold(th: int) -> float:
         for x, y in zip(xs, ys):
             if y >= th:
-                return round(x, 1)  # 1 decimal only for time-first metrics
+                # Keep 1 decimal precision for time-to-threshold metrics
+                return round(x, 1)
         return 0.0
 
     out["time_first_1k"] = _time_to_threshold(1_000)
     out["time_first_10k"] = _time_to_threshold(10_000)
     return out
 
-def _extended_per_horizon(snaps: List[Snapshot], published: Optional[datetime],
-                          horizon_min: int, prev_horizon_min: int) -> Dict[str, float | bool | int]:
+
+def _extended_per_horizon(
+    snaps: List[Snapshot],
+    published: Optional[datetime],
+    horizon_min: int,
+    prev_horizon_min: int
+) -> Dict[str, float | bool | int]:
     """
     Per-horizon features for segment (prev_horizon, horizon]:
-      - v_slope_mean/max/std, v_accel_mean  (computed on snapshots within the segment)
-      - coverage_ratio (to H, unchanged)
-      - min_view = views@prev_horizon, max_view = views@horizon, view_range = delta
-      - low_activity (based on segment's max_view & view_range)
-      - plateau (increments only within the segment)
+
+      - v_slope_mean/max/std, v_accel_mean  (computed on snapshots in the segment)
+      - coverage_ratio (relative to full horizon H)
+      - min_view  = views at prev_horizon
+      - max_view  = views at horizon
+      - view_range = delta between them
+      - low_activity flag
+      - plateau flag (based on increments within the segment only)
     """
     base: Dict[str, float | bool | int] = {
         "v_slope_mean": 0.0, "v_slope_max": 0.0, "v_slope_std": 0.0,
@@ -240,10 +303,10 @@ def _extended_per_horizon(snaps: List[Snapshot], published: Optional[datetime],
     start_ts = published + timedelta(minutes=prev_horizon_min)
     end_ts   = published + timedelta(minutes=horizon_min)
 
-    # coverage to H: full-horizon coverage (unchanged)
+    # Coverage (fraction of expected snapshots) up to horizon H
     base["coverage_ratio"] = coverage_ratio(snaps, published, horizon_min)
 
-    # snapshots strictly within the segment (start_ts, end_ts]
+    # Snapshots strictly within the segment (start_ts, end_ts]
     subs = [s for s in snaps if s.ts > start_ts and s.ts <= end_ts]
     if subs:
         xs = [(s.ts - published).total_seconds() / 3600.0 for s in subs]
@@ -254,7 +317,7 @@ def _extended_per_horizon(snaps: List[Snapshot], published: Optional[datetime],
         base["v_slope_std"]  = round(sd, 6)
         base["v_accel_mean"] = round(acc, 6)
 
-    # boundary values → segment min/max/range
+    # Boundary values → segment min/max/range
     v_prev = _views_at_cutoff(snaps, published, prev_horizon_min)
     v_curr = _views_at_cutoff(snaps, published, horizon_min)
     delta  = max(0, v_curr - v_prev)
@@ -263,14 +326,24 @@ def _extended_per_horizon(snaps: List[Snapshot], published: Optional[datetime],
     base["max_view"]   = v_curr
     base["view_range"] = delta
 
-    # segment low-activity rule
+    # Simple low-activity rule for the segment
     base["low_activity"] = (v_curr < 200) or (delta < 50)
 
-    # plateau only within segment
+    # Plateau within segment
     base["plateau"] = _is_plateau_segment(snaps, start_ts, end_ts, last_n=3, threshold=0)
     return base
 
+
 def classify_growth_phase(hz: Dict[str, Any]) -> Optional[str]:
+    """
+    Rough growth phase classifier based on views at 6h, 12h and 24h.
+
+    Returns:
+      - "flat"
+      - "early-burst"
+      - "steady"
+      - None (if cannot be determined)
+    """
     try:
         v6 = hz.get("360", {}).get("views") or 0
         v12 = hz.get("720", {}).get("views") or 0
@@ -292,6 +365,17 @@ def classify_growth_phase(hz: Dict[str, Any]) -> Optional[str]:
 # --------------------------- Core summarize -------------------------
 
 def summarize_video(doc:Dict[str,Any])->Dict[str,Any]:
+    """
+    Build a compact, model-friendly record from a raw `videos` document.
+
+    Keeps:
+      - status, published_at
+      - full horizon view stats
+      - coverage metrics
+      - global snapshot_features
+      - extended per-horizon segment stats (optional)
+      - ml_flags passthrough
+    """
     vid=str(doc.get('_id') or doc.get('video_id') or '')
     status=(doc.get('tracking') or {}).get('status')
     snippet = (doc.get('snippet') or {})
@@ -352,7 +436,7 @@ def summarize_video(doc:Dict[str,Any])->Dict[str,Any]:
 
     growth_phase = classify_growth_phase(horizons_out)
 
-    # NEW: carry ml_flags from original videos doc, if present
+    # Carry ml_flags from original videos doc, if present
     raw_ml_flags = doc.get("ml_flags")
     if isinstance(raw_ml_flags, dict):
         ml_flags = raw_ml_flags
@@ -376,6 +460,11 @@ def summarize_video(doc:Dict[str,Any])->Dict[str,Any]:
 # --------------------------- IO helpers -----------------------------
 
 def read_from_mongo(uri:str,db_name:str,coll:str, query:dict|None=None):
+    """
+    Stream raw documents from a Mongo collection using a simple find().
+
+    Projection is limited to fields required for processing and ML.
+    """
     if MongoClient is None:
         raise RuntimeError("pymongo not installed")
     client=MongoClient(uri)
@@ -403,8 +492,19 @@ def read_from_mongo(uri:str,db_name:str,coll:str, query:dict|None=None):
     for d in cur:
         yield d
 
-def read_from_mongo_unprocessed(uri:str, db_name:str, src_coll:str, processed_coll:str, query:dict|None=None):
-    """Stream NOT-YET-PROCESSED docs (skip processed), but always include TRACKING set from query."""
+
+def read_from_mongo_unprocessed(
+    uri:str,
+    db_name:str,
+    src_coll:str,
+    processed_coll:str,
+    query:dict|None=None
+):
+    """
+    Stream NOT-YET-PROCESSED docs from `src_coll`, skipping those already
+    present in `processed_coll` (matched by video_id), but always including
+    TRACKING documents from the given query.
+    """
     if MongoClient is None:
         raise RuntimeError("pymongo not installed")
     client = MongoClient(uri)
@@ -446,7 +546,9 @@ def read_from_mongo_unprocessed(uri:str, db_name:str, src_coll:str, processed_co
     for d in cur:
         yield d
 
+
 def read_from_json(path:str):
+    """Read documents from JSON / NDJSON file on disk."""
     if path.lower().endswith((".ndjson",".jsonl")):
         with open(path,"r",encoding="utf-8") as fh:
             for line in fh:
@@ -465,7 +567,21 @@ def read_from_json(path:str):
             elif isinstance(data,dict):
                 yield data
 
-def upsert_to_mongo(uri:str, db_name:str, coll_name:str, rows:List[Dict[str,Any]], key:str="video_id", use_replace: bool = False):
+
+def upsert_to_mongo(
+    uri:str,
+    db_name:str,
+    coll_name:str,
+    rows:List[Dict[str,Any]],
+    key:str="video_id",
+    use_replace: bool = False
+):
+    """
+    Upsert processed rows into Mongo collection.
+
+    - If use_replace=True → full document replacement by key.
+    - Otherwise → $set update on each row.
+    """
     if MongoClient is None or (UpdateOne is None and ReplaceOne is None):
         raise RuntimeError("pymongo is required for --to-mongo")
     client = MongoClient(uri)
@@ -496,13 +612,25 @@ def upsert_to_mongo(uri:str, db_name:str, coll_name:str, rows:List[Dict[str,Any]
 # --------------------------- CLI helpers ----------------------------
 
 def detect_db_from_uri(uri:str)->Optional[str]:
+    """
+    Infer the database name from a Mongo URI if possible.
+
+    Example:
+      mongodb://localhost:27017/ytscan  → "ytscan"
+    """
     tail = uri.split("/")[-1]
     if not tail or tail.startswith("?"):
         return None
     return tail
 
+
 def _boolish(v) -> bool:
-    """Return False if v is in (0, false, no, off), True otherwise."""
+    """
+    Convert truthy/falsey CLI-like values into a boolean.
+
+    False values: 0, "0", "false", "no", "off"
+    Anything else → True.
+    """
     if v is None:
         return True
     s = str(v).strip().lower()
@@ -513,51 +641,75 @@ def _boolish(v) -> bool:
 def main():
     global DO_EXTENDED
 
-    ap=argparse.ArgumentParser(description="Process YouTube tracker docs into JSON outputs.")
+    ap=argparse.ArgumentParser(description="Process YouTube tracker docs into JSON/Parquet/ML-friendly outputs.")
     ap.add_argument("--mongo-uri")
     ap.add_argument("--db", default=None)
     ap.add_argument("--collection", default=None)
     ap.add_argument("--input-json")
-    ap.add_argument("--out-processed", default="processed_videos")  # we'll add extension based on format
-    ap.add_argument("--to-mongo", action="store_true", help="Upsert outputs into Mongo (ON if flag present)")
-    ap.add_argument("--no-mongo", action="store_true", help="Disable upserting outputs into Mongo")
-    ap.add_argument("--json", action="store_true", help="Export processed docs to JSON file")
-    ap.add_argument("--parquet", action="store_true", help="Export processed docs to Parquet file")
-    ap.add_argument("--query", help="MongoDB query as JSON string, e.g. '{\"tracking.status\":\"complete\"}'")
-    ap.add_argument("--out-coll-processed", default="processed_videos", help="Collection for processed output")
-    ap.add_argument("--skip-processed", default="true", help="Skip documents already present in processed collection (true/false, default: true)")
-    ap.add_argument("--processed-source-coll", default=None, help="Collection checked for already processed rows. Defaults to --out-coll-processed")
-    ap.add_argument("--out-dir", default=None, help="Directory to write output JSONs. Default: project root (parent of this script). Can also be set via env OUTPUT_DIR")
+    ap.add_argument("--out-processed", default="processed_videos", help="Base name for processed outputs (without extension).")
+    ap.add_argument("--to-mongo", action="store_true", help="Upsert outputs into Mongo (ON if flag present).")
+    ap.add_argument("--no-mongo", action="store_true", help="Disable upserting outputs into Mongo.")
+    ap.add_argument("--json", action="store_true", help="Export processed docs to JSON file.")
+    ap.add_argument("--parquet", action="store_true", help="Export processed docs to Parquet file.")
+    ap.add_argument("--query", help='MongoDB query as JSON string, e.g. \'{"tracking.status":"complete"}\'')
+    ap.add_argument("--out-coll-processed", default="processed_videos", help="Collection for processed output.")
+    ap.add_argument("--skip-processed", default="true", help="Skip docs already present in processed collection (true/false, default: true).")
+    ap.add_argument("--processed-source-coll", default=None, help="Collection checked for already processed rows. Defaults to --out-coll-processed.")
+    ap.add_argument(
+        "--out-dir",
+        default=None,
+        help=(
+            "Directory to write output JSON/Parquet. "
+            "Default: centralized export dir from EXPORT_DIR/OUTPUT_DIR or data_export."
+        ),
+    )
 
     # Extended features flags: default ON; allow disabling via --no-extended-features
-    ap.add_argument("--extended-features", dest="extended_features", action="store_true", default=True,
-                    help="Add per-horizon extended features (3h/6h/12h/24h). Default: ON")
-    ap.add_argument("--no-extended-features", dest="extended_features", action="store_false",
-                    help="Disable extended features (override default ON)")
+    ap.add_argument(
+        "--extended-features",
+        dest="extended_features",
+        action="store_true",
+        default=True,
+        help="Add per-horizon extended features (3h/6h/12h/24h). Default: ON.",
+    )
+    ap.add_argument(
+        "--no-extended-features",
+        dest="extended_features",
+        action="store_false",
+        help="Disable extended features (override default ON).",
+    )
 
-    ap.add_argument("--refresh-existing", action="store_true", help="Replace existing documents (by video_id) instead of $set updating.")
+    ap.add_argument(
+        "--refresh-existing",
+        action="store_true",
+        help="Replace existing documents (by video_id) instead of $set updating.",
+    )
 
     args=ap.parse_args()
 
     DO_EXTENDED = bool(args.extended_features)
 
-    # === Auto load .env ===
-    env_path = Path(__file__).resolve().parents[1] / ".env"
-    if env_path.exists():
-        load_dotenv(dotenv_path=env_path)
-    elif Path(".env").exists():
-        load_dotenv(dotenv_path=Path(".env").resolve())
+    # === Load environment via shared env loader ===
+    load_env()
 
-    if not args.mongo_uri and os.getenv("MONGO_URI"):
-        args.mongo_uri=os.getenv("MONGO_URI")
-        print(f"✅ Using Mongo URI from .env: {args.mongo_uri}")
+    # Resolve Mongo URI from CLI or env
+    if not args.mongo_uri:
+        env_uri = get_env("MONGO_URI")
+        if env_uri:
+            args.mongo_uri = env_uri
+            print(f"✅ Using Mongo URI from env: {args.mongo_uri}")
 
-    if not args.db and args.mongo_uri:
-        guess = detect_db_from_uri(args.mongo_uri)
-        if guess:
-            args.db=guess
+    # Resolve DB name from CLI, env, or URI tail
+    if not args.db:
+        env_db = get_env("MONGO_DB")
+        if env_db:
+            args.db = env_db
+        elif args.mongo_uri:
+            guess = detect_db_from_uri(args.mongo_uri)
+            if guess:
+                args.db = guess
         if args.db:
-            print(f"✅ Auto-detected DB: {args.db}")
+            print(f"✅ Using DB name: {args.db}")
 
     if not args.collection:
         args.collection="videos"
@@ -569,7 +721,8 @@ def main():
     skip_processed = _boolish(args.skip_processed)
 
     if not args.processed_source_coll:
-        args.processed_source_coll = args.out_coll_processed  # usually "processed_videos"
+        # Usually "processed_videos"
+        args.processed_source_coll = args.out_coll_processed
 
     query_dict = None
     if args.query:
@@ -589,10 +742,7 @@ def main():
         # (controlled by EXPORT_DIR / OUTPUT_DIR / default data_export)
         out_dir = get_export_dir()
 
-    p_out_processed = (out_dir / args.out_processed).resolve()
-
-
-    # Decide data source — include complete + tracking by default
+    # Decide normalized query filter: include both COMPLETE and TRACKING by default
     DEFAULT_STATUS_FILTER = {"$in": ["complete", "tracking"]}
     if query_dict is None:
         query_dict = {}
@@ -601,20 +751,23 @@ def main():
 
     print(f"🔧 Normalized query: {json.dumps(query_dict, ensure_ascii=False)}")
 
+    # Decide source of input documents
     if args.mongo_uri:
         if skip_processed:
             # 1) Always reprocess all TRACKING docs (even if they already exist in processed_videos)
             q_tracking = dict(query_dict)
             q_tracking["tracking.status"] = "tracking"
             docs_tracking = read_from_mongo(args.mongo_uri, args.db, args.collection, query=q_tracking)
-            
+
             # 2) Only fetch COMPLETE docs that do not yet exist in processed_videos
             q_complete = dict(query_dict)
             q_complete["tracking.status"] = "complete"
             docs_new = read_from_mongo_unprocessed(
-                args.mongo_uri, args.db, args.collection,
+                args.mongo_uri,
+                args.db,
+                args.collection,
                 processed_coll=args.processed_source_coll,
-                query=q_complete
+                query=q_complete,
             )
             docs = itertools.chain(docs_tracking, docs_new)
             print("📦 Mode: skip-processed=true ⇒ reprocessing TRACKING + NEW COMPLETE only")
@@ -624,6 +777,7 @@ def main():
     else:
         docs = read_from_json(args.input_json)
 
+    # --- Main processing loop ---
     processed=[]
     now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00","Z")
     for i,d in enumerate(docs,1):
@@ -631,7 +785,7 @@ def main():
             r = summarize_video(d)
             r["processed_at"] = now_iso
 
-            # only two states needed: complete or tracking
+            # Only two states needed downstream: "complete" or "tracking"
             st  = (r.get("status") or "").lower()
             r["processed_status"] = "complete" if st == "complete" else "tracking"
 
@@ -641,18 +795,12 @@ def main():
         except Exception as e:
             print(f"Skip doc due to error: {e}", file=sys.stderr)
 
-    # --- Decide output dir & base file name ---
-    if getattr(args, "out_dir", None):
-        out_dir = Path(args.out_dir).expanduser().resolve()
-        out_dir.mkdir(parents=True, exist_ok=True)
-    else:
-        out_dir = get_export_dir()
-
-    base_name = args.out_processed  # ví dụ: "processed_videos" hoặc "processed_videos.json"
+    # --- Build base file name (without extension) ---
+    base_name = args.out_processed  # e.g. "processed_videos" or "processed_videos.json"
     if base_name.endswith(".json") or base_name.endswith(".parquet"):
         base_name = base_name.rsplit(".", 1)[0]
 
-    # --- File exports: chỉ ghi nếu có flag ---
+    # --- File exports: only write if flags are present ---
     if getattr(args, "json", False):
         p_json = (out_dir / f"{base_name}.json").resolve()
         with open(p_json, "w", encoding="utf-8") as f:
@@ -665,14 +813,14 @@ def main():
         df.to_parquet(p_parquet, index=False)
         print(f"✅ Wrote Parquet: {p_parquet} ({len(processed)} rows)")
 
-    # --- Mongo upsert: mặc định BẬT, trừ khi --no-mongo ---
+    # --- Mongo upsert: ON by default, unless --no-mongo ---
     do_push = not getattr(args, "no_mongo", False)
     if getattr(args, "to_mongo", False):
-        do_push = True  # nếu user cố tình bật lại
+        do_push = True  # explicit --to-mongo re-enables push
 
     if do_push:
         if not args.mongo_uri:
-            print("⚠️ Skipping Mongo upsert: no MONGO_URI provided (use .env or --mongo-uri).", file=sys.stderr)
+            print("⚠️ Skipping Mongo upsert: no MONGO_URI provided (use env or --mongo-uri).", file=sys.stderr)
         elif not args.db:
             print("⚠️ Skipping Mongo upsert: could not detect DB name from URI. Provide --db explicitly.", file=sys.stderr)
         else:
