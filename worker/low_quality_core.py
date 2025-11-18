@@ -19,6 +19,7 @@ Intended usage:
 """
 
 from __future__ import annotations
+
 import os
 import sys
 import json
@@ -28,44 +29,53 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-from pymongo import MongoClient, UpdateOne
 from pandas import to_datetime
+from pymongo import MongoClient, UpdateOne
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# Optional envs (kept for compatibility, but not forced in logic)
-ENV_MODEL_3H = os.getenv("LOWQ_MODEL_3H_PATH")
-ENV_MODEL_6H = os.getenv("LOWQ_MODEL_6H_PATH")
-
-ENV_THR_3H = os.getenv("LOWQ_THRESHOLD_3H") or os.getenv("LOWQ_MODEL_3H_THRESHOLD")
-ENV_THR_6H = os.getenv("LOWQ_THRESHOLD_6H") or os.getenv("LOWQ_MODEL_6H_THRESHOLD")
-
-ENV_ENABLED_3H = os.getenv("LOWQ_3H_ENABLED", "true").lower() == "true"
-ENV_ENABLED_6H = os.getenv("LOWQ_6H_ENABLED", "true").lower() == "true"
-
-ENV_ONLY_MISSING_3H = os.getenv("LOWQ_3H_ONLY_MISSING", "true").lower() == "true"
-ENV_ONLY_MISSING_6H = os.getenv("LOWQ_6H_ONLY_MISSING", "true").lower() == "true"
-
-ENV_STOP_3H = os.getenv("LOWQ_3H_STOP_IF_LOW", "true").lower() == "true"
-ENV_STOP_6H = os.getenv("LOWQ_6H_STOP_IF_LOW", "true").lower() == "true"
-
-import warnings
 from sklearn.exceptions import InconsistentVersionWarning
+import warnings
 
-# Disable noisy warnings
+# Centralized env loader (shared with other workers)
+from config.env import load_env, get_env
+
+# Ensure .env is loaded once (parent/.env → project/.env → subdirs, recursive)
+load_env()
+
+# ==========================
+# Optional envs (kept for compatibility)
+# ==========================
+
+ENV_MODEL_3H = get_env("LOWQ_MODEL_3H_PATH")
+ENV_MODEL_6H = get_env("LOWQ_MODEL_6H_PATH")
+
+ENV_THR_3H = get_env("LOWQ_THRESHOLD_3H") or get_env("LOWQ_MODEL_3H_THRESHOLD")
+ENV_THR_6H = get_env("LOWQ_THRESHOLD_6H") or get_env("LOWQ_MODEL_6H_THRESHOLD")
+
+ENV_ENABLED_3H = (get_env("LOWQ_3H_ENABLED", "true") or "true").lower() == "true"
+ENV_ENABLED_6H = (get_env("LOWQ_6H_ENABLED", "true") or "true").lower() == "true"
+
+ENV_ONLY_MISSING_3H = (get_env("LOWQ_3H_ONLY_MISSING", "true") or "true").lower() == "true"
+ENV_ONLY_MISSING_6H = (get_env("LOWQ_6H_ONLY_MISSING", "true") or "true").lower() == "true"
+
+ENV_STOP_3H = (get_env("LOWQ_3H_STOP_IF_LOW", "true") or "true").lower() == "true"
+ENV_STOP_6H = (get_env("LOWQ_6H_STOP_IF_LOW", "true") or "true").lower() == "true"
+
+# Disable noisy warnings (e.g., sklearn version mismatch)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
 
 # ==========================
 # Mongo logging helper
 # ==========================
+
 def log_worker_run(worker_name: str, extra: dict | None = None):
     """Upsert one document in `worker_runs` to record last run (success or error)."""
     try:
-        mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/ytscan")
-        db_name_env = os.getenv("MONGO_DB")
+        # Ensure env is loaded (idempotent)
+        load_env()
+
+        mongo_uri = get_env("MONGO_URI", "mongodb://localhost:27017/ytscan")
+        db_name_env = get_env("MONGO_DB")
 
         if db_name_env:
             db_name = db_name_env
@@ -95,6 +105,7 @@ def log_worker_run(worker_name: str, extra: dict | None = None):
 # ==========================
 # Model loaders
 # ==========================
+
 XGB_AVAILABLE = False
 try:
     import xgboost as xgb
@@ -115,6 +126,7 @@ EPS = 1e-6
 # ==========================
 # Generic helpers
 # ==========================
+
 def _now_utc_iso() -> str:
     return datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
 
@@ -334,14 +346,14 @@ def features_6h(rec: dict) -> Optional[dict]:
     if not idx:
         return None
     th6 = [th[i] for i in idx]
-    v6 = [v[i] for i in idx]
-    l6 = [l[i] for i in idx]
-    c6 = [c[i] for i in idx]
+    v6_vals = [v[i] for i in idx]
+    l6_vals = [l[i] for i in idx]
+    c6_vals = [c[i] for i in idx]
 
     targets = [0.1667, 0.5, 1.0, 3.0, 6.0]
-    v10, v30, v1, v3, v6_ = [_first_leq(th6, v6, t) for t in targets]
-    l10, l30, l1, l3, l6_ = [_first_leq(th6, l6, t) for t in targets]
-    c10, c30, c1, c3, c6_ = [_first_leq(th6, c6, t) for t in targets]
+    v10, v30, v1, v3, v6_ = [_first_leq(th6, v6_vals, t) for t in targets]
+    l10, l30, l1, l3, l6_ = [_first_leq(th6, l6_vals, t) for t in targets]
+    c10, c30, c1, c3, c6_ = [_first_leq(th6, c6_vals, t) for t in targets]
 
     g_10_1 = (v1 + EPS) / (v10 + EPS)
     g_1_3 = (v3 + EPS) / (v1 + EPS)
@@ -455,6 +467,7 @@ def features_3h(rec: dict) -> Optional[dict]:
 # ==========================
 # Model + threshold helpers
 # ==========================
+
 def load_model(path: str):
     """
     Load model:
@@ -575,6 +588,7 @@ def score_one(model, feat: dict) -> float:
 # ==========================
 # Core worker runner
 # ==========================
+
 def build_query(
     mode: str,
     only_missing: bool,
@@ -641,38 +655,48 @@ def run_low_quality(
     Core runner for low-quality ML flags.
 
     mode:
-      - "both"    : 3h for [3h,6h) + 6h for >=6h
-      - "3h-only" : only 3h model for [3h,6h)
-      - "6h-only" : only 6h model for >=6h
+      - "both"    : use 3h model for age in [3h, 6h) + 6h model for age >= 6h
+      - "3h-only" : only use 3h model for age in [3h, 6h)
+      - "6h-only" : only use 6h model for age >= 6h
 
     include_all_status:
-      - True  -> không lọc tracking.status, chấm cả complete/stopped/...
-      - False -> nếu status_in không set thì mặc định chỉ tracking
+      - True  -> do not filter by tracking.status; score videos with any status (tracking, complete, stopped, etc.)
+      - False -> if status_in is not set, default to only videos with tracking.status = "tracking"
 
     status_in:
-      - Nếu truyền vào (ví dụ ["tracking", "complete"]) thì override include_all_status logic
-      - Query sẽ có: {"tracking.status": {"$in": status_in}}
+      - If provided (e.g. ["tracking", "complete"]), it overrides include_all_status logic
+      - The query will include: {"tracking.status": {"$in": status_in}}
     """
     mode = mode or "both"
     if mode not in ("both", "3h-only", "6h-only"):
         raise ValueError(f"Invalid mode: {mode}")
 
-    # Load models
-    model3, kind3 = load_model(model_3h_path)
-    model6, kind6 = load_model(model_6h_path)
-
-    # Auto thresholds
-    default_thr3 = thr3 if thr3 is not None else 0.5
-    default_thr6 = thr6 if thr6 is not None else 0.5
-
-    thr3_final = auto_threshold_from_model_or_meta(model3, model_3h_path, default_thr3)
-    thr6_final = auto_threshold_from_model_or_meta(model6, model_6h_path, default_thr6)
-
     print(f"[INFO] Mode: {mode}")
-    print(f"[INFO] Loaded 3h model ({kind3}): {model_3h_path}")
-    print(f"[INFO] 3h threshold: {thr3_final:.4f}")
-    print(f"[INFO] Loaded 6h model ({kind6}): {model_6h_path}")
-    print(f"[INFO] 6h threshold: {thr6_final:.4f}")
+
+    model3 = kind3 = None
+    model6 = kind6 = None
+    thr3_final = None
+    thr6_final = None
+
+    # --- 3h model: load only if needed ---
+    if mode in ("both", "3h-only"):
+        model3, kind3 = load_model(model_3h_path)
+        default_thr3 = thr3 if thr3 is not None else 0.5
+        thr3_final = auto_threshold_from_model_or_meta(
+            model3, model_3h_path, default_thr3
+        )
+        print(f"[INFO] Loaded 3h model ({kind3}): {model_3h_path}")
+        print(f"[INFO] 3h threshold: {thr3_final:.4f}")
+
+    # --- 6h model: load only if needed ---
+    if mode in ("both", "6h-only"):
+        model6, kind6 = load_model(model_6h_path)
+        default_thr6 = thr6 if thr6 is not None else 0.5
+        thr6_final = auto_threshold_from_model_or_meta(
+            model6, model_6h_path, default_thr6
+        )
+        print(f"[INFO] Loaded 6h model ({kind6}): {model_6h_path}")
+        print(f"[INFO] 6h threshold: {thr6_final:.4f}")
 
     mc = MongoClient(mongo_uri)
     col = mc[db_name][col_name]
@@ -777,10 +801,10 @@ def run_low_quality(
                             update["tracking.status"] = "stopped"
                             update["tracking.stop_reason"] = "ml.low_quality_v1_3h"
                 else:
-                    # age_h >= 6h → không chạy 3h nữa theo design
+                    # age_h >= 6h → do not run the 3h model anymore by design
                     pass
 
-                # Nếu 3h đã stop video → không cần chạy 6h
+                # If the 3h model has already stopped the video → no need to run the 6h model
                 if update.get("tracking.status") == "stopped":
                     buf.append(
                         UpdateOne({"_id": doc["_id"]}, {"$set": update}, upsert=False)
@@ -898,23 +922,24 @@ def run_low_quality(
 # ==========================
 # CLI entry (optional)
 # ==========================
+
 def main(argv=None):
     ap = argparse.ArgumentParser("low_quality_core (3h + 6h)")
 
     # Mongo / collection
     ap.add_argument(
         "--mongo-uri",
-        default=os.getenv("MONGO_URI"),
+        default=get_env("MONGO_URI"),
         help="MongoDB URI (override env MONGO_URI)",
     )
     ap.add_argument(
         "--db",
-        default=os.getenv("MONGO_DB"),
+        default=get_env("MONGO_DB"),
         help="Database name (override env MONGO_DB)",
     )
     ap.add_argument(
         "--col",
-        default=os.getenv("MONGO_COL_VIDEOS", "videos"),
+        default=get_env("MONGO_COL_VIDEOS", "videos"),
         help="Collection name (default from env MONGO_COL_VIDEOS or 'videos')",
     )
 
@@ -922,58 +947,50 @@ def main(argv=None):
     ap.add_argument(
         "--mode",
         choices=["both", "3h-only", "6h-only"],
-        default=os.getenv("LOWQ_MODE", "both"),
+        default=get_env("LOWQ_MODE", "both"),
         help="Run mode: 'both' (3h [3,6) + 6h >=6), '3h-only', or '6h-only'",
     )
 
     # MODEL PATHS (3h + 6h)
     ap.add_argument(
         "--model-3h",
-        default=os.getenv("LOWQ_MODEL_3H_PATH"),
+        default=get_env("LOWQ_MODEL_3H_PATH"),
         help="Model path for ≤3h (logistic joblib / xgb).",
     )
     ap.add_argument(
         "--model-6h",
-        default=os.getenv("LOWQ_MODEL_6H_PATH") or os.getenv("LOWQ_MODEL_PATH"),
+        default=get_env("LOWQ_MODEL_6H_PATH") or get_env("LOWQ_MODEL_PATH"),
         help="Model path for ≤6h. If unset, fallback to LOWQ_MODEL_PATH.",
     )
 
     # Backward-compat: old --model behaves as 6h model
     ap.add_argument(
         "--model",
-        default=os.getenv("LOWQ_MODEL_PATH"),
+        default=get_env("LOWQ_MODEL_PATH"),
         help="[DEPRECATED] Legacy single-model path (treated as 6h model).",
     )
 
     # THRESHOLDS
+    thr3_env = get_env("LOWQ_THRESHOLD_3H")
+    thr6_env = get_env("LOWQ_THRESHOLD_6H")
+    thr_legacy_env = get_env("LOWQ_THRESHOLD")
+
     ap.add_argument(
         "--threshold-3h",
         type=float,
-        default=(
-            float(os.getenv("LOWQ_THRESHOLD_3H"))
-            if os.getenv("LOWQ_THRESHOLD_3H")
-            else None
-        ),
+        default=(float(thr3_env) if thr3_env is not None else None),
         help="Threshold for ≤3h model. If missing, auto-detect from meta.",
     )
     ap.add_argument(
         "--threshold-6h",
         type=float,
-        default=(
-            float(os.getenv("LOWQ_THRESHOLD_6H"))
-            if os.getenv("LOWQ_THRESHOLD_6H")
-            else None
-        ),
+        default=(float(thr6_env) if thr6_env is not None else None),
         help="Threshold for ≤6h model. If missing, auto-detect from meta.",
     )
     ap.add_argument(
         "--threshold",
         type=float,
-        default=(
-            float(os.getenv("LOWQ_THRESHOLD"))
-            if os.getenv("LOWQ_THRESHOLD")
-            else None
-        ),
+        default=(float(thr_legacy_env) if thr_legacy_env is not None else None),
         help="[DEPRECATED] Single threshold (used for 6h fallback only).",
     )
 
@@ -981,7 +998,7 @@ def main(argv=None):
     ap.add_argument(
         "--batch-size",
         type=int,
-        default=int(os.getenv("LOWQ_BATCH_SIZE", "500")),
+        default=int(get_env("LOWQ_BATCH_SIZE", "500")),
         help="Mongo bulk_write batch size.",
     )
     ap.add_argument(
@@ -1013,8 +1030,11 @@ def main(argv=None):
     ap.add_argument(
         "--status-in",
         nargs="+",
-        help="Optional list of tracking.status values to include (e.g. --status-in tracking complete). "
-             "If set, overrides include_all_status logic.",
+        help=(
+            "Optional list of tracking.status values to include "
+            "(e.g. --status-in tracking complete). "
+            "If set, overrides include_all_status logic."
+        ),
     )
 
     args = ap.parse_args(argv)

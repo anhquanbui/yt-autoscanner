@@ -141,14 +141,19 @@ else { Write-Log "MONGO_URI is empty. Please set MONGO_URI=mongodb://..." "WARN"
 # Invoke once (clean exit code)
 # =======================
 function Invoke-TrackOnce {
+  # Optional: giữ check file cho yên tâm
   if (-not (Test-Path $TrackPath)) {
     Write-Log "Script not found: $TrackPath" "ERROR"
     return 2
   }
-  Write-Log "Running track_once ($TrackPath)"
+
+  Write-Log "Running track_once as module: worker.track_once"
   Push-Location $RepoRoot
-  & $PythonExe $TrackPath 2>&1 | Out-Host
+
+  # IMPORTANT: run as module so that 'config' is importable
+  & $PythonExe -m worker.track_once 2>&1 | Out-Host
   $code = $LASTEXITCODE
+
   Pop-Location
   Write-Log ("track_once exit code = {0}" -f $code)
   return [int]$code

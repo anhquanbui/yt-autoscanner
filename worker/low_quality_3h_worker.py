@@ -2,17 +2,35 @@
 """
 low_quality_3h_worker.py
 
-Thin wrapper to run the low-quality worker in 3h-only mode:
-- Chỉ chấm các video có age trong [3h, 6h)
-- Dùng chung core logic từ low_quality_core.py
+Dedicated wrapper for running the low-quality ML pipeline in **3h-only** mode.
+
+Behavior:
+- Only evaluates videos whose age is within the range [3h, 6h)
+- Uses the shared core logic from low_quality_core.py
+- Ensures that logs printed by this worker are explicitly marked as "3h model"
 """
 
 from .low_quality_core import main as core_main
 
 
+def _prepend_3h_log_tag(argv: list[str]) -> list[str]:
+    """
+    Insert a visible log tag for clarity so that all logs coming from this worker
+    are clearly identifiable as 3h-only model logs.
+    """
+    print("[3H] low_quality_3h_worker starting (forced mode = 3h-only)")
+    return argv
+
+
 if __name__ == "__main__":
     import sys
 
-    # Giữ nguyên mọi argument khác, nhưng ép --mode 3h-only
+    # Force mode = "3h-only" regardless of any CLI args.
+    # All other CLI arguments are preserved.
     argv = ["--mode", "3h-only", *sys.argv[1:]]
+
+    # Add 3h log tag
+    argv = _prepend_3h_log_tag(argv)
+
+    # Run the shared core pipeline
     core_main(argv)
