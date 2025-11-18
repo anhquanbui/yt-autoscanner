@@ -1,0 +1,19 @@
+[Unit]
+Description=YT Auto lowq-6h Worker
+After=network.target
+
+[Service]
+Type=simple
+User=ytscan
+WorkingDirectory=/home/ytscan/yt-autoscanner
+ExecStart=/home/ytscan/yt-autoscanner/scripts/auto_lowq_6h.sh
+Restart=always
+RestartSec=5
+
+# log systemd → journalctl
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=yt-lowq-6h
+
+[Install]
+WantedBy=multi-user.target

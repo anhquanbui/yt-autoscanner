@@ -1,33 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ==========================
+# Paths
+# ==========================
 PROJECT_ROOT="/home/ytscan/yt-autoscanner"
 VENV_PY="$PROJECT_ROOT/.venv/bin/python"
-ENV_FILE="/home/ytscan/.env"
 
-# === Guard: is venv exit ===
+# ==========================
+# Guard: venv must exist
+# ==========================
 if [ ! -x "$VENV_PY" ]; then
   echo "[FATAL] Python venv not found at: $VENV_PY"
-  echo "-> Run:  python3 -m venv $PROJECT_ROOT/.venv && source $PROJECT_ROOT/.venv/bin/activate && pip install -r worker/requirements.txt"
+  echo "-> Run:"
+  echo "   python3 -m venv $PROJECT_ROOT/.venv"
+  echo "   source $PROJECT_ROOT/.venv/bin/activate"
+  echo "   pip install -r worker/requirements.txt"
   exit 1
 fi
 
-# === Load ~/.env if available, for global env ===
-if [ -f "$ENV_FILE" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  . "$ENV_FILE"
-  set +a
-fi
+# NOTE:
+# No manual .env loading here.
+# All env resolution is handled by config.env.load_env() inside Python.
 
-# 🚀 Always run from project root
+# Always run from project root
 cd "$PROJECT_ROOT"
 
-# === random discover ===
+# ==========================
+# Random discover config (non-secret runtime flags)
+# ==========================
 export YT_RANDOM_PICK="1"
 export YT_RANDOM_REGION_POOL="US,GB,CA,AU,IN,JP,VN,KR,FR,DE,BR,MX,ID,TH,ES,IT,NL,SG,MY,PH,TW,HK,AR,CL,TR,PL,SA,AE,EG,NG,KE,RU,SE,NO,FI,DK,IE,PT,GR,IL,ZA"
 
-# safer multi-line assignment
+# Safer multi-line assignment for YT_RANDOM_QUERY_POOL
 YT_RANDOM_QUERY_POOL=$(cat <<'EOF'
 live:6, breaking news:5, world news:5, update:3, politics:3, president speech:2, economy:3, stock market:4, crypto:4, bitcoin:4, ethereum:3,
 finance:3, investing:3, business:3, startup:3, ai:6, artificial intelligence:4, chatgpt:5, openai:4, gen ai:3, machine learning:3, tech review:5,
@@ -52,18 +57,20 @@ export YT_MAX_PAGES="5"
 
 SLEEP_SECONDS=30
 
-# === discover loop ===
+# ==========================
+# Auto discover loop
+# ==========================
 while true; do
   export YT_DURATION_MODE="${DURATIONS[$RANDOM % ${#DURATIONS[@]}]}"
-  echo "[AutoDiscover] $(date) running discover_once"
+  echo "[AutoDiscover] $(date) running worker.discover_once"
   echo "[AutoDiscover] YT_DURATION_MODE=$YT_DURATION_MODE"
 
-  # Run by module to import config.path_utils OK
+  # Run as module so Python can import config.env & config.path_utils correctly
   if ! "$VENV_PY" -m worker.discover_once; then
     rc=$?
     echo "[AutoDiscover] discover_once exited with code $rc"
 
-    # Code 88
+    # 88 = quota exhausted (EXIT_QUOTA from worker.discover_once)
     if [ "$rc" -eq 88 ]; then
       echo "[AutoDiscover] quota exhausted, sleeping 600s"
       sleep 600

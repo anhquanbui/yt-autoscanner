@@ -1,39 +1,40 @@
 # config/path_utils.py
 """
-path_utils.py — Centralized environment loader and project path utilities
----------------------------------------------------------------------------
-- Load .env from project root / home / current working directory.
-- Automatically executes on import.
-- Prevents duplicated code across tools and workers.
+Central helper for export/output directory resolution.
+
+This version is fully aligned with config.env for unified .env loading.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
-from dotenv import load_dotenv
+from typing import Optional
 
-def load_env(verbose=False):
+from config.env import load_env, get_env
+
+
+def get_export_dir(default_subdir: str = "data_export") -> Path:
     """
-    Load environment variables from the first available .env file.
-    Priority:
-        1) Project root (repo/.env)
-        2) Home folder (~/.env)
-        3) Current working directory (./.env)
+    Resolve the unified export/output directory for the project.
+
+    Priority order:
+      1. EXPORT_DIR    (if defined)
+      2. OUTPUT_DIR    (fallback)
+      3. <project_root>/<default_subdir>
+
+    The directory is created if missing.
     """
-    loaded = False
+    # Ensure .env is loaded once (idempotent)
+    load_env()
 
-    project_root = Path(__file__).resolve().parents[1] / ".env"
-    home_env     = Path.home() / ".env"
-    cwd_env      = Path.cwd() / ".env"
+    base = get_env("EXPORT_DIR") or get_env("OUTPUT_DIR")
 
-    for p in (project_root, home_env, cwd_env):
-        if p.exists():
-            load_dotenv(p, override=True)
-            if verbose:
-                print(f"✅ Loaded .env from: {p}")
-            loaded = True
-            break
+    if base:
+        export_path = Path(base).expanduser().resolve()
+    else:
+        # project_root = parent of config/
+        project_root = Path(__file__).resolve().parents[1]
+        export_path = project_root / default_subdir
 
-    if not loaded and verbose:
-        print("⚠️ No .env found. Using system environment variables.")
-
-# Auto-execute when imported
-load_env()
+    export_path.mkdir(parents=True, exist_ok=True)
+    return export_path

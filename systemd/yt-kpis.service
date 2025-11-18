@@ -1,0 +1,19 @@
+[Unit]
+Description=YT Auto kpis Worker
+After=network.target
+
+[Service]
+Type=simple
+User=ytscan
+WorkingDirectory=/home/ytscan/yt-autoscanner
+ExecStart=/home/ytscan/yt-autoscanner/scripts/auto_kpis.sh
+Restart=always
+RestartSec=5
+
+# log systemd → journalctl
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=yt-kpis
+
+[Install]
+WantedBy=multi-user.target
