@@ -436,6 +436,8 @@ def main() -> int:
                                 "tracking.stop_reason": "age>=24h",
                                 "tracking.last_polled_at": now_iso,
                                 "tracking.next_poll_after": None,
+                                # NEW: store the latest stats timestamp as BSON Date
+                                "latest_stats_ts": now,
                             },
                             "$inc": {"tracking.poll_count": 1},
                         },
@@ -452,6 +454,8 @@ def main() -> int:
                             "$set": {
                                 "tracking.last_polled_at": now_iso,
                                 "tracking.next_poll_after": next_due.isoformat(),
+                                # NEW: store the latest stats timestamp as BSON Date
+                                "latest_stats_ts": now,
                             },
                             "$inc": {"tracking.poll_count": 1},
                         },

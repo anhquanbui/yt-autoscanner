@@ -196,8 +196,7 @@ INDEX_MAP: Dict[str, List[dict]] = {
         },
 
         # --- Shared base for low-quality workers (3h & 6h) ---
-        # We keep one index per key signature; both 3h and 6h workers
-        # will benefit from the same 'snap0' and status indexes.
+        # Cả 3h & 6h đều luôn require stats_snapshots.0 + thường xuyên filter theo tracking.status
         {
             "keys": [
                 ("stats_snapshots.0", 1),
@@ -213,6 +212,9 @@ INDEX_MAP: Dict[str, List[dict]] = {
         },
 
         # --- low_quality_v3_6h ML pipeline ---
+        # Dùng cho:
+        #   - build_query(..., mode="6h-only"/"both", only_missing=True/False)
+        #   - filter theo is_low + publishedAt (analytics/dashboard)
         {
             "keys": [
                 ("stats_snapshots.0", 1),
@@ -226,6 +228,23 @@ INDEX_MAP: Dict[str, List[dict]] = {
                 ("snippet.publishedAt", -1),
             ],
             "name": "lowq6h_isLow_publishedAt_desc",
+        },
+        # NEW: compound index tune riêng cho worker low_quality 6h,
+        # khớp đúng query mặc định:
+        #   {stats_snapshots.0: {$exists: true},
+        #    tracking.status: "tracking",
+        #    $or: [{ml_flags.low_quality_v3_6h.updated_at: {$exists: false}}, ...]}
+        {
+            "keys": [
+                ("tracking.status", 1),
+                ("stats_snapshots.0", 1),
+                ("ml_flags.low_quality_v3_6h.updated_at", 1),
+            ],
+            "name": "lowq6h_track_snap0_updatedAt_tracking",
+            "partial": {
+                "tracking.status": "tracking",
+                "stats_snapshots.0": {"$exists": True},
+            },
         },
 
         # --- low_quality_v1_3h ML pipeline ---
@@ -242,6 +261,20 @@ INDEX_MAP: Dict[str, List[dict]] = {
                 ("snippet.publishedAt", -1),
             ],
             "name": "lowq3h_isLow_publishedAt_desc",
+        },
+        # NEW: compound index tune riêng cho worker low_quality 3h,
+        # cũng bám đúng query build_query(... mode="3h-only"/"both")
+        {
+            "keys": [
+                ("tracking.status", 1),
+                ("stats_snapshots.0", 1),
+                ("ml_flags.low_quality_v1_3h.updated_at", 1),
+            ],
+            "name": "lowq3h_track_snap0_updatedAt_tracking",
+            "partial": {
+                "tracking.status": "tracking",
+                "stats_snapshots.0": {"$exists": True},
+            },
         },
     ],
 
