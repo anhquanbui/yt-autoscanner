@@ -7,29 +7,25 @@ Dedicated wrapper for running the low-quality ML pipeline in **6h-only** mode.
 Behavior:
 - Only evaluates videos whose age is >= 6 hours.
 - Uses the shared core logic from low_quality_core.py.
-- Ensures that logs printed by this worker are clearly marked as 6h-only model logs.
+- Automatically enables --only-missing to avoid re-scoring videos that already have 6h score.
 """
 
 from .low_quality_core import main as core_main
 
 
 def _prepend_6h_log_tag(argv: list[str]) -> list[str]:
-    """
-    Insert a visible log tag for clarity so that all logs coming from this worker
-    are clearly identifiable as 6h-only model logs.
-    """
-    print("[6H] low_quality_6h_worker starting (forced mode = 6h-only)")
+    print("[6H] low_quality_6h_worker starting (forced mode = 6h-only, only-missing=True)")
     return argv
 
 
 if __name__ == "__main__":
     import sys
 
-    # Force mode = "6h-only" regardless of any CLI args.
-    # All other CLI arguments are preserved.
-    argv = ["--mode", "6h-only", *sys.argv[1:]]
+    # Force mode = "6h-only"
+    # Force --only-missing
+    argv = ["--mode", "6h-only", "--only-missing", *sys.argv[1:]]
 
-    # Add 6h log tag
+    # Add log tag
     argv = _prepend_6h_log_tag(argv)
 
     # Run the shared core pipeline

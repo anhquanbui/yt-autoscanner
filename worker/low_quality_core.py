@@ -128,7 +128,9 @@ EPS = 1e-6
 # ==========================
 
 def _now_utc_iso() -> str:
-    return datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+    """Return current UTC time as ISO-8601 string (timezone-aware)."""
+    # Use timezone-aware datetime to avoid DeprecationWarning and be explicit
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _safe_int(x):
@@ -188,13 +190,16 @@ def _first_leq(xs, ys, t_target):
 
 def _age_hours(rec: dict) -> Optional[float]:
     """
-    Compute hours from publishedAt to last snapshot.
-    Used to decide if record has reached >=3h / >=6h.
+    Compute hours from publishedAt to last snapshot (or latest_stats_ts if present).
+
+    This is used as a safety check to decide if record has reached >=3h / >=6h.
+    With latest_stats_ts present, we avoid scanning all snapshots just to compute age.
     """
     rec = _loads_jsonish(rec) if isinstance(rec, str) else rec
     if not isinstance(rec, dict):
         return None
 
+    # Resolve publishedAt
     sn = _loads_jsonish(rec.get("snippet"))
     if isinstance(sn, dict):
         pub = sn.get("publishedAt")
@@ -208,6 +213,16 @@ def _age_hours(rec: dict) -> Optional[float]:
     if t0 is None or str(t0) == "NaT":
         return None
 
+    # --- Fast path: use latest_stats_ts if available ---
+    latest = rec.get("latest_stats_ts")
+    if latest is not None:
+        t_latest = to_datetime(latest, utc=True, errors="coerce")
+        if t_latest is not None and str(t_latest) != "NaT":
+            h = (t_latest - t0).total_seconds() / 3600.0
+            # Ignore obviously negative ages
+            return max(h, 0.0)
+
+    # --- Fallback: compute from stats_snapshots (old behaviour) ---
     snaps = (
         _loads_jsonish(rec.get("stats_snapshots"))
         or _loads_jsonish(rec.get("stats.snapshots"))
@@ -215,7 +230,7 @@ def _age_hours(rec: dict) -> Optional[float]:
     if not isinstance(snaps, list) or not snaps:
         return None
 
-    max_h = None
+    max_h: Optional[float] = None
     for s in snaps:
         s = _loads_jsonish(s) if isinstance(s, str) else s
         if not isinstance(s, dict):
@@ -228,11 +243,13 @@ def _age_hours(rec: dict) -> Optional[float]:
             continue
         h = (t - t0).total_seconds() / 3600.0
         if h < -0.1:
+            # Ignore clearly invalid negative ages
             continue
         if (max_h is None) or (h > max_h):
             max_h = h
 
     return max_h
+
 
 
 # ==========================
@@ -597,42 +614,77 @@ def build_query(
 ) -> Dict[str, Any]:
     """
     Build Mongo query based on mode + only_missing + status semantics.
-    - Always require: has snapshots
-    - if status_in given: tracking.status in status_in
-    - elif not include_all_status: tracking.status = 'tracking'
-    - else: no status filter
-    - only_missing:
-        - 3h-only  → only docs missing 3h.updated_at
-        - 6h-only  → only docs missing 6h.updated_at
-        - both     → docs missing either 3h or 6h
+
+    Always:
+      - Require at least one stats snapshot.
+      - Optionally filter by tracking.status.
+      - Optionally restrict to docs missing 3h/6h flags.
+      - If latest_stats_ts is present, also filter by age window using $dateDiff:
+
+        mode = "3h-only" → 3h <= age < 6h
+        mode = "6h-only" → age >= 6h
+        mode = "both"    → age >= 3h (either 3h- or 6h-window is relevant)
     """
     q: Dict[str, Any] = {
         "stats_snapshots.0": {"$exists": True},
     }
 
-    # Status filter
+    # --- Status filter ---
     if status_in:
         q["tracking.status"] = {"$in": status_in}
     elif not include_all_status:
         q["tracking.status"] = "tracking"
 
-    if not only_missing:
-        return q
+    # --- Only missing flags (keep old semantics) ---
+    if only_missing:
+        or_list: List[Dict[str, Any]] = []
 
-    or_list: List[Dict[str, Any]] = []
+        if mode in ("3h-only", "both"):
+            or_list.append({"ml_flags.low_quality_v1_3h.updated_at": {"$exists": False}})
+            or_list.append({"ml_flags.low_quality_v1_3h.updated_at": None})
 
-    if mode in ("3h-only", "both"):
-        or_list.append({"ml_flags.low_quality_v1_3h.updated_at": {"$exists": False}})
-        or_list.append({"ml_flags.low_quality_v1_3h.updated_at": None})
+        if mode in ("6h-only", "both"):
+            or_list.append({"ml_flags.low_quality_v3_6h.updated_at": {"$exists": False}})
+            or_list.append({"ml_flags.low_quality_v3_6h.updated_at": None})
 
-    if mode in ("6h-only", "both"):
-        or_list.append({"ml_flags.low_quality_v3_6h.updated_at": {"$exists": False}})
-        or_list.append({"ml_flags.low_quality_v3_6h.updated_at": None})
+        if or_list:
+            q["$or"] = or_list
 
-    if or_list:
-        q["$or"] = or_list
+    # --- Age filter using latest_stats_ts + $dateDiff (MongoDB 5+) ---
+    # We only apply this optimization when latest_stats_ts is present.
+    # Older docs without this field will be handled once track_once touches them.
+    age_expr: Optional[Dict[str, Any]] = None
+
+    age_diff_expr: Dict[str, Any] = {
+        "$dateDiff": {
+            "startDate": "$snippet.publishedAt",
+            "endDate": "$latest_stats_ts",
+            "unit": "hour",
+        }
+    }
+
+    if mode == "3h-only":
+        # 3h <= age < 6h
+        age_expr = {
+            "$and": [
+                {"$gte": [age_diff_expr, 3]},
+                {"$lt": [age_diff_expr, 6]},
+            ]
+        }
+    elif mode == "6h-only":
+        # age >= 6h
+        age_expr = {"$gte": [age_diff_expr, 6]}
+    elif mode == "both":
+        # age >= 3h (we will still branch 3h vs 6h in Python)
+        age_expr = {"$gte": [age_diff_expr, 3]}
+
+    if age_expr is not None:
+        # Ensure endDate exists, otherwise $dateDiff would error.
+        q["latest_stats_ts"] = {"$exists": True}
+        q["$expr"] = age_expr
 
     return q
+
 
 
 def run_low_quality(
@@ -708,6 +760,10 @@ def run_low_quality(
         status_in=status_in,
     )
     print(f"[INFO] Mongo query: {q}")
+    
+    # Count total docs that match query for progress logging
+    total_candidates = col.count_documents(q)
+    print(f"[INFO] Total candidates matching query: {total_candidates:,}")
 
     cur = col.find(
         q,
@@ -740,8 +796,11 @@ def run_low_quality(
         for doc in cur:
             n += 1
             if n % 1000 == 0:
+                pct = (n / total_candidates * 100.0) if total_candidates else 0.0
+                remaining = total_candidates - n if total_candidates else 0
                 print(
-                    f"[DEBUG] scanned={n:,} "
+                    f"[DEBUG] scanned={n:,}/{total_candidates:,} ({pct:.1f}%) "
+                    f"remaining={remaining:,} "
                     f"skipped_age_lt_3h={skipped_age_lt_3h:,} "
                     f"skipped_age_lt_6h={skipped_age_lt_6h:,} "
                     f"skipped_feat_3h={skipped_feat_3h:,} "
@@ -813,8 +872,12 @@ def run_low_quality(
                         res = col.bulk_write(buf, ordered=False)
                         n_up += res.modified_count
                         buf.clear()
+                        pct = (n / total_candidates * 100.0) if total_candidates else 0.0
+                        remaining = total_candidates - n if total_candidates else 0
                         print(
-                            f"[INFO] processed={n:,} updated={n_up:,} "
+                            f"[INFO] processed={n:,}/{total_candidates:,} ({pct:.1f}%) "
+                            f"remaining={remaining:,} "
+                            f"updated={n_up:,} "
                             f"(scored_3h={scored_3h:,}, low_3h={low_3h:,}, "
                             f"scored_6h={scored_6h:,}, low_6h={low_6h:,})"
                         )
@@ -880,7 +943,8 @@ def run_low_quality(
     print(
         "[DONE] "
         f"mode={mode} "
-        f"total_docs={n:,} "
+        f"total_candidates={total_candidates:,} "
+        f"scanned={n:,} "
         f"total_updated={n_up:,} "
         f"scored_3h={scored_3h:,} low_3h={low_3h:,} "
         f"scored_6h={scored_6h:,} low_6h={low_6h:,} "
@@ -903,6 +967,7 @@ def run_low_quality(
         {
             "status": "ok",
             "mode": mode,
+            "total_candidates": total_candidates,
             "total_docs": n,
             "total_updated": n_up,
             "scored_3h": scored_3h,
@@ -916,6 +981,163 @@ def run_low_quality(
             "include_all_status": include_all_status,
             "status_in": status_in,
         },
+    )
+
+
+# ==========================
+# EXTRA: Backfill full 3h + 6h scores for any status
+# ==========================
+
+def backfill_all_scores(
+    *,
+    mongo_uri: str,
+    db_name: str,
+    col_name: str,
+    model_3h_path: str,
+    model_6h_path: str,
+    thr3: Optional[float] = None,
+    thr6: Optional[float] = None,
+    batch_size: int = 500,
+    status_in: Optional[List[str]] = None,
+):
+    """
+    Backfill full scores for 3h + 6h for ANY video (tracking, complete, stopped),
+    regardless of age.
+
+    Logic:
+      - If ml_flags.low_quality_v1_3h.threshold is None → compute 3h score
+      - If ml_flags.low_quality_v3_6h.threshold is None → compute 6h score
+      - Do NOT change tracking.status / stop_reason
+      - Only compute if snapshots exist
+      - Idempotent: safe to rerun anytime
+    """
+    print("[BACKFILL] Starting backfill-all-scores...")
+
+    # Load models
+    model3, kind3 = load_model(model_3h_path)
+    model6, kind6 = load_model(model_6h_path)
+
+    thr3_base = thr3 if thr3 is not None else 0.5
+    thr6_base = thr6 if thr6 is not None else 0.5
+
+    thr3_final = auto_threshold_from_model_or_meta(model3, model_3h_path, thr3_base)
+    thr6_final = auto_threshold_from_model_or_meta(model6, model_6h_path, thr6_base)
+
+    print(f"[BACKFILL] 3h model loaded: {model_3h_path} (thr={thr3_final})")
+    print(f"[BACKFILL] 6h model loaded: {model_6h_path} (thr={thr6_final})")
+
+    mc = MongoClient(mongo_uri)
+    col = mc[db_name][col_name]
+
+    # Query: only videos that both:
+    #  - have snapshots
+    #  - are missing either 3h or 6h thresholds
+    q: Dict[str, Any] = {
+        "stats_snapshots.0": {"$exists": True},
+        "$or": [
+            # Missing 3h threshold
+            {"ml_flags.low_quality_v1_3h.threshold": {"$exists": False}},
+            {"ml_flags.low_quality_v1_3h.threshold": None},
+            # Missing 6h threshold
+            {"ml_flags.low_quality_v3_6h.threshold": {"$exists": False}},
+            {"ml_flags.low_quality_v3_6h.threshold": None},
+        ],
+    }
+
+    cur = col.find(
+        q,
+        {
+            "_id": 1,
+            "snippet": 1,
+            "stats_snapshots": 1,
+            "stats.snapshots": 1,
+            "ml_flags": 1,
+        },
+        no_cursor_timeout=True,
+    )
+
+    buf: List[UpdateOne] = []
+    n = 0
+    updated = 0
+    scored3 = 0
+    scored6 = 0
+    skipped_feat_3h = 0
+    skipped_feat_6h = 0
+
+    try:
+        for doc in cur:
+            n += 1
+            ml = doc.get("ml_flags") or {}
+
+            update: Dict[str, Any] = {}
+
+            # 3h block
+            d3 = ml.get("low_quality_v1_3h") or {}
+            need_3h = d3.get("threshold") is None
+
+            if need_3h:
+                f3 = features_3h(doc)
+                if f3 is None:
+                    skipped_feat_3h += 1
+                else:
+                    s3 = score_one(model3, f3)
+                    scored3 += 1
+                    update.update(
+                        {
+                            "ml_flags.low_quality_v1_3h.score": float(round(s3, 6)),
+                            "ml_flags.low_quality_v1_3h.threshold": float(thr3_final),
+                            "ml_flags.low_quality_v1_3h.is_low": bool(s3 >= thr3_final),
+                            "ml_flags.low_quality_v1_3h.updated_at": _now_utc_iso(),
+                        }
+                    )
+
+            # 6h block
+            d6 = ml.get("low_quality_v3_6h") or {}
+            need_6h = d6.get("threshold") is None
+
+            if need_6h:
+                f6 = features_6h(doc)
+                if f6 is None:
+                    skipped_feat_6h += 1
+                else:
+                    s6 = score_one(model6, f6)
+                    scored6 += 1
+                    update.update(
+                        {
+                            "ml_flags.low_quality_v3_6h.score": float(round(s6, 6)),
+                            "ml_flags.low_quality_v3_6h.threshold": float(thr6_final),
+                            "ml_flags.low_quality_v3_6h.is_low": bool(s6 >= thr6_final),
+                            "ml_flags.low_quality_v3_6h.updated_at": _now_utc_iso(),
+                        }
+                    )
+
+            if update:
+                buf.append(UpdateOne({"_id": doc["_id"]}, {"$set": update}, upsert=False))
+
+            if len(buf) >= batch_size:
+                res = col.bulk_write(buf, ordered=False)
+                updated += res.modified_count
+                buf.clear()
+                print(
+                    f"[BACKFILL] processed={n:,} updated={updated:,} "
+                    f"scored3={scored3:,} scored6={scored6:,} "
+                    f"skipped_feat_3h={skipped_feat_3h:,} skipped_feat_6h={skipped_feat_6h:,}"
+                )
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+    if buf:
+        res = col.bulk_write(buf, ordered=False)
+        updated += res.modified_count
+
+    print(
+        "[BACKFILL DONE] "
+        f"scanned={n:,} updated={updated:,} "
+        f"scored3={scored3:,} scored6={scored6:,} "
+        f"skipped_feat_3h={skipped_feat_3h:,} skipped_feat_6h={skipped_feat_6h:,}"
     )
 
 
@@ -1037,6 +1259,13 @@ def main(argv=None):
         ),
     )
 
+    # NEW: backfill-all-scores CLI
+    ap.add_argument(
+        "--backfill-all-scores",
+        action="store_true",
+        help="Compute full 3h+6h scores for ANY status (training use, no tracking.status changes).",
+    )
+
     args = ap.parse_args(argv)
 
     # Basic validations
@@ -1073,6 +1302,22 @@ def main(argv=None):
             except Exception:
                 thr6 = None
 
+    # Backfill mode: compute full scores for training, do not change tracking.status
+    if args.backfill_all_scores:
+        backfill_all_scores(
+            mongo_uri=args.mongo_uri,
+            db_name=args.db,
+            col_name=args.col,
+            model_3h_path=model_3h_path,
+            model_6h_path=model_6h_path,
+            thr3=thr3,
+            thr6=thr6,
+            batch_size=args.batch_size,
+            status_in=args.status_in,
+        )
+        return
+
+    # Normal worker mode
     run_low_quality(
         mode=args.mode,
         mongo_uri=args.mongo_uri,

@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""worker/compute_dashboard_kpis.py (v3)
+"""
+worker/compute_dashboard_kpis.py (v3)
 
 Background worker that computes dashboard KPIs from `videos`
 and stores them into `dashboard_kpis` (materialized KPI snapshots).
-Keeps only the latest 100 snapshots and updates worker_runs.
+
+- Aggregates global metrics (total videos, channels, tracking status).
+- Counts low-quality related stop reasons and ML flags (3h + 6h).
+- Keeps only the latest 100 KPI snapshots.
+- Updates `worker_runs` as a lightweight heartbeat.
 """
 
 from __future__ import annotations
@@ -15,7 +20,8 @@ from typing import Dict, Any
 
 from pymongo.collection import Collection
 
-from config.db import get_db  # use central DB helper
+from config.env import load_env          # ensure .env is loaded once
+from config.db import get_db             # central DB helper
 
 
 # =========================
@@ -38,7 +44,21 @@ logger.setLevel(logging.INFO)
 # =========================
 
 def build_kpi_pipeline() -> list:
-    """Mongo aggregation pipeline to compute global KPIs."""
+    """
+    Build the Mongo aggregation pipeline to compute global KPIs
+    from the `videos` collection.
+
+    Output fields:
+      - total_videos
+      - total_channels
+      - tracking_active
+      - completed_total
+      - stopped_total
+      - completed_age24
+      - completed_removed
+      - stopped_low_quality
+      - low_quality_flagged (3h OR 6h ML flags)
+    """
     return [
         {
             "$group": {
@@ -96,7 +116,7 @@ def build_kpi_pipeline() -> list:
                     }
                 },
 
-                # Stopped due to low_quality
+                # Stopped due to any low_quality-related stop_reason
                 "stopped_low_quality": {
                     "$sum": {
                         "$cond": [
@@ -122,7 +142,7 @@ def build_kpi_pipeline() -> list:
                     }
                 },
 
-                # ML flags (3h/6h)
+                # ML flags: any video where 3h OR 6h model flagged is_low
                 "low_quality_flagged": {
                     "$sum": {
                         "$cond": [
@@ -159,8 +179,8 @@ def build_kpi_pipeline() -> list:
 
 
 def compute_kpis(videos_col: Collection) -> Dict[str, Any]:
-    """Run the KPI aggregation pipeline."""
-    logger.info("Running KPI aggregation...")
+    """Run the KPI aggregation pipeline on the `videos` collection."""
+    logger.info("Running KPI aggregation…")
     pipeline = build_kpi_pipeline()
 
     result = list(videos_col.aggregate(pipeline, allowDiskUse=True))
@@ -181,8 +201,11 @@ def compute_kpis(videos_col: Collection) -> Dict[str, Any]:
     return result[0]
 
 
-def save_snapshot(kpis_col: Collection, kpi_doc: Dict[str, Any]):
-    """Insert KPI snapshot into dashboard_kpis and keep only latest 100."""
+def save_snapshot(kpis_col: Collection, kpi_doc: Dict[str, Any]) -> None:
+    """
+    Insert a KPI snapshot into `dashboard_kpis` and keep only
+    the latest 100 snapshots (by _id).
+    """
     kpi = dict(kpi_doc)
     kpi["ts"] = datetime.now(timezone.utc)
 
@@ -198,9 +221,7 @@ def save_snapshot(kpis_col: Collection, kpi_doc: Dict[str, Any]):
                             .limit(100)
         ]
 
-        delete_result = kpis_col.delete_many({
-            "_id": {"$nin": latest_ids}
-        })
+        delete_result = kpis_col.delete_many({"_id": {"$nin": latest_ids}})
 
         logger.info(
             "Cleanup: removed %s old KPI snapshots",
@@ -213,6 +234,9 @@ def save_snapshot(kpis_col: Collection, kpi_doc: Dict[str, Any]):
 
 def main() -> int:
     logger.info("Starting compute_dashboard_kpis worker…")
+
+    # Ensure .env is loaded before DB access
+    load_env()
 
     db = get_db()
     videos = db.videos
@@ -231,7 +255,7 @@ def main() -> int:
 
     save_snapshot(kpis_col, kpis)
 
-    # Heartbeat cho Overview: worker_runs
+    # Heartbeat for Overview: update worker_runs
     try:
         db.worker_runs.update_one(
             {"name": "compute_dashboard_kpis"},
