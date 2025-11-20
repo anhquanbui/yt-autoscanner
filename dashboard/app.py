@@ -1,65 +1,54 @@
-# dashboard/app.py
+# ============================
+# Bootstrap Python path (add project root so `config` is importable)
+# ============================
+import sys
+from pathlib import Path
 
-import os
-import platform
-import socket
-from datetime import datetime
+ROOT = Path(__file__).resolve().parents[1]  # .../yt-autoscanner
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
+# ============================
+# Streamlit app
+# ============================
 import streamlit as st
 
-from components.db import get_client  # hoặc get_db nếu bạn cần sau này
-
-
-# ==========================
-# ⚙ PAGE CONFIG
-# ==========================
 st.set_page_config(
     page_title="YT AutoScanner Dashboard",
     page_icon="📊",
     layout="wide",
 )
 
+# ========== SIDEBAR ==========
 
-# ==========================
-# 🔧 VPS SYSTEM STATUS
-# ==========================
-def get_system_info():
-    return {
-        "hostname": socket.gethostname(),
-        "os": platform.system() + " " + platform.release(),
-        "python": platform.python_version(),
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    }
-
-
-def get_mongo_status():
-    try:
-        client = get_client()
-        client.admin.command("ping")
-        return "🟢 Connected"
-    except Exception:
-        return "🔴 Not connected"
-
-
-# ==========================
-# 🧭 SIDEBAR
-# ==========================
 with st.sidebar:
     st.markdown(
         """
-<div style='display:flex;gap:0.7rem;align-items:center;margin-bottom:1rem;'>
-    <div style='
-        width:36px;height:36px;border-radius:50%;
-        background:linear-gradient(135deg,#ec4899,#8b5cf6);
-        display:flex;align-items:center;justify-content:center;
-        font-weight:700;color:white;font-size:17px;'
-    >YT</div>
-    <div>
-        <div style='font-size:1rem;font-weight:700;'>YT AutoScanner</div>
-        <div style='font-size:0.82rem;color:#6b7280;'>
-            VPS Monitoring &amp; ML Pipeline
-        </div>
-    </div>
+<div style="
+    display:flex;
+    flex-direction:row;
+    align-items:center;
+    gap:0.6rem;
+    margin-bottom:0.75rem;
+">
+  <div style="
+      width:32px;
+      height:32px;
+      border-radius:999px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      background:linear-gradient(135deg,#ec4899,#8b5cf6);
+      color:white;
+      font-size:18px;
+      font-weight:700;
+  ">
+    YT
+  </div>
+  <div>
+    <div style="font-weight:700; font-size:0.95rem;">YT AutoScanner</div>
+    <div style="font-size:0.8rem; color:#6b7280;">Internal tracking & ML dashboard</div>
+  </div>
 </div>
         """,
         unsafe_allow_html=True,
@@ -67,97 +56,138 @@ with st.sidebar:
 
     st.markdown("---")
 
-    st.markdown("### 📌 Navigation")
-    choice = st.radio(
-        "",
-        [
-            "🏠 Home",
-            "📈 Overview",
-            # sau này thêm:
-            # "🎥 Videos",
-            # "📊 Channels",
-            # "🤖 ML Models",
-            # "🛠 System & Logs",
-        ],
-        label_visibility="collapsed",
-    )
-
-    st.markdown("---")
-
-    info = get_system_info()
-    st.markdown("### 🖥 VPS Status")
-
+    st.markdown("#### 🧭 Navigation tips")
     st.markdown(
-        f"""
-- **Hostname:** `{info['hostname']}`
-- **OS:** `{info['os']}`
-- **Python:** `{info['python']}`
-- **Local Time:** `{info['time']}`
-- **MongoDB:** {get_mongo_status()}
+        """
+- **Overview** – high-level KPIs & trends  
+- **Videos** – per-video stats & timelines  
+- **Channels** – aggregated channel performance  
+- **ML Models** – low-quality / viral model insights  
+- **Logs & System** – workers & health signals  
 """
     )
 
     st.markdown("---")
-
     st.markdown(
         """
 <small style="color:#9ca3af;">
-Running on VPS • Powered by systemd workers •  
-Auto-discovery, auto-tracking, and ML pipeline included.
+YouTube AutoScanner runs a 24h window to track early performance and keep your dataset clean with ML-based low-quality filters.
 </small>
         """,
         unsafe_allow_html=True,
     )
 
+# ========== MAIN CONTENT (HOME) ==========
 
-# ==========================
-# 🏠 MAIN CONTENT
-# ==========================
-if choice == "🏠 Home":
+# Hero banner
+st.markdown(
+    """
+<div style="
+    padding: 1.5rem 1.8rem;
+    border-radius: 18px;
+    background: radial-gradient(circle at top left, #0ea5e9, #6366f1 55%, #111827 100%);
+    color: white;
+    margin-bottom: 1.5rem;
+    box-shadow: 0 18px 35px rgba(15,23,42,0.4);
+">
+  <div style="font-size:0.9rem; opacity:0.9; margin-bottom:0.25rem;">
+    Internal dashboard • YouTube AutoScanner
+  </div>
+  <div style="font-size:1.7rem; font-weight:700; margin-bottom:0.35rem;">
+    Track fresh videos, clean your dataset, boost your models.
+  </div>
+  <div style="font-size:0.95rem; max-width:720px; line-height:1.5;">
+    This dashboard gives you a quick view of how the scanner is discovering and tracking videos
+    in their first 24 hours, how many are being completed naturally, and how many are stopped
+    early by the low-quality ML filter.
+  </div>
+</div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Section title
+st.markdown("### 🧩 What you can do here")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
     st.markdown(
         """
 <div style="
-    padding: 1.6rem 1.8rem;
-    border-radius: 20px;
-    background: radial-gradient(circle at top left, #0ea5e9, #6366f1 55%, #111827 100%);
-    color: white;
-    margin-bottom: 1.7rem;
-    box-shadow: 0 20px 35px rgba(0,0,0,0.35);
+    border-radius:14px;
+    padding:1rem 1rem 0.9rem 1rem;
+    border:1px solid #e5e7eb;
+    background: #ffffff;
+    box-shadow: 0 6px 18px rgba(15,23,42,0.06);
 ">
-  <div style="font-size:0.9rem; opacity:0.85; margin-bottom:0.3rem;">
-    YouTube AutoScanner • VPS Deployment
+  <div style="font-size:1.2rem; margin-bottom:0.4rem;">📈 Overview</div>
+  <div style="font-size:0.9rem; color:#4b5563; margin-bottom:0.3rem;">
+    See total videos, channels, tracking vs. completed vs. low-quality stopped, and
+    how many new videos are discovered each day.
   </div>
-
-  <div style="font-size:1.9rem; font-weight:700; margin-bottom:0.35rem;">
-    Your central hub for monitoring the 24h tracking pipeline.
-  </div>
-
-  <div style="font-size:1rem; max-width:740px; line-height:1.55;">
-    This dashboard gives you real-time visibility into discovery speed,
-    tracking health, ML filtering behaviour, system logs, and MongoDB dataset intelligence.
+  <div style="font-size:0.8rem; color:#6b7280;">
+    Start here to check if the pipeline is healthy and tracking as expected.
   </div>
 </div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.markdown("### 🚀 What you can do here")
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.info("📈 **Overview**\n\nKPIs, completion rates, low-quality filter impact.")
-    with col2:
-        st.success("🎥 **Data Export & BI**\n\nUse Mongo → Parquet to power ML & dashboards.")
-    with col3:
-        st.warning("🤖 **ML Filters**\n\nMonitor how 3h/6h models prune low-quality videos.")
-
-    st.markdown("---")
+with col2:
     st.markdown(
-        "<small style='color:#9ca3af;'>Use the sidebar to switch to the Overview.</small>",
+        """
+<div style="
+    border-radius:14px;
+    padding:1rem 1rem 0.9rem 1rem;
+    border:1px solid #e5e7eb;
+    background: #ffffff;
+    box-shadow: 0 6px 18px rgba(15,23,42,0.06);
+">
+  <div style="font-size:1.2rem; margin-bottom:0.4rem;">🎥 Videos & Channels</div>
+  <div style="font-size:0.9rem; color:#4b5563; margin-bottom:0.3rem;">
+    Drill down into individual videos, timelines of views, and which channels are
+    contributing the most to your dataset.
+  </div>
+  <div style="font-size:0.8rem; color:#6b7280;">
+    Useful when you want to inspect outliers or debug weird tracking behaviour.
+  </div>
+</div>
+        """,
         unsafe_allow_html=True,
     )
 
-elif choice == "📈 Overview":
-    # Multi-page: nhảy sang dashboard/pages/01_Overview.py
-    # Đường dẫn phải là path tương đối từ thư mục chứa app.py (dashboard)
-    st.switch_page("pages/01_Overview.py")
+with col3:
+    st.markdown(
+        """
+<div style="
+    border-radius:14px;
+    padding:1rem 1rem 0.9rem 1rem;
+    border:1px solid #e5e7eb;
+    background: #ffffff;
+    box-shadow: 0 6px 18px rgba(15,23,42,0.06);
+">
+  <div style="font-size:1.2rem; margin-bottom:0.4rem;">🤖 ML & System</div>
+  <div style="font-size:0.9rem; color:#4b5563; margin-bottom:0.3rem;">
+    Review low-quality filtering, model performance snapshots, and worker logs to
+    understand how the scanner behaves in production.
+  </div>
+  <div style="font-size:0.8rem; color:#6b7280;">
+    Ideal for tuning thresholds and verifying that your models are doing the right thing.
+  </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+st.markdown("---")
+
+st.markdown(
+    """
+<small style="color:#9ca3af;">
+Tip: use the <b>Overview</b> page first to confirm the pipeline is running, then move to
+<b>Videos</b> or <b>ML Models</b> when you need more detail.
+</small>
+""",
+    unsafe_allow_html=True,
+)

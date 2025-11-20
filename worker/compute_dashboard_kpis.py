@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-worker/compute_dashboard_kpis.py (v3)
+worker/compute_dashboard_kpis.py (v5)
 
 Background worker that computes dashboard KPIs from `videos`
 and stores them into `dashboard_kpis` (materialized KPI snapshots).
 
 - Aggregates global metrics (total videos, channels, tracking status).
-- Counts low-quality related stop reasons and ML flags (3h + 6h).
+- Counts low-quality related stop reasons.
+- ML coverage + flags for low_quality 3h / 6h.
+- Viral prediction KPIs (likely / confirmed).
 - Keeps only the latest 100 KPI snapshots.
 - Updates `worker_runs` as a lightweight heartbeat.
 """
@@ -51,13 +53,23 @@ def build_kpi_pipeline() -> list:
     Output fields:
       - total_videos
       - total_channels
+
       - tracking_active
       - completed_total
       - stopped_total
+
       - completed_age24
       - completed_removed
       - stopped_low_quality
-      - low_quality_flagged (3h OR 6h ML flags)
+
+      - ml_3h_scored            (videos having a 3h low-quality score)
+      - ml_6h_scored            (videos having a 6h low-quality score)
+      - low_quality_flagged_3h  (is_low at 3h)
+      - low_quality_flagged_6h  (is_low at 6h)
+      - low_quality_flagged_any (is_low at 3h OR 6h)
+
+      - viral_likely            (viral_v1.likely == True / 1)
+      - viral_confirmed         (viral_v1.confirmed == True / 1)
     """
     return [
         {
@@ -142,8 +154,74 @@ def build_kpi_pipeline() -> list:
                     }
                 },
 
-                # ML flags: any video where 3h OR 6h model flagged is_low
-                "low_quality_flagged": {
+                # ---------- ML coverage & flags ----------
+
+                # Any numeric score at 3h
+                "ml_3h_scored": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$ne": [
+                                    "$ml_flags.low_quality_v1_3h.score",
+                                    None,
+                                ]
+                            },
+                            1,
+                            0,
+                        ]
+                    }
+                },
+
+                # Any numeric score at 6h
+                "ml_6h_scored": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$ne": [
+                                    "$ml_flags.low_quality_v3_6h.score",
+                                    None,
+                                ]
+                            },
+                            1,
+                            0,
+                        ]
+                    }
+                },
+
+                # Videos flagged low-quality at 3h
+                "low_quality_flagged_3h": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$or": [
+                                    {"$eq": ["$ml_flags.low_quality_v1_3h.is_low", True]},
+                                    {"$eq": ["$ml_flags.low_quality_v1_3h.is_low", 1]},
+                                ]
+                            },
+                            1,
+                            0,
+                        ]
+                    }
+                },
+
+                # Videos flagged low-quality at 6h
+                "low_quality_flagged_6h": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$or": [
+                                    {"$eq": ["$ml_flags.low_quality_v3_6h.is_low", True]},
+                                    {"$eq": ["$ml_flags.low_quality_v3_6h.is_low", 1]},
+                                ]
+                            },
+                            1,
+                            0,
+                        ]
+                    }
+                },
+
+                # Any low-quality flag at 3h OR 6h
+                "low_quality_flagged_any": {
                     "$sum": {
                         "$cond": [
                             {
@@ -152,6 +230,38 @@ def build_kpi_pipeline() -> list:
                                     {"$eq": ["$ml_flags.low_quality_v1_3h.is_low", 1]},
                                     {"$eq": ["$ml_flags.low_quality_v3_6h.is_low", True]},
                                     {"$eq": ["$ml_flags.low_quality_v3_6h.is_low", 1]},
+                                ]
+                            },
+                            1,
+                            0,
+                        ]
+                    }
+                },
+
+                # Viral: likely
+                "viral_likely": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$or": [
+                                    {"$eq": ["$ml_flags.viral_v1.likely", True]},
+                                    {"$eq": ["$ml_flags.viral_v1.likely", 1]},
+                                ]
+                            },
+                            1,
+                            0,
+                        ]
+                    }
+                },
+
+                # Viral: confirmed
+                "viral_confirmed": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$or": [
+                                    {"$eq": ["$ml_flags.viral_v1.confirmed", True]},
+                                    {"$eq": ["$ml_flags.viral_v1.confirmed", 1]},
                                 ]
                             },
                             1,
@@ -172,7 +282,15 @@ def build_kpi_pipeline() -> list:
                 "completed_age24": 1,
                 "completed_removed": 1,
                 "stopped_low_quality": 1,
-                "low_quality_flagged": 1,
+
+                "ml_3h_scored": 1,
+                "ml_6h_scored": 1,
+                "low_quality_flagged_3h": 1,
+                "low_quality_flagged_6h": 1,
+                "low_quality_flagged_any": 1,
+
+                "viral_likely": 1,
+                "viral_confirmed": 1,
             }
         },
     ]
@@ -195,7 +313,13 @@ def compute_kpis(videos_col: Collection) -> Dict[str, Any]:
             "completed_age24": 0,
             "completed_removed": 0,
             "stopped_low_quality": 0,
-            "low_quality_flagged": 0,
+            "ml_3h_scored": 0,
+            "ml_6h_scored": 0,
+            "low_quality_flagged_3h": 0,
+            "low_quality_flagged_6h": 0,
+            "low_quality_flagged_any": 0,
+            "viral_likely": 0,
+            "viral_confirmed": 0,
         }
 
     return result[0]
@@ -245,12 +369,18 @@ def main() -> int:
     kpis = compute_kpis(videos)
 
     logger.info(
-        "KPIs: videos=%s | channels=%s | tracking=%s | complete=%s | stopped=%s",
+        "KPIs: videos=%s | channels=%s | tracking=%s | complete=%s | stopped=%s | "
+        "ml3h_scored=%s | ml6h_scored=%s | low3h=%s | low6h=%s | viral_likely=%s",
         kpis["total_videos"],
         kpis["total_channels"],
         kpis["tracking_active"],
         kpis["completed_total"],
         kpis["stopped_total"],
+        kpis["ml_3h_scored"],
+        kpis["ml_6h_scored"],
+        kpis["low_quality_flagged_3h"],
+        kpis["low_quality_flagged_6h"],
+        kpis["viral_likely"],
     )
 
     save_snapshot(kpis_col, kpis)
