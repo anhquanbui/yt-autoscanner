@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 
 import streamlit as st
 import pandas as pd
+import datetime
 
 from config.db import get_db
 
@@ -263,14 +264,26 @@ st.markdown("---")
 
 # ---------------- Latest 200 Videos ----------------
 
+# ---------------- Latest 200 Videos ----------------
+
 st.subheader("📄 Latest 200 Videos")
 
-rows = get_recent_videos(limit=10)
+# Header + nút refresh
+header_left, header_right = st.columns([6, 1])
+with header_left:
+    st.caption("Newest videos by published_at (limit 200)")
+with header_right:
+    if st.button("🔄 Refresh", key="refresh_videos", use_container_width=True):
+        # clear cache của hàm get_recent_videos để lấy dữ liệu mới nhất
+        get_recent_videos.clear()
+
+# luôn gọi sau khi xử lý nút refresh
+rows = get_recent_videos(limit=200)
 
 if not rows:
     st.info("No video data found.")
 else:
-    # Header
+    # Header của danh sách
     h1, h2, h3, h4 = st.columns([2, 5, 3, 1])
     h1.markdown("**Video ID**")
     h2.markdown("**Title**")
@@ -279,7 +292,6 @@ else:
 
     details_container = st.container()
 
-    # danh sách video + nút View
     for idx, row in enumerate(rows):
         c1, c2, c3, c4 = st.columns([2, 5, 3, 1])
 
@@ -304,33 +316,174 @@ with details_container:
             tracking = doc.get("tracking", {}) or {}
             ml_flags = doc.get("ml_flags", {}) or {}
             source = doc.get("source", {}) or {}
+            snapshots = doc.get("stats_snapshots", []) or []
 
             low3 = (ml_flags.get("low_quality_v1_3h") or {})
             low6 = (ml_flags.get("low_quality_v3_6h") or {})
             viral = (ml_flags.get("viral_v1") or {})
 
-            # thời gian tracking
-            import datetime
+            # ===== thời gian tracking =====
             now = datetime.datetime.utcnow()
             started = tracking.get("started_at")
-            tracked_for = "—"
+            tracked_for = "-"
+            started_str = "-"
+
             if started:
                 try:
-                    started_dt = datetime.datetime.fromisoformat(started.replace("Z", "+00:00"))
+                    started_dt = datetime.datetime.fromisoformat(
+                        started.replace("Z", "+00:00")
+                    )
                     delta = now - started_dt
                     tracked_for = str(delta).split(".")[0]  # bỏ microseconds
-                except:
-                    pass
+                    started_str = started
+                except Exception:
+                    tracked_for = "n/a (invalid timestamp)"
+                    started_str = started
+            else:
+                # status complete nên không lưu started_at là bình thường
+                if tracking.get("status") == "complete":
+                    tracked_for = "n/a (completed; start time not stored)"
+                else:
+                    tracked_for = "n/a (not started yet)"
 
-            # region + query
-            region = source.get("regionCode", "—")
+            # ===== region + query =====
+            region = source.get("regionCode")
+            if not region:
+                region = "not recorded"
+
             query_used = (
                 source.get("query")
                 or source.get("query_raw")
                 or source.get("search_query")
-                or "—"
+            )
+            if not query_used:
+                query_used = "not recorded"
+
+            # ===== snapshot / trending =====
+            num_snaps = len(snapshots)
+            last_snap = snapshots[-1] if num_snaps >= 1 else None
+            prev_snap = snapshots[-2] if num_snaps >= 2 else None
+
+            def get_ts(s):
+                if not s:
+                    return None
+                ts = s.get("ts") or s.get("timestamp")
+                if not ts:
+                    return None
+                try:
+                    return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                except Exception:
+                    return None
+
+            def get_views(s):
+                if not s:
+                    return None
+                return (
+                    s.get("viewCount")
+                    or s.get("views")
+                    or s.get("statistics", {}).get("viewCount")
+                )
+
+            def get_likes(s):
+                if not s:
+                    return None
+                return (
+                    s.get("likeCount")
+                    or s.get("likes")
+                    or s.get("statistics", {}).get("likeCount")
+                )
+
+            last_ts = get_ts(last_snap)
+            prev_ts = get_ts(prev_snap)
+            last_views = get_views(last_snap)
+            last_likes = get_likes(last_snap)
+
+            view_delta = None
+            like_delta = None
+            view_per_hour = None
+            like_per_hour = None
+
+            if last_snap and prev_snap and last_ts and prev_ts:
+                dt_hours = (last_ts - prev_ts).total_seconds() / 3600.0
+                if dt_hours > 0:
+                    if last_views is not None and get_views(prev_snap) is not None:
+                        view_delta = last_views - get_views(prev_snap)
+                        view_per_hour = view_delta / dt_hours
+                    if last_likes is not None and get_likes(prev_snap) is not None:
+                        like_delta = last_likes - get_likes(prev_snap)
+                        like_per_hour = like_delta / dt_hours
+
+            def fmt_int(x):
+                return f"{int(x):,}" if isinstance(x, (int, float)) else "-"
+
+            def fmt_float(x):
+                return f"{x:.2f}" if isinstance(x, (int, float)) else "-"
+
+            def fmt_score(x):
+                return f"{x:.4f}" if isinstance(x, (int, float)) else "-"
+
+            # ==== Chuẩn bị chuỗi hiển thị "thông minh" ====
+            # last snapshot time
+            if last_ts:
+                last_ts_str = last_ts.isoformat()
+            elif num_snaps == 0:
+                last_ts_str = "no snapshots yet"
+            else:
+                last_ts_str = "-"
+
+            # likes hiển thị rõ hơn
+            if last_likes is None:
+                last_likes_str = "🔒 hidden / not available"
+            else:
+                last_likes_str = fmt_int(last_likes)
+
+            # delta & per-hour: nếu thiếu dữ liệu thì giải thích
+            if num_snaps < 2:
+                view_delta_str = "🛏 not enough snapshots"
+                like_delta_str = "🛏 not enough snapshots"
+                view_per_hour_str = "🛏 not enough snapshots"
+                like_per_hour_str = "🛏 not enough snapshots"
+            else:
+                view_delta_str = fmt_int(view_delta) if view_delta is not None else "-"
+                if like_delta is None and (last_likes is None or get_likes(prev_snap) is None):
+                    like_delta_str = "🔒 likes hidden / not available"
+                else:
+                    like_delta_str = fmt_int(like_delta)
+
+                view_per_hour_str = (
+                    fmt_float(view_per_hour) if view_per_hour is not None else "-"
+                )
+                if like_per_hour is None and (last_likes is None or get_likes(prev_snap) is None):
+                    like_per_hour_str = "🔒 likes hidden / not available"
+                else:
+                    like_per_hour_str = (
+                        fmt_float(like_per_hour) if like_per_hour is not None else "-"
+                    )
+
+            # low-quality scores: thông báo nếu chưa chấm
+            low3_score_str = (
+                fmt_score(low3.get("score"))
+                if low3.get("score") is not None
+                else "not scored yet"
+            )
+            low3_thr_str = (
+                fmt_score(low3.get("threshold"))
+                if low3.get("threshold") is not None
+                else "-"
             )
 
+            low6_score_str = (
+                fmt_score(low6.get("score"))
+                if low6.get("score") is not None
+                else "not scored yet"
+            )
+            low6_thr_str = (
+                fmt_score(low6.get("threshold"))
+                if low6.get("threshold") is not None
+                else "-"
+            )
+
+            # ===== render details =====
             st.markdown("---")
             st.subheader("🔍 Video details")
 
@@ -340,7 +493,7 @@ with details_container:
             st.markdown(f"**Channel:** {snippet.get('channelTitle') or '—'}")
             st.markdown(f"**Published at:** `{snippet.get('publishedAt', '—')}`")
 
-            # region + query
+            # region + query + tracking time
             st.markdown(f"**Region code:** `{region}`")
             st.markdown(f"**Query used:** `{query_used}`")
             st.markdown(f"**Tracked for:** `{tracked_for}`")
@@ -353,19 +506,16 @@ with details_container:
                 st.markdown(
                     f"- Status: `{tracking.get('status', 'unknown')}`\n"
                     f"- Stop reason: `{tracking.get('stop_reason', '—')}`\n"
-                    f"- Started at: `{tracking.get('started_at', '—')}`\n"
+                    f"- Started at: `{started_str}`\n"
                     f"- Tracked for: `{tracked_for}`"
                 )
-
-            def fmt_score(x):
-                return f"{x:.4f}" if isinstance(x, (int, float)) else "—"
 
             # LowQ 3h
             with col_b:
                 st.markdown("**Low-quality 3h**")
                 st.markdown(
-                    f"- Score: `{fmt_score(low3.get('score'))}`\n"
-                    f"- Threshold: `{fmt_score(low3.get('threshold'))}`\n"
+                    f"- Score: `{low3_score_str}`\n"
+                    f"- Threshold: `{low3_thr_str}`\n"
                     f"- is_low: `{low3.get('is_low', '—')}`"
                 )
 
@@ -373,8 +523,8 @@ with details_container:
             with col_c:
                 st.markdown("**Low-quality 6h**")
                 st.markdown(
-                    f"- Score: `{fmt_score(low6.get('score'))}`\n"
-                    f"- Threshold: `{fmt_score(low6.get('threshold'))}`\n"
+                    f"- Score: `{low6_score_str}`\n"
+                    f"- Threshold: `{low6_thr_str}`\n"
                     f"- is_low: `{low6.get('is_low', '—')}`"
                 )
 
@@ -386,3 +536,15 @@ with details_container:
                 f"- Confirmed: `{viral.get('confirmed', '—')}`"
             )
 
+            # Engagement snapshots & trend
+            st.markdown("**📈 Engagement snapshots**")
+            st.markdown(
+                f"- Total snapshots: `{num_snaps}`\n"
+                f"- Last snapshot time (YouTube API): `{last_ts_str}`\n"
+                f"- Last views: `{fmt_int(last_views)}`\n"
+                f"- Last likes: `{last_likes_str}`\n"
+                f"- Δ Views (last two snaps): `{view_delta_str}`\n"
+                f"- Δ Likes (last two snaps): `{like_delta_str}`\n"
+                f"- Views per hour (last interval): `{view_per_hour_str}`\n"
+                f"- Likes per hour (last interval): `{like_per_hour_str}`"
+            )
