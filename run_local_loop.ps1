@@ -18,8 +18,8 @@
 # =======================
 # 🔁 Intervals (seconds)
 # =======================
-$DiscoverIntervalSeconds = 300      # discover_once every 5 minutes
-$TrackIntervalSeconds    = 15       # track_once every 15 seconds
+$DiscoverIntervalSeconds = 30      # discover_once every 5 minutes
+$TrackIntervalSeconds    = 10       # track_once every 15 seconds
 
 $LowQ3hIntervalSeconds   = 900      # low_quality_3h_worker every 15 minutes
 $LowQ6hIntervalSeconds   = 3600     # low_quality_6h_worker every 60 minutes

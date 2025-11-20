@@ -1,25 +1,55 @@
-# dashboard/pages/01_Overview.py
-
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 from datetime import datetime, timezone
 
-from components.db import get_db
+from config.db import get_db, _resolve_db_name
 
 
-# =============== GLOBAL LAYOUT FIX ===============
-# Keep the main container centered & stable across refreshes
+# =============== GLOBAL LAYOUT & THEME ===============
 st.markdown(
     """
 <style>
+/* App background */
+[data-testid="stAppViewContainer"] {
+    background: #f3f4f6;
+}
+
+/* Center main content + nicer paddings */
 .main .block-container {
     max-width: 1200px;
-    padding-top: 2rem;
+    padding-top: 2.2rem;
     padding-left: 2.5rem;
     padding-right: 2.5rem;
     margin-left: auto;
     margin-right: auto;
+}
+
+/* Headings */
+h1 {
+    font-weight: 700 !important;
+    letter-spacing: -0.02em;
+}
+h2, h3 {
+    font-weight: 600 !important;
+}
+
+/* Horizontal rule spacing */
+.block-container hr {
+    margin-top: 1.7rem;
+    margin-bottom: 1.7rem;
+}
+
+/* Dataframe “card” look */
+[data-testid="stDataFrame"] {
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 2px 5px rgba(15,23,42,0.04);
+    background: #ffffff;
+}
+
+/* Small caption tweak */
+.block-container p, .block-container .stMarkdown {
+    font-size: 0.95rem;
 }
 </style>
     """,
@@ -33,27 +63,10 @@ st.markdown(
 def load_kpis() -> dict:
     """
     Load latest KPI snapshot from `dashboard_kpis`.
-
-    This assumes a background worker (compute_dashboard_kpis)
-    periodically aggregates KPIs from `videos` and inserts docs like:
-
-      {
-        total_videos,
-        total_channels,
-        tracking_active,
-        completed_total,
-        stopped_total,
-        completed_age24,
-        completed_removed,
-        stopped_low_quality,
-        low_quality_flagged,
-        ts: <datetime>
-      }
     """
     db = get_db()
     doc = db.dashboard_kpis.find_one(sort=[("ts", -1)])
 
-    # Base structure with safe defaults
     base = {
         "total_videos": 0,
         "total_channels": 0,
@@ -70,7 +83,6 @@ def load_kpis() -> dict:
     if not doc:
         return base
 
-    # Copy numeric fields defensively
     for key in [
         "total_videos",
         "total_channels",
@@ -80,7 +92,6 @@ def load_kpis() -> dict:
         "completed_age24",
         "completed_removed",
         "stopped_low_quality",
-        "low_quality_flagged",
     ]:
         value = doc.get(key, 0)
         try:
@@ -88,10 +99,8 @@ def load_kpis() -> dict:
         except Exception:
             base[key] = 0
 
-    # Snapshot timestamp (string for display)
     ts = doc.get("ts")
     if isinstance(ts, datetime):
-        # Normalize to UTC string for display
         ts = ts.astimezone(timezone.utc)
         base["snapshot_ts"] = ts.strftime("%Y-%m-%d %H:%M UTC")
     elif ts is not None:
@@ -103,8 +112,7 @@ def load_kpis() -> dict:
 @st.cache_data(ttl=60)
 def load_worker_last_runs():
     """
-    Read latest run timestamps for each worker from `worker_runs`
-    and return humanized "Last run" strings with friendly names.
+    Read latest run timestamps for each worker from `worker_runs`.
     """
     db = get_db()
 
@@ -124,7 +132,6 @@ def load_worker_last_runs():
             ts = doc["last_run"]
 
             if isinstance(ts, datetime):
-                # Ensure ts is timezone-aware (assume UTC if naive)
                 if ts.tzinfo is None:
                     ts = ts.replace(tzinfo=timezone.utc)
 
@@ -141,7 +148,6 @@ def load_worker_last_runs():
                     days = int(sec // 86400)
                     pretty = f"{days}d ago"
             else:
-                # Fallback if last_run is stored as string or other type
                 pretty = str(ts)
         else:
             pretty = "No data"
@@ -151,186 +157,149 @@ def load_worker_last_runs():
     return results
 
 
-# =============== STYLE RENDERERS ===============
+# =============== SIMPLE METRIC STRIP ===============
 
-def render_style_1(kpis: dict):
-    """Simple metrics using st.metric."""
+def render_simple_metrics(kpis: dict):
+    """
+    Render 4 metrics as cards, including percentage of total videos
+    and a small progress bar in each card.
+    """
+    total_videos = kpis.get("total_videos", 0)
+
+    def pct_value(value: int) -> float:
+        if total_videos == 0:
+            return 0.0
+        return value / total_videos * 100.0
+
+    def pct_str(value: int) -> str:
+        return f"{pct_value(value):.2f}%"
+
+    card_css = """
+    <style>
+    .metric-card {
+        background: #ffffff;
+        padding: 18px 22px;
+        border-radius: 14px;
+        border: 1px solid #e5e7eb;
+        box-shadow: 0 3px 8px rgba(15,23,42,0.05);
+        transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        min-height: 120px;
+    }
+    .metric-card:hover {
+        box-shadow: 0 6px 16px rgba(15,23,42,0.12);
+        transform: translateY(-1px);
+        border-color: #c7d2fe;
+    }
+    .metric-title {
+        font-size: 0.86rem;
+        font-weight: 600;
+        color: #6b7280;
+        margin-bottom: 6px;
+    }
+    .metric-value {
+        font-size: 1.45rem;
+        font-weight: 700;
+        color: #111827;
+    }
+    .metric-progress-outer {
+        margin-top: 6px;
+        width: 100%;
+        height: 6px;
+        border-radius: 999px;
+        background: #e5e7eb;
+        overflow: hidden;
+    }
+    .metric-progress-inner {
+        height: 100%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #4f46e5, #3b82f6);
+        transition: width 0.3s ease;
+    }
+    .metric-percentage {
+        font-size: 0.9rem;
+        color: #6b7280;
+        margin-top: 4px;
+    }
+    </style>
+    """
+    st.markdown(card_css, unsafe_allow_html=True)
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Tracking active", f"{kpis['tracking_active']:,}")
-    c2.metric("Completed (24h reached)", f"{kpis['completed_age24']:,}")
-    c3.metric("Removed / Unavailable", f"{kpis['completed_removed']:,}")
-    c4.metric("Stopped (low quality)", f"{kpis['stopped_low_quality']:,}")
 
-
-def render_style_2(kpis: dict):
-    """Gradient cards style."""
-    st.markdown(
-        """
-<style>
-.grad-card {
-    border-radius: 14px;
-    padding: 16px 18px;
-    color: #ffffff;
-    box-shadow: 0 10px 25px rgba(15, 23, 42, 0.25);
-}
-.grad-1 {
-    background: linear-gradient(135deg, #2563eb, #22c55e);
-}
-.grad-2 {
-    background: linear-gradient(135deg, #22c55e, #facc15);
-}
-.grad-3 {
-    background: linear-gradient(135deg, #f97316, #facc15);
-}
-.grad-4 {
-    background: linear-gradient(135deg, #ef4444, #ec4899);
-}
-.grad-title {
-    font-size: 0.9rem;
-    font-weight: 600;
-    opacity: 0.9;
-}
-.grad-value {
-    margin-top: 6px;
-    font-size: 2.3rem;
-    font-weight: 650;
-}
-.grad-sub {
-    font-size: 0.8rem;
-    opacity: 0.9;
-    margin-top: 4px;
-}
-</style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    c1, c2, c3, c4 = st.columns(4)
-
+    # ----- CARD 1 -----
+    v1 = kpis["tracking_active"]
     with c1:
         st.markdown(
             f"""
-            <div class="grad-card grad-1">
-                <div class="grad-title">Tracking Active</div>
-                <div class="grad-value">{kpis['tracking_active']:,}</div>
-                <div class="grad-sub">Videos currently being polled</div>
+            <div class="metric-card">
+                <div class="metric-title">Tracking active</div>
+                <div class="metric-value">{v1:,}</div>
+                <div class="metric-progress-outer">
+                    <div class="metric-progress-inner" style="width: {pct_value(v1):.2f}%;"></div>
+                </div>
+                <div class="metric-percentage">
+                    {pct_str(v1)} of all videos
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+    # ----- CARD 2 -----
+    v2 = kpis["completed_age24"]
     with c2:
         st.markdown(
             f"""
-            <div class="grad-card grad-2">
-                <div class="grad-title">Completed (24h reached)</div>
-                <div class="grad-value">{kpis['completed_age24']:,}</div>
-                <div class="grad-sub">Finished their 24h cycle</div>
+            <div class="metric-card">
+                <div class="metric-title">Completed (24h reached)</div>
+                <div class="metric-value">{v2:,}</div>
+                <div class="metric-progress-outer">
+                    <div class="metric-progress-inner" style="width: {pct_value(v2):.2f}%;"></div>
+                </div>
+                <div class="metric-percentage">
+                    {pct_str(v2)} of all videos
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+    # ----- CARD 3 -----
+    v3 = kpis["completed_removed"]
     with c3:
         st.markdown(
             f"""
-            <div class="grad-card grad-3">
-                <div class="grad-title">Removed / Unavailable</div>
-                <div class="grad-value">{kpis['completed_removed']:,}</div>
-                <div class="grad-sub">Video removed/deleted/not found</div>
+            <div class="metric-card">
+                <div class="metric-title">Removed / Unavailable</div>
+                <div class="metric-value">{v3:,}</div>
+                <div class="metric-progress-outer">
+                    <div class="metric-progress-inner" style="width: {pct_value(v3):.2f}%;"></div>
+                </div>
+                <div class="metric-percentage">
+                    {pct_str(v3)} of all videos
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+    # ----- CARD 4 -----
+    v4 = kpis["stopped_low_quality"]
     with c4:
         st.markdown(
             f"""
-            <div class="grad-card grad-4">
-                <div class="grad-title">Stopped (Low Quality)</div>
-                <div class="grad-value">{kpis['stopped_low_quality']:,}</div>
-                <div class="grad-sub">Filtered early by ML</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
-def render_style_3_glass(kpis: dict):
-    """Glassmorphism cards (Theme Style 3)."""
-    st.markdown(
-        """
-<style>
-.glass-card {
-    background: rgba(255, 255, 255, 0.12);
-    border-radius: 18px;
-    padding: 16px 20px;
-    border: 1px solid rgba(255,255,255,0.4);
-    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.18);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-}
-.glass-title {
-    font-weight: 600;
-    font-size: 0.95rem;
-    color: #111827;
-    margin-bottom: 4px;
-}
-.glass-value {
-    font-size: 2.3rem;
-    font-weight: 650;
-    margin: 0;
-    color: #111827;
-}
-.glass-sub {
-    font-size: 0.8rem;
-    color: #6b7280;
-    margin-top: 4px;
-}
-</style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    c1, c2, c3, c4 = st.columns(4)
-
-    with c1:
-        st.markdown(
-            f"""
-            <div class="glass-card">
-                <div class="glass-title">🔄 Tracking Active</div>
-                <p class="glass-value">{kpis['tracking_active']:,}</p>
-                <div class="glass-sub">Videos currently being polled</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with c2:
-        st.markdown(
-            f"""
-            <div class="glass-card">
-                <div class="glass-title">✅ Completed (24h reached)</div>
-                <p class="glass-value">{kpis['completed_age24']:,}</p>
-                <div class="glass-sub">Finished their 24h tracking lifecycle</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with c3:
-        st.markdown(
-            f"""
-            <div class="glass-card">
-                <div class="glass-title">📤 Removed / Unavailable</div>
-                <p class="glass-value">{kpis['completed_removed']:,}</p>
-                <div class="glass-sub">Removed, deleted or not found</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with c4:
-        st.markdown(
-            f"""
-            <div class="glass-card">
-                <div class="glass-title">⛔ Stopped (Low Quality)</div>
-                <p class="glass-value">{kpis['stopped_low_quality']:,}</p>
-                <div class="glass-sub">Stopped early by low-quality filter</div>
+            <div class="metric-card">
+                <div class="metric-title">Stopped (low quality)</div>
+                <div class="metric-value">{v4:,}</div>
+                <div class="metric-progress-outer">
+                    <div class="metric-progress-inner" style="width: {pct_value(v4):.2f}%;"></div>
+                </div>
+                <div class="metric-percentage">
+                    {pct_str(v4)} of all videos
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -338,19 +307,18 @@ def render_style_3_glass(kpis: dict):
 
 
 def compute_system_status(kpis: dict):
-    """Return (label, description, color_hex) for system status pill."""
     total_videos = kpis.get("total_videos", 0)
     tracking_active = kpis.get("tracking_active", 0)
     completed = kpis.get("completed_total", 0)
     stopped = kpis.get("stopped_total", 0)
 
     if total_videos == 0:
-        return ("Idle", "No videos discovered yet", "#9ca3af")  # gray
+        return ("Idle", "No videos discovered yet", "#9ca3af")
     if tracking_active > 0:
-        return ("Healthy", "Tracking is active and running", "#22c55e")  # green
+        return ("Healthy", "Tracking is active and running", "#22c55e")
     if completed + stopped > 0:
-        return ("Completed batch", "No active tracking, all videos finished", "#3b82f6")  # blue
-    return ("Idle", "Waiting for new jobs", "#f59e0b")  # amber
+        return ("Completed batch", "No active tracking, all videos finished", "#3b82f6")
+    return ("Idle", "Waiting for new jobs", "#f59e0b")
 
 
 # =============== PAGE BODY ===============
@@ -358,7 +326,6 @@ def compute_system_status(kpis: dict):
 st.title("📊 YouTube AutoScanner — Overview")
 st.subheader("📌 System KPIs")
 
-# Refresh button
 ref_col1, ref_col2 = st.columns([1, 3])
 with ref_col1:
     if st.button("🔄 Refresh now"):
@@ -372,37 +339,20 @@ except Exception as e:
     st.error(f"❌ Error loading KPIs: {e}")
     st.stop()
 
-# Show snapshot timestamp if available
 snapshot_ts = kpis.get("snapshot_ts")
 if snapshot_ts:
     st.caption(f"Last KPI snapshot: {snapshot_ts}")
 
-# Top-level basic KPIs
 top1, top2 = st.columns(2)
 top1.metric("Total Videos", f"{kpis['total_videos']:,}")
 top2.metric("Total Channels", f"{kpis['total_channels']:,}")
 
 st.markdown("---")
 
-# === Overview page settings in sidebar ===
-with st.sidebar:
-    st.markdown("#### ⚙️ Overview page settings")
-    style_choice = st.radio(
-        "Theme style",
-        ["Theme Style 1", "Theme Style 2", "Theme Style 3"],
-        index=2,  # default: Theme Style 3 (Glass)
-    )
-
 st.markdown("### 🎯 Tracking & Completion Overview")
+render_simple_metrics(kpis)
 
-if style_choice.startswith("Theme Style 1"):
-    render_style_1(kpis)
-elif style_choice.startswith("Theme Style 2"):
-    render_style_2(kpis)
-else:
-    render_style_3_glass(kpis)
-
-st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
+st.markdown("<div style='margin-top: 1.6rem;'></div>", unsafe_allow_html=True)
 
 # === Tracking progress bar ===
 st.markdown("### 📈 Tracking Progress")
@@ -421,88 +371,9 @@ if tracking_total > 0:
 else:
     st.info("No videos in the tracking pipeline yet.")
 
-st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
+st.markdown("<div style='margin-top: 1.8rem;'></div>", unsafe_allow_html=True)
 
-# === Outcome breakdown (donut chart) ===
-st.markdown("### 🥧 Outcome Breakdown (24h window)")
-
-outcome_df_full = pd.DataFrame(
-    {
-        "Reason": [
-            "Natural (24h reached)",
-            "Removed / Unavailable",
-            "Stopped early (Low quality)",
-        ],
-        "Count": [
-            kpis["completed_age24"],
-            kpis["completed_removed"],
-            kpis["stopped_low_quality"],
-        ],
-    }
-)
-
-outcome_df_pie = outcome_df_full[outcome_df_full["Count"] > 0]
-outcome_total = (
-    int(outcome_df_full["Count"].sum()) if not outcome_df_full.empty else 0
-)
-
-if outcome_total == 0 or outcome_df_pie.empty:
-    st.info("No completed or stopped videos yet — keep tracking to see the breakdown.")
-else:
-    # Pie chart theme based on selected Theme Style
-    if style_choice.startswith("Theme Style 1"):
-        template = "plotly_white"
-        colors = px.colors.sequential.Blues
-    elif style_choice.startswith("Theme Style 2"):
-        template = "plotly_white"
-        colors = ["#2563eb", "#22c55e", "#facc15", "#ef4444"]
-    else:  # Theme Style 3 (Glass) – soft pastels
-        template = "plotly_white"
-        colors = px.colors.qualitative.Pastel
-
-    fig_completed = px.pie(
-        outcome_df_pie,
-        names="Reason",
-        values="Count",
-        hole=0.4,
-        title="Distribution of outcomes by stop reason",
-        color_discrete_sequence=colors,
-    )
-    fig_completed.update_layout(template=template)
-    fig_completed.update_traces(
-        textinfo="value+percent",
-        hovertemplate="%{label}<br>%{value} videos<br>%{percent}",
-    )
-    st.plotly_chart(fig_completed, use_container_width=True)
-
-# Outcome summary (always show all three reasons)
-st.markdown("#### Outcome summary")
-for _, row in outcome_df_full.iterrows():
-    st.markdown(f"- **{row['Reason']}**: `{int(row['Count']):,}` video(s)")
-
-st.markdown("---")
-
-# === Low-quality filter impact ===
-st.markdown("### 🧠 Low-quality Filter Impact")
-
-finished_videos = kpis["completed_total"] + kpis["stopped_total"]
-pct_low_of_finished = (
-    (kpis["stopped_low_quality"] / finished_videos * 100.0)
-    if finished_videos > 0
-    else 0.0
-)
-pct_flagged_of_all = (
-    (kpis["low_quality_flagged"] / kpis["total_videos"] * 100.0)
-    if kpis["total_videos"] > 0
-    else 0.0
-)
-
-c1, c2, c3 = st.columns(3)
-c1.metric("Stopped early (low quality)", f"{kpis['stopped_low_quality']:,}")
-c2.metric("% of finished videos", f"{pct_low_of_finished:.1f}%")
-c3.metric("% of all videos flagged", f"{pct_flagged_of_all:.1f}%")
-
-st.markdown("---")
+# (Outcome summary section đã được bỏ theo yêu cầu)
 
 # === System status & worker activity ===
 st.markdown("### 💡 System Status & Worker Activity")
@@ -518,11 +389,11 @@ st.markdown(
     border-radius:999px;
     background:{status_color}1A;
     border:1px solid {status_color};
-    margin-bottom:0.3rem;
+    margin-bottom:0.7rem;
 ">
     <span style="width:10px;height:10px;border-radius:999px;background:{status_color};margin-right:8px;"></span>
     <span style="font-weight:600;color:#111827;margin-right:6px;">{status_label}</span>
-    <span style="font-size:0.85rem;color:#4b5563;">{status_desc}</span>
+    <span style="font-size:0.86rem;color:#4b5563;">{status_desc}</span>
 </div>
 """,
     unsafe_allow_html=True,
@@ -535,5 +406,4 @@ df_workers = pd.DataFrame(worker_rows)
 st.dataframe(df_workers, hide_index=True, use_container_width=True)
 
 st.markdown("---")
-
 st.caption("YouTube AutoScanner — Overview Dashboard")

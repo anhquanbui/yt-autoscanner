@@ -1,4 +1,16 @@
-# dashboard/app.py
+# ============================
+# Bootstrap Python path (add project root so `config` is importable)
+# ============================
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]  # .../yt-autoscanner
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# ============================
+# Streamlit app
+# ============================
 import streamlit as st
 
 st.set_page_config(
