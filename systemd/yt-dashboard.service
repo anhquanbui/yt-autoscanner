@@ -1,0 +1,25 @@
+[Unit]
+Description=YT Autoscanner Streamlit Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=ytscan
+WorkingDirectory=/home/ytscan/yt-autoscanner
+
+# Chạy Streamlit trong venv, expose ra ngoài VPS
+ExecStart=/home/ytscan/yt-autoscanner/.venv/bin/streamlit run dashboard/app.py \
+    --server.port=8501 \
+    --server.address=0.0.0.0 \
+    --server.headless=true
+
+Restart=on-failure
+RestartSec=5
+
+# log → journalctl
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=yt-dashboard
+
+[Install]
+WantedBy=multi-user.target

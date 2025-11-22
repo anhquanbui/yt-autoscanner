@@ -657,8 +657,8 @@ def build_query(
 
     age_diff_expr: Dict[str, Any] = {
         "$dateDiff": {
-            "startDate": "$snippet.publishedAt",
-            "endDate": "$latest_stats_ts",
+            "startDate": {"$toDate": "$snippet.publishedAt"},
+            "endDate": {"$toDate": "$latest_stats_ts"},
             "unit": "hour",
         }
     }

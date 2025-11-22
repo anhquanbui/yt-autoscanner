@@ -2,6 +2,13 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timezone
 
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]  # .../yt-autoscanner
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from config.db import get_db, _resolve_db_name
 
 

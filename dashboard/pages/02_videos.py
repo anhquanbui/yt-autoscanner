@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Streamlit page: 02_Videos (minimal KPI view)
+Streamlit page: 02_Videos (status overview)
 
 - Total Videos / Channels / Tracking Active
 - Tracking Status (Completed breakdown + Stopped low-quality)
 - Low-quality ML Models (3h / 6h) — flagged counts
-- Latest 200 videos (video_id, title, channel)
+- Random 20 videos (video_id, title, channel, status + View)
 """
 
 from __future__ import annotations
@@ -16,7 +16,15 @@ import streamlit as st
 import pandas as pd
 import datetime
 
-from config.db import get_db
+import sys
+from pathlib import Path
+
+# Go from .../dashboard/pages/02_videos.py -> .../yt-autoscanner
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from config.db import get_db  # _resolve_db_name không dùng nên bỏ
 
 
 # ======================================================
@@ -96,36 +104,55 @@ def stat_card(
     )
 
 
-@st.cache_data(ttl=30)
+def format_status_badge(status: str | None, stop_reason: str | None) -> str:
+    """Emoji + text cho trạng thái tracking."""
+    if status == "tracking":
+        return "🟢 tracking"
+    if status == "complete":
+        return "✅ complete"
+    if status == "stopped":
+        if stop_reason and stop_reason.startswith("ml.low_quality"):
+            return "⛔ stopped (low-quality)"
+        elif stop_reason:
+            return f"⛔ stopped ({stop_reason})"
+        else:
+            return "⛔ stopped"
+    if status:
+        return f"⚪ {status}"
+    return "⚪ unknown"
+
+
 def get_latest_kpis() -> Dict[str, Any] | None:
     """Latest snapshot from dashboard_kpis."""
     return kpis_col.find_one(sort=[("_id", -1)])
 
 
-@st.cache_data(ttl=30)
-def get_recent_videos(limit: int = 200) -> List[Dict[str, Any]]:
-    """Latest N videos for table (id, title, channel)."""
-    cursor = (
-        videos_col.find(
-            {},
-            {
+def get_random_videos(limit: int = 20) -> List[Dict[str, Any]]:
+    """Random N videos cho bảng bên dưới."""
+    pipeline = [
+        {"$sample": {"size": limit}},
+        {
+            "$project": {
                 "_id": 1,
                 "snippet.title": 1,
                 "snippet.channelTitle": 1,
-            },
-        )
-        .sort("published_at", -1)
-        .limit(limit)
-    )
+                "tracking.status": 1,
+                "tracking.stop_reason": 1,
+            }
+        },
+    ]
 
     rows: List[Dict[str, Any]] = []
-    for doc in cursor:
+    for doc in videos_col.aggregate(pipeline):
         snippet = doc.get("snippet", {}) or {}
+        tracking = doc.get("tracking", {}) or {}
         rows.append(
             {
                 "video_id": doc.get("_id"),
                 "title": snippet.get("title"),
                 "channel": snippet.get("channelTitle"),
+                "status": tracking.get("status"),
+                "stop_reason": tracking.get("stop_reason"),
             }
         )
 
@@ -153,7 +180,7 @@ completed_removed = int(k.get("completed_removed", 0))
 
 stopped_low_quality = int(k.get("stopped_low_quality", 0))
 
-# ML metrics (may be 0 if worker version cũ)
+# ML metrics
 ml_3h_scored = int(k.get("ml_3h_scored", 0))
 ml_6h_scored = int(k.get("ml_6h_scored", 0))
 lowq_3h_flag = int(k.get("low_quality_flagged_3h", 0))
@@ -262,47 +289,47 @@ with m2:
 
 st.markdown("---")
 
-# ---------------- Latest 200 Videos ----------------
+# ---------------- Random 20 Videos ----------------
 
-# ---------------- Latest 200 Videos ----------------
+st.subheader("📄 Random 20 Videos (status sample)")
 
-st.subheader("📄 Latest 200 Videos")
-
-# Header + nút refresh
 header_left, header_right = st.columns([6, 1])
 with header_left:
-    st.caption("Newest videos by published_at (limit 200)")
+    st.caption("Random sample of 20 videos across the DB — good to spot-check tracking states.")
 with header_right:
-    if st.button("🔄 Refresh", key="refresh_videos", use_container_width=True):
-        # clear cache của hàm get_recent_videos để lấy dữ liệu mới nhất
-        get_recent_videos.clear()
+    if st.button("🎲 Shuffle", key="shuffle_videos", use_container_width=True):
+        st.experimental_rerun()
 
-# luôn gọi sau khi xử lý nút refresh
-rows = get_recent_videos(limit=200)
+# container cho phần details (luôn tồn tại, kể cả khi không có rows)
+details_container = st.container()
+
+rows = get_random_videos(limit=20)
 
 if not rows:
     st.info("No video data found.")
 else:
-    # Header của danh sách
-    h1, h2, h3, h4 = st.columns([2, 5, 3, 1])
+    # Header của danh sách: ID | Title | Channel | Status | Action
+    h1, h2, h3, h4, h5 = st.columns([2, 5, 3, 2, 1])
     h1.markdown("**Video ID**")
     h2.markdown("**Title**")
     h3.markdown("**Channel**")
-    h4.markdown("**Action**")
-
-    details_container = st.container()
+    h4.markdown("**Status**")
+    h5.markdown("**Action**")
 
     for idx, row in enumerate(rows):
-        c1, c2, c3, c4 = st.columns([2, 5, 3, 1])
+        c1, c2, c3, c4, c5 = st.columns([2, 5, 3, 2, 1])
 
         c1.code(row["video_id"], language=None)
-        c2.write(row["title"])
-        c3.write(row["channel"])
+        c2.write(row["title"] or "")
+        c3.write(row["channel"] or "—")
 
-        if c4.button("View", key=f"view_{idx}"):
+        status_badge = format_status_badge(row.get("status"), row.get("stop_reason"))
+        c4.markdown(status_badge)
+
+        if c5.button("View", key=f"view_{idx}"):
             st.session_state["selected_video_id"] = row["video_id"]
 
-# khối hiển thị chi tiết gọn
+# --------- khối hiển thị chi tiết gọn ---------
 with details_container:
     selected_id = st.session_state.get("selected_video_id")
     if not selected_id:
@@ -334,30 +361,25 @@ with details_container:
                         started.replace("Z", "+00:00")
                     )
                     delta = now - started_dt
-                    tracked_for = str(delta).split(".")[0]  # bỏ microseconds
+                    tracked_for = str(delta).split(".")[0]
                     started_str = started
                 except Exception:
                     tracked_for = "n/a (invalid timestamp)"
                     started_str = started
             else:
-                # status complete nên không lưu started_at là bình thường
                 if tracking.get("status") == "complete":
                     tracked_for = "n/a (completed; start time not stored)"
                 else:
                     tracked_for = "n/a (not started yet)"
 
             # ===== region + query =====
-            region = source.get("regionCode")
-            if not region:
-                region = "not recorded"
-
+            region = source.get("regionCode") or "not recorded"
             query_used = (
                 source.get("query")
                 or source.get("query_raw")
                 or source.get("search_query")
+                or "not recorded"
             )
-            if not query_used:
-                query_used = "not recorded"
 
             # ===== snapshot / trending =====
             num_snaps = len(snapshots)
@@ -422,7 +444,6 @@ with details_container:
             def fmt_score(x):
                 return f"{x:.4f}" if isinstance(x, (int, float)) else "-"
 
-            # ==== Chuẩn bị chuỗi hiển thị "thông minh" ====
             # last snapshot time
             if last_ts:
                 last_ts_str = last_ts.isoformat()
@@ -437,7 +458,7 @@ with details_container:
             else:
                 last_likes_str = fmt_int(last_likes)
 
-            # delta & per-hour: nếu thiếu dữ liệu thì giải thích
+            # delta & per-hour
             if num_snaps < 2:
                 view_delta_str = "🛏 not enough snapshots"
                 like_delta_str = "🛏 not enough snapshots"
@@ -460,7 +481,6 @@ with details_container:
                         fmt_float(like_per_hour) if like_per_hour is not None else "-"
                     )
 
-            # low-quality scores: thông báo nếu chưa chấm
             low3_score_str = (
                 fmt_score(low3.get("score"))
                 if low3.get("score") is not None
@@ -471,7 +491,6 @@ with details_container:
                 if low3.get("threshold") is not None
                 else "-"
             )
-
             low6_score_str = (
                 fmt_score(low6.get("score"))
                 if low6.get("score") is not None
@@ -487,20 +506,16 @@ with details_container:
             st.markdown("---")
             st.subheader("🔍 Video details")
 
-            # Info top
             st.markdown(f"**ID:** `{selected_id}`")
             st.markdown(f"**Title:** {snippet.get('title') or '—'}")
             st.markdown(f"**Channel:** {snippet.get('channelTitle') or '—'}")
             st.markdown(f"**Published at:** `{snippet.get('publishedAt', '—')}`")
-
-            # region + query + tracking time
             st.markdown(f"**Region code:** `{region}`")
             st.markdown(f"**Query used:** `{query_used}`")
             st.markdown(f"**Tracked for:** `{tracked_for}`")
 
             col_a, col_b, col_c = st.columns(3)
 
-            # Tracking info
             with col_a:
                 st.markdown("**Tracking**")
                 st.markdown(
@@ -510,7 +525,6 @@ with details_container:
                     f"- Tracked for: `{tracked_for}`"
                 )
 
-            # LowQ 3h
             with col_b:
                 st.markdown("**Low-quality 3h**")
                 st.markdown(
@@ -519,7 +533,6 @@ with details_container:
                     f"- is_low: `{low3.get('is_low', '—')}`"
                 )
 
-            # LowQ 6h
             with col_c:
                 st.markdown("**Low-quality 6h**")
                 st.markdown(
@@ -528,7 +541,6 @@ with details_container:
                     f"- is_low: `{low6.get('is_low', '—')}`"
                 )
 
-            # Viral
             st.markdown("**Viral v1**")
             st.markdown(
                 f"- Score: `{fmt_score(viral.get('score'))}`\n"
@@ -536,7 +548,6 @@ with details_container:
                 f"- Confirmed: `{viral.get('confirmed', '—')}`"
             )
 
-            # Engagement snapshots & trend
             st.markdown("**📈 Engagement snapshots**")
             st.markdown(
                 f"- Total snapshots: `{num_snaps}`\n"
