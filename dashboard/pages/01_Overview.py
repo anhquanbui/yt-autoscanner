@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timezone
-
+import subprocess
 import sys
 from pathlib import Path
 
@@ -12,16 +12,49 @@ if str(ROOT) not in sys.path:
 from config.db import get_db, _resolve_db_name
 
 
+# =============== WORKER DEFINITIONS ===============
+# key = name stored in Mongo.worker_runs
+# label = human-readable label on dashboard
+# service = systemd service name on VPS (without ".service")
+# NOTE: một số worker chia sẻ cùng 1 service (vd: 3 stage viral đều dùng yt-viral).
+# Với các worker không có service riêng (service=None), UI sẽ không hiển thị nút Start/Stop.
+WORKERS = [
+    ("discover_once", "Discover new videos", "yt-auto-discover"),
+    ("track_once", "Track stats & snapshots", "yt-auto-track"),
+    ("low_quality_autoflag_3h", "Low-quality scoring (3h)", "yt-lowq-3h"),
+    ("low_quality_autoflag_6h", "Low-quality scoring (6h)", "yt-lowq-6h"),
+    ("compute_dashboard_kpis", "Dashboard KPI snapshot", "yt-kpis"),
+
+    # --- Viral pipeline ---
+    ("viral_scoring", "Viral scoring", "yt-viral"),
+    ("viral_finalize", "Viral finalize (≥24h)", "yt-viral-finalize"),
+]
+
+# =============== OPTIONAL: RUN-ONCE COMMANDS ===============
+# Map worker key -> shell command to run once (using current Python env).
+RUN_ONCE_COMMANDS = {
+    "discover_once": f"{sys.executable} -m tools.discover_once",
+    "track_once": f"{sys.executable} -m tools.track_once",
+    "low_quality_autoflag_3h": f"{sys.executable} -m worker.low_quality_3h_worker --only-missing",
+    "low_quality_autoflag_6h": f"{sys.executable} -m worker.low_quality_6h_worker --only-missing",
+    "compute_dashboard_kpis": f"{sys.executable} -m tools.compute_dashboard_kpis",
+
+    # Viral pipeline
+    "viral_prediction_h6": f"{sys.executable} -m worker.viral_prediction_core 6h --only-missing",
+    "viral_prediction_h12": f"{sys.executable} -m worker.viral_prediction_core 12h --only-missing",
+    "viral_prediction_h24_validation": f"{sys.executable} -m worker.viral_prediction_core 24h --only-missing",
+    "viral_finalize": f"{sys.executable} -m worker.viral_finalize --only-missing --min-age-hours 24",
+}
+
+
 # =============== GLOBAL LAYOUT & THEME ===============
 st.markdown(
     """
 <style>
-/* App background */
 [data-testid="stAppViewContainer"] {
     background: #f3f4f6;
 }
 
-/* Center main content + nicer paddings */
 .main .block-container {
     max-width: 1200px;
     padding-top: 2.2rem;
@@ -31,7 +64,6 @@ st.markdown(
     margin-right: auto;
 }
 
-/* Headings */
 h1 {
     font-weight: 700 !important;
     letter-spacing: -0.02em;
@@ -40,28 +72,152 @@ h2, h3 {
     font-weight: 600 !important;
 }
 
-/* Horizontal rule spacing */
 .block-container hr {
     margin-top: 1.7rem;
     margin-bottom: 1.7rem;
-}
-
-/* Dataframe “card” look */
-[data-testid="stDataFrame"] {
-    border-radius: 12px;
-    border: 1px solid #e5e7eb;
-    box-shadow: 0 2px 5px rgba(15,23,42,0.04);
-    background: #ffffff;
 }
 
 /* Small caption tweak */
 .block-container p, .block-container .stMarkdown {
     font-size: 0.95rem;
 }
+
+/* Worker table styling */
+.worker-row {
+    padding: 8px 12px;
+    border-bottom: 1px solid #e5e7eb;
+}
+.worker-header {
+    padding: 6px 12px;
+    border-bottom: 1px solid #d1d5db;
+    background: #f9fafb;
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: #374151;
+}
 </style>
     """,
     unsafe_allow_html=True,
 )
+
+
+# =============== SMALL HELPERS ===============
+
+def run_systemctl(action: str, service: str):
+    """
+    Run a systemctl action on a given service.
+    action: "start" | "stop" | "restart"
+    service: systemd service name WITHOUT ".service"
+    Returns (ok: bool, message: str)
+    """
+    cmd = f"sudo systemctl {action} {service}.service"
+    try:
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+        ok = result.returncode == 0
+        msg = (result.stdout or result.stderr).strip()
+        if not msg:
+            msg = f"{cmd} exited with code {result.returncode}"
+        return ok, msg
+    except Exception as exc:
+        return False, str(exc)
+
+
+def get_service_state(service: str) -> str:
+    """
+    Get current service state via `systemctl is-active`.
+    Returns:
+        "active", "inactive", "failed", "activating", "deactivating", or "unknown"
+    """
+    cmd = f"systemctl is-active {service}.service"
+    try:
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+        )
+        state = (result.stdout or "").strip()
+        if not state:
+            state = "unknown"
+        return state
+    except Exception:
+        return "unknown"
+
+
+def render_service_state_badge(state: str) -> str:
+    s = state.lower()
+    if s == "active":
+        color = "#22c55e"
+        text = "Running"
+    elif s in {"activating"}:
+        color = "#3b82f6"
+        text = "Starting"
+    elif s in {"deactivating"}:
+        color = "#f97316"
+        text = "Stopping"
+    elif s in {"failed"}:
+        color = "#ef4444"
+        text = "Failed"
+    elif s in {"inactive"}:
+        color = "#9ca3af"
+        text = "Stopped"
+    else:
+        color = "#6b7280"
+        text = state or "Unknown"
+
+    return f"""
+<span style="
+  display:inline-flex;
+  align-items:center;
+  padding:2px 10px;
+  border-radius:999px;
+  background:{color}1a;
+  border:1px solid {color};
+  font-size:0.8rem;
+  color:#111827;
+">
+  <span style="width:8px;height:8px;border-radius:999px;background:{color};margin-right:6px;"></span>
+  {text}
+</span>
+"""
+
+
+def run_once_command(worker_key: str):
+    """
+    Run worker once using RUN_ONCE_COMMANDS mapping.
+    Returns (ok: bool, message: str)
+    """
+    cmd = RUN_ONCE_COMMANDS.get(worker_key)
+    if not cmd:
+        return False, "Run-once command not configured for this worker."
+
+    try:
+        # Chạy trong ROOT để import cho chắc
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            cwd=str(ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=600,
+        )
+        ok = result.returncode == 0
+        msg = (result.stdout or result.stderr).strip()
+        if not msg:
+            msg = f"{cmd} exited with code {result.returncode}"
+        return ok, msg
+    except Exception as exc:
+        return False, str(exc)
 
 
 # =============== DATA LOADERS ===============
@@ -82,6 +238,18 @@ def load_kpis() -> dict:
         "stopped_low_quality": 0,
         "low_quality_flagged": 0,
         "snapshot_ts": None,
+
+        # Viral v2 metrics (6h / 12h / 24h + final)
+        "viral2_h6_scored": 0,
+        "viral2_h6_candidates": 0,
+        "viral2_h12_scored": 0,
+        "viral2_12h_viral": 0,
+        "viral2_h24_scored": 0,
+        "viral2_final_viral": 0,
+        "viral2_final_nonviral": 0,
+        "viral2_final_nonviral_lowq": 0,
+        "viral2_final_unknown": 0,
+        "viral2_final_decided": 0,
     }
 
     if not doc:
@@ -92,7 +260,7 @@ def load_kpis() -> dict:
             continue
         try:
             base[key] = int(doc.get(key, 0))
-        except:
+        except Exception:
             base[key] = 0
 
     ts = doc.get("ts")
@@ -108,23 +276,14 @@ def load_kpis() -> dict:
 @st.cache_data(ttl=60)
 def load_worker_last_runs():
     db = get_db()
-
-    workers = [
-        ("discover_once", "Discover new videos"),
-        ("track_once", "Track stats & snapshots"),
-        ("low_quality_autoflag_3h", "Low-quality scoring (3h)"),
-        ("low_quality_autoflag_6h", "Low-quality scoring (6h)"),
-        ("compute_dashboard_kpis", "Dashboard KPI snapshot"),
-    ]
-
     now = datetime.now(timezone.utc)
     rows = []
 
-    for key, label in workers:
+    for key, label, _service in WORKERS:
         doc = db.worker_runs.find_one({"name": key}, sort=[("last_run", -1)])
 
         if not doc or "last_run" not in doc:
-            rows.append({"Worker": label, "Last run": "No data"})
+            rows.append({"Key": key, "Worker": label, "Last run": "No data"})
             continue
 
         ts = doc["last_run"]
@@ -145,31 +304,18 @@ def load_worker_last_runs():
         else:
             pretty = str(ts)
 
-        rows.append({"Worker": label, "Last run": pretty})
+        rows.append({"Key": key, "Worker": label, "Last run": pretty})
 
     return rows
 
 
 @st.cache_data(ttl=60)
 def load_worker_health():
-    """
-    Determine worker health:
-    - Healthy: status=ok AND last_run < 3h old
-    - Warning: some worker stale or error
-    - Stopped: no record for worker
-    """
     db = get_db()
-
-    core_workers = [
-        "discover_once",
-        "track_once",
-        "low_quality_autoflag_3h",
-        "low_quality_autoflag_6h",
-        "compute_dashboard_kpis",
-    ]
+    core_workers = [w[0] for w in WORKERS]
 
     now = datetime.now(timezone.utc)
-    stale_sec = 3 * 3600  # >3h considered stale
+    stale_sec = 3 * 3600
 
     summary = {"total": len(core_workers), "healthy": 0, "warning": 0, "stopped": 0}
 
@@ -287,6 +433,67 @@ def render_simple_metrics(kpis: dict):
         )
 
 
+def render_viral_metrics(kpis: dict):
+    """Render 3 card cho Viral 6h / 12h / 24h (final)."""
+    h6_scored = kpis.get("viral2_h6_scored", 0)
+    h6_cand = kpis.get("viral2_h6_candidates", 0)
+
+    h12_scored = kpis.get("viral2_h12_scored", 0)
+    h12_viral = kpis.get("viral2_12h_viral", 0)
+
+    h24_scored = kpis.get("viral2_h24_scored", 0)
+    final_viral = kpis.get("viral2_final_viral", 0)
+    final_decided = kpis.get("viral2_final_decided", 0)
+    final_unknown = kpis.get("viral2_final_unknown", 0)
+
+    def safe_pct(num, denom):
+        return (num / denom * 100.0) if denom else 0.0
+
+    c1, c2, c3 = st.columns(3)
+
+    # 6h
+    c1.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-title">6h — Early scoring</div>
+            <div class="metric-value">{h6_cand:,} candidates</div>
+            <div class="metric-percentage">
+                {h6_scored:,} scored • {safe_pct(h6_cand, h6_scored):.1f}% candidates
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # 12h
+    c2.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-title">12h — Viral confirmation</div>
+            <div class="metric-value">{h12_viral:,} viral@12h</div>
+            <div class="metric-percentage">
+                {h12_scored:,} scored • {safe_pct(h12_viral, h12_scored):.1f}% viral
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # 24h / final
+    c3.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-title">24h — Final decisions</div>
+            <div class="metric-value">{final_viral:,} final viral</div>
+            <div class="metric-percentage">
+                {final_decided:,} decided • {h24_scored:,} scored • {final_unknown:,} unknown
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # =============== SYSTEM STATUS ===============
 
 def compute_system_status(kpis: dict, wh: dict):
@@ -298,7 +505,6 @@ def compute_system_status(kpis: dict, wh: dict):
     healthy = wh["healthy"]
     warning = wh["warning"]
     stopped = wh["stopped"]
-    total = wh["total"]
 
     if healthy == 0 and (warning + stopped) > 0:
         return ("Stopped", "All workers appear stopped or stale", "#ef4444")
@@ -307,7 +513,6 @@ def compute_system_status(kpis: dict, wh: dict):
         return ("Warning", f"{warning + stopped} worker(s) have issues", "#facc15")
 
     return ("Healthy", "All core workers running normally", "#22c55e")
-
 
 
 # =============== PAGE BODY ===============
@@ -337,7 +542,6 @@ render_simple_metrics(kpis)
 
 st.markdown("<div style='margin-top:1.4rem'></div>", unsafe_allow_html=True)
 
-# === Tracking progress bar ===
 st.markdown("### 📈 Tracking Progress")
 tracking_total = kpis["tracking_active"] + kpis["completed_total"] + kpis["stopped_total"]
 finished = kpis["completed_total"] + kpis["stopped_total"]
@@ -348,14 +552,19 @@ if tracking_total > 0:
 else:
     st.info("No videos in tracking pipeline.")
 
+# ----- NEW: Viral metrics section -----
 st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
+st.markdown("### 🔥 Viral pipeline (6h / 12h / 24h)")
+render_viral_metrics(kpis)
 
+st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
 
 # === System status & worker activity ===
 st.markdown("### 💡 System Status & Worker Activity")
 
 worker_rows = load_worker_last_runs()
 worker_health = load_worker_health()
+rows_by_key = {r["Key"]: r for r in worker_rows}
 
 label, desc, color = compute_system_status(kpis, worker_health)
 
@@ -374,8 +583,101 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.markdown("#### Worker last runs")
-st.dataframe(pd.DataFrame(worker_rows), hide_index=True, use_container_width=True)
+st.markdown("#### Worker last runs & controls")
+
+# Header row
+h_cols = st.columns([3, 2, 2, 2, 2])
+h_cols[0].markdown('<div class="worker-header">Worker</div>', unsafe_allow_html=True)
+h_cols[1].markdown('<div class="worker-header">Last run</div>', unsafe_allow_html=True)
+h_cols[2].markdown('<div class="worker-header">Run once</div>', unsafe_allow_html=True)
+h_cols[3].markdown('<div class="worker-header">Start auto</div>', unsafe_allow_html=True)
+h_cols[4].markdown('<div class="worker-header">Stop</div>', unsafe_allow_html=True)
+
+for key, label_worker, service in WORKERS:
+    row = rows_by_key.get(key, {"Last run": "No data"})
+    last_run_text = row["Last run"]
+
+    # Với các worker không có service riêng (service=None), không gọi systemctl
+    if service:
+        state = get_service_state(service)
+        badge_html = render_service_state_badge(state)
+    else:
+        state = "linked"
+        badge_html = """
+<span style="
+  display:inline-flex;
+  align-items:center;
+  padding:2px 10px;
+  border-radius:999px;
+  background:#e5e7eb;
+  border:1px solid #d1d5db;
+  font-size:0.8rem;
+  color:#374151;
+">
+  <span style="width:8px;height:8px;border-radius:999px;background:#9ca3af;margin-right:6px;"></span>
+  Linked
+</span>
+"""
+
+    c0, c1, c2, c3, c4 = st.columns([3, 2, 2, 2, 2])
+
+    with c0:
+        st.markdown(
+            f'<div class="worker-row"><strong>{label_worker}</strong> &nbsp; {badge_html}</div>',
+            unsafe_allow_html=True,
+        )
+
+    with c1:
+        st.markdown(
+            f'<div class="worker-row">{last_run_text}</div>',
+            unsafe_allow_html=True,
+        )
+
+    with c2:
+        if st.button("Run once", key=f"{key}_run_once"):
+            ok, msg = run_once_command(key)
+            if ok:
+                st.success("Run-once finished")
+            else:
+                st.error(msg)
+            load_worker_last_runs.clear()
+            load_worker_health.clear()
+            st.experimental_rerun()
+
+    # Start/Stop chỉ hiển thị nếu worker có service riêng
+    with c3:
+        if service:
+            if st.button("Start", key=f"{service}_start_auto"):
+                ok, msg = run_systemctl("start", service)
+                if ok:
+                    st.success("Service started")
+                else:
+                    st.error(f"Failed: {msg}")
+                load_worker_last_runs.clear()
+                load_worker_health.clear()
+                st.experimental_rerun()
+        else:
+            st.markdown(
+                '<div class="worker-row"><span style="font-size:0.8rem;color:#6b7280;">Uses yt-viral service</span></div>',
+                unsafe_allow_html=True,
+            )
+
+    with c4:
+        if service:
+            if st.button("Stop", key=f"{service}_stop_auto"):
+                ok, msg = run_systemctl("stop", service)
+                if ok:
+                    st.warning("Service stopped")
+                else:
+                    st.error(f"Failed: {msg}")
+                load_worker_last_runs.clear()
+                load_worker_health.clear()
+                st.experimental_rerun()
+        else:
+            st.markdown(
+                '<div class="worker-row"><span style="font-size:0.8rem;color:#6b7280;">Uses yt-viral service</span></div>',
+                unsafe_allow_html=True,
+            )
 
 st.markdown("---")
 st.caption("YouTube AutoScanner — Overview Dashboard")

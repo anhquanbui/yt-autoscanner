@@ -1,0 +1,24 @@
+[Unit]
+Description=YT Auto Viral Pipeline (6h/12h/24h + finalize)
+After=network.target mongod.service
+Wants=mongod.service
+
+[Service]
+Type=simple
+User=ytscan
+WorkingDirectory=/home/ytscan/yt-autoscanner
+
+# Chạy script auto_viral.sh
+ExecStart=/bin/bash /home/ytscan/yt-autoscanner/scripts/auto_viral.sh
+
+# Giữ service luôn chạy
+Restart=always
+RestartSec=10
+
+# Env optional
+Environment=PYTHONUNBUFFERED=1
+# Có thể chỉnh interval ở đây, vd 15 phút:
+# Environment=AUTO_VIRAL_INTERVAL_SECONDS=900
+
+[Install]
+WantedBy=multi-user.target

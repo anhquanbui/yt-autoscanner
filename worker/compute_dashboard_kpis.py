@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-worker/compute_dashboard_kpis.py (v5)
+worker/compute_dashboard_kpis.py (v6)
 
 Background worker that computes dashboard KPIs from `videos`
 and stores them into `dashboard_kpis` (materialized KPI snapshots).
@@ -8,7 +8,8 @@ and stores them into `dashboard_kpis` (materialized KPI snapshots).
 - Aggregates global metrics (total videos, channels, tracking status).
 - Counts low-quality related stop reasons.
 - ML coverage + flags for low_quality 3h / 6h.
-- Viral prediction KPIs (likely / confirmed).
+- Viral v1 KPIs (likely / confirmed).
+- Viral v2 KPIs (stage coverage + final statuses).
 - Keeps only the latest 100 KPI snapshots.
 - Updates `worker_runs` as a lightweight heartbeat.
 """
@@ -70,6 +71,17 @@ def build_kpi_pipeline() -> list:
 
       - viral_likely            (viral_v1.likely == True / 1)
       - viral_confirmed         (viral_v1.confirmed == True / 1)
+
+      - viral2_h6_scored
+      - viral2_h6_candidates
+      - viral2_h12_scored
+      - viral2_12h_viral
+      - viral2_h24_scored
+      - viral2_final_viral
+      - viral2_final_nonviral
+      - viral2_final_nonviral_lowq
+      - viral2_final_unknown
+      - viral2_final_decided
     """
     return [
         {
@@ -154,7 +166,7 @@ def build_kpi_pipeline() -> list:
                     }
                 },
 
-                # ---------- ML coverage & flags ----------
+                # ---------- ML coverage & flags (low_quality) ----------
 
                 # Any numeric score at 3h
                 "ml_3h_scored": {
@@ -238,6 +250,8 @@ def build_kpi_pipeline() -> list:
                     }
                 },
 
+                # ---------- Viral v1 ----------
+
                 # Viral: likely
                 "viral_likely": {
                     "$sum": {
@@ -269,6 +283,145 @@ def build_kpi_pipeline() -> list:
                         ]
                     }
                 },
+
+                # ---------- Viral v2 (new model) ----------
+
+                # Any score at 6h stage
+                "viral2_h6_scored": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$ne": [
+                                    "$ml_flags.viral_v2.h6.score_proba",
+                                    None,
+                                ]
+                            },
+                            1,
+                            0,
+                        ]
+                    }
+                },
+
+                # 6h candidates
+                "viral2_h6_candidates": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$or": [
+                                    {"$eq": ["$ml_flags.viral_v2.h6.is_candidate", True]},
+                                    {"$eq": ["$ml_flags.viral_v2.h6.is_candidate", 1]},
+                                ]
+                            },
+                            1,
+                            0,
+                        ]
+                    }
+                },
+
+                # Any score at 12h stage
+                "viral2_h12_scored": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$ne": [
+                                    "$ml_flags.viral_v2.h12.score_proba",
+                                    None,
+                                ]
+                            },
+                            1,
+                            0,
+                        ]
+                    }
+                },
+
+                # Marked viral at 12h
+                "viral2_12h_viral": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$or": [
+                                    {"$eq": ["$ml_flags.viral_v2.h12.is_viral_12h", True]},
+                                    {"$eq": ["$ml_flags.viral_v2.h12.is_viral_12h", 1]},
+                                ]
+                            },
+                            1,
+                            0,
+                        ]
+                    }
+                },
+
+                # Any score at 24h validation stage
+                "viral2_h24_scored": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$ne": [
+                                    "$ml_flags.viral_v2.h24_validation.score_proba",
+                                    None,
+                                ]
+                            },
+                            1,
+                            0,
+                        ]
+                    }
+                },
+
+                # Final decision breakdown
+                "viral2_final_viral": {
+                    "$sum": {
+                        "$cond": [
+                            {"$eq": ["$ml_flags.viral_v2.final.status", "viral"]},
+                            1,
+                            0,
+                        ]
+                    }
+                },
+                "viral2_final_nonviral": {
+                    "$sum": {
+                        "$cond": [
+                            {"$eq": ["$ml_flags.viral_v2.final.status", "non_viral"]},
+                            1,
+                            0,
+                        ]
+                    }
+                },
+                "viral2_final_nonviral_lowq": {
+                    "$sum": {
+                        "$cond": [
+                            {"$eq": ["$ml_flags.viral_v2.final.status", "non_viral_lowq"]},
+                            1,
+                            0,
+                        ]
+                    }
+                },
+                "viral2_final_unknown": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$or": [
+                                    {"$eq": ["$ml_flags.viral_v2.final.status", "unknown"]},
+                                    {"$eq": ["$ml_flags.viral_v2.final.status", None]},
+                                ]
+                            },
+                            1,
+                            0,
+                        ]
+                    }
+                },
+                "viral2_final_decided": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {"$ne": ["$ml_flags.viral_v2.final.status", "unknown"]},
+                                    {"$ne": ["$ml_flags.viral_v2.final.status", None]},
+                                ]
+                            },
+                            1,
+                            0,
+                        ]
+                    }
+                },
             }
         },
         {
@@ -291,6 +444,17 @@ def build_kpi_pipeline() -> list:
 
                 "viral_likely": 1,
                 "viral_confirmed": 1,
+
+                "viral2_h6_scored": 1,
+                "viral2_h6_candidates": 1,
+                "viral2_h12_scored": 1,
+                "viral2_12h_viral": 1,
+                "viral2_h24_scored": 1,
+                "viral2_final_viral": 1,
+                "viral2_final_nonviral": 1,
+                "viral2_final_nonviral_lowq": 1,
+                "viral2_final_unknown": 1,
+                "viral2_final_decided": 1,
             }
         },
     ]
@@ -320,6 +484,16 @@ def compute_kpis(videos_col: Collection) -> Dict[str, Any]:
             "low_quality_flagged_any": 0,
             "viral_likely": 0,
             "viral_confirmed": 0,
+            "viral2_h6_scored": 0,
+            "viral2_h6_candidates": 0,
+            "viral2_h12_scored": 0,
+            "viral2_12h_viral": 0,
+            "viral2_h24_scored": 0,
+            "viral2_final_viral": 0,
+            "viral2_final_nonviral": 0,
+            "viral2_final_nonviral_lowq": 0,
+            "viral2_final_unknown": 0,
+            "viral2_final_decided": 0,
         }
 
     return result[0]
@@ -370,7 +544,10 @@ def main() -> int:
 
     logger.info(
         "KPIs: videos=%s | channels=%s | tracking=%s | complete=%s | stopped=%s | "
-        "ml3h_scored=%s | ml6h_scored=%s | low3h=%s | low6h=%s | viral_likely=%s",
+        "ml3h_scored=%s | ml6h_scored=%s | low3h=%s | low6h=%s | "
+        "viral_v1_likely=%s | viral_v1_confirmed=%s | "
+        "viral2_h6_scored=%s | viral2_h6_candidates=%s | "
+        "viral2_final_viral=%s | viral2_final_decided=%s",
         kpis["total_videos"],
         kpis["total_channels"],
         kpis["tracking_active"],
@@ -381,6 +558,11 @@ def main() -> int:
         kpis["low_quality_flagged_3h"],
         kpis["low_quality_flagged_6h"],
         kpis["viral_likely"],
+        kpis["viral_confirmed"],
+        kpis["viral2_h6_scored"],
+        kpis["viral2_h6_candidates"],
+        kpis["viral2_final_viral"],
+        kpis["viral2_final_decided"],
     )
 
     save_snapshot(kpis_col, kpis)

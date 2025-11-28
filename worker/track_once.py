@@ -95,6 +95,15 @@ else:
         + list(range(780, 1440 + 1, 60))  # 12–24h (every 60m)
     )
 
+# Final viral statuses that should stop tracking
+TERMINAL_FINAL_STATUSES = {
+    "viral",
+    "non_viral",
+    "non_viral_lowq",
+    # sau này nếu có thêm loại khác thì add vào đây, ví dụ:
+    # "non_viral_lowq",
+}
+
 # YouTube Data API endpoints
 VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 EXIT_QUOTA = 88
@@ -421,8 +430,35 @@ def main() -> int:
                 "likeCount": int(st["likeCount"]) if "likeCount" in st else None,
                 "commentCount": int(st["commentCount"]) if "commentCount" in st else None,
             }
+            
+            # Nếu đã có quyết định final (viral / non_viral) thì dừng tracking luôn
+            ml_flags = d.get("ml_flags") or {}
+            viral_v2 = ml_flags.get("viral_v2") or {}
+            final_info = viral_v2.get("final") or {}
+            final_status = (final_info.get("status") or "unknown").lower()
+            
+            if final_status in TERMINAL_FINAL_STATUSES:
+                ops.append(
+                    UpdateOne(
+                        {"_id": vid},
+                        {
+                            "$push": {"stats_snapshots": snap},
+                            "$set": {
+                                "tracking.status": "complete",
+                                "tracking.stop_reason": "viral_finalized",
+                                "tracking.last_polled_at": now_iso,
+                                "tracking.next_poll_after": None,
+                                # NEW: store the latest stats timestamp as BSON Date
+                                "latest_stats_ts": now,
+                            },
+                            "$inc": {"tracking.poll_count": 1},
+                        },
+                    )
+                )
+                completed += 1
+                continue  # bỏ qua phần tính next_due, qua video tiếp theo
 
-            # Compute next milestone
+            # Compute next milestone (nếu chưa final)
             next_due = next_due_from_publish(pub, now)
             if next_due is None:
                 # Age >= 24h → complete

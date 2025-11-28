@@ -1,0 +1,23 @@
+[Unit]
+Description=YT Auto Viral Finalize Worker (final.status updater)
+After=network.target mongod.service
+Wants=mongod.service
+
+[Service]
+Type=simple
+User=ytscan
+WorkingDirectory=/home/ytscan/yt-autoscanner
+
+# Chạy script auto_viral_finalize.sh
+ExecStart=/bin/bash /home/ytscan/yt-autoscanner/scripts/auto_viral_finalize.sh
+
+# Giữ service luôn chạy liên tục
+Restart=always
+RestartSec=10
+
+# Optional: logging sạch hơn + override interval
+Environment=PYTHONUNBUFFERED=1
+# Environment=AUTO_VIRAL_FINALIZE_INTERVAL_SECONDS=1800   # 30 phút
+
+[Install]
+WantedBy=multi-user.target
