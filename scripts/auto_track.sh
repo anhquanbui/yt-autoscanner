@@ -29,7 +29,7 @@ cd "$PROJECT_ROOT"
 # ==========================
 # Track loop
 # ==========================
-SLEEP_SECONDS=15   # time between runs (tùy bạn chỉnh)
+SLEEP_SECONDS=30   # time between runs (tùy bạn chỉnh)
 
 while true; do
   echo "[AutoTrack] $(date) running worker.track_once"

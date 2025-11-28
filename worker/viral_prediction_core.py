@@ -33,6 +33,10 @@ from pandas import to_datetime
 from pymongo import MongoClient
 import joblib
 
+from config.env import load_env
+
+load_env()
+
 try:
     import orjson as _orjson
 except Exception:  # fallback nếu chưa có orjson
@@ -51,15 +55,9 @@ DEFAULT_COLLECTION = os.getenv("MONGO_VIDEOS_COLLECTION", "videos")
 # Model paths
 MODEL_DIR = Path(os.getenv("VIRAL_MODEL_DIR", "models/viral"))
 
-MODEL_6H_PATH = Path(
-    os.getenv("VIRAL_MODEL_6H", MODEL_DIR / "viral_xgb_6h.joblib")
-)
-MODEL_12H_PATH = Path(
-    os.getenv("VIRAL_MODEL_12H", MODEL_DIR / "viral_xgb_12h.joblib")
-)
-MODEL_24H_PATH = Path(
-    os.getenv("VIRAL_MODEL_24H", MODEL_DIR / "viral_xgb_24h.joblib")
-)
+MODEL_6H_PATH = Path(os.getenv("VIRAL_MODEL_6H", MODEL_DIR / "viral_xgb_6h.joblib"))
+MODEL_12H_PATH = Path(os.getenv("VIRAL_MODEL_12H", MODEL_DIR / "viral_xgb_12h.joblib"))
+MODEL_24H_PATH = Path(os.getenv("VIRAL_MODEL_24H", MODEL_DIR / "viral_xgb_24h.joblib"))
 
 # version metadata để ghi vào ml_flags.viral_v2
 MODEL_VERSION = 1
@@ -302,6 +300,59 @@ def aggregate_0_24h(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 # ============================================================
+# Video age helper (dùng latest_stats_ts)
+# ============================================================
+
+def compute_video_age_hours(rec: Dict[str, Any]) -> Optional[float]:
+    """
+    Tính tuổi video (giờ) dựa trên:
+      age = stats.latest_stats_ts - publishedAt
+
+    Nếu thiếu latest_stats_ts thì fallback sang timestamp cuối cùng
+    trong stats_snapshots.
+
+    Trả về:
+      - float (giờ) nếu tính được
+      - None nếu thiếu dữ liệu timestamp
+    """
+    # publishedAt
+    sn = _loads_fast(rec.get("snippet")) or {}
+    pub = sn.get("publishedAt") or rec.get("publishedAt")
+    pub_dt = to_datetime(pub, utc=True, errors="coerce")
+    if pub_dt is None or str(pub_dt) == "NaT":
+        return None
+
+    # latest_stats_ts ưu tiên từ stats
+    stats = rec.get("stats") or {}
+    latest_ts = stats.get("latest_stats_ts")
+
+    latest_dt = to_datetime(latest_ts, utc=True, errors="coerce") if latest_ts else None
+
+    # fallback: lấy ts cuối từ stats_snapshots
+    if latest_dt is None or str(latest_dt) == "NaT":
+        snaps = _loads_fast(rec.get("stats_snapshots")) or _loads_fast(
+            rec.get("stats.snapshots")
+        )
+        if isinstance(snaps, list) and snaps:
+            last_ts_val: Optional[str] = None
+            for s in snaps:
+                s = _loads_fast(s) if isinstance(s, str) else s
+                if not isinstance(s, dict):
+                    continue
+                ts = s.get("ts") or s.get("timestamp") or s.get("time")
+                if ts:
+                    last_ts_val = ts
+            if last_ts_val:
+                latest_dt = to_datetime(last_ts_val, utc=True, errors="coerce")
+
+    if latest_dt is None or str(latest_dt) == "NaT":
+        return None
+
+    age_hours = (latest_dt - pub_dt).total_seconds() / 3600.0
+    return float(age_hours)
+
+
+# ============================================================
 # Feature sets (giống training 6h/12h + base 24h)
 # ============================================================
 
@@ -441,9 +492,7 @@ def init_24h_features_from_model(model) -> List[str]:
 
     if feats is not None:
         FEATURES_24H_FULL = [str(f) for f in feats]
-        print(
-            f"[24H] Using {len(FEATURES_24H_FULL)} features from model metadata"
-        )
+        print(f"[24H] Using {len(FEATURES_24H_FULL)} features from model metadata")
     else:
         FEATURES_24H_FULL = FEATURES_24H_HARD_BASE
         print(
@@ -452,9 +501,7 @@ def init_24h_features_from_model(model) -> List[str]:
         )
 
     LEN_COLS_24H = [c for c in FEATURES_24H_FULL if c.startswith("len_")]
-    FEATURES_24H_BASE_ONLY = [
-        c for c in FEATURES_24H_FULL if not c.startswith("len_")
-    ]
+    FEATURES_24H_BASE_ONLY = [c for c in FEATURES_24H_FULL if not c.startswith("len_")]
 
     return FEATURES_24H_FULL
 
@@ -557,9 +604,7 @@ def build_features_12h(agg: Dict[str, Any]) -> Dict[str, float]:
     return row
 
 
-def build_features_24h(
-    rec: Dict[str, Any], agg: Dict[str, Any]
-) -> Dict[str, float]:
+def build_features_24h(rec: Dict[str, Any], agg: Dict[str, Any]) -> Dict[str, float]:
     """
     Build full vector cho model 24h theo FEATURES_24H_FULL.
     Kết hợp:
@@ -601,9 +646,7 @@ def build_features_24h(
 # ============================================================
 
 
-def get_collection(
-    mongo_uri: str, db_name: str, coll_name: str
-):
+def get_collection(mongo_uri: str, db_name: str, coll_name: str):
     client = MongoClient(mongo_uri)
     db = client[db_name]
     return db[coll_name]
@@ -749,7 +792,7 @@ def run_stage(
 
     coll = get_collection(mongo_uri, db_name, coll_name)
 
-    # Nếu force_all=True → bỏ qua only_missing
+    # Nếu force_all=True → bỏ qua only_missing (nhưng vẫn tôn trọng điều kiện tuổi video)
     cursor = fetch_candidates(
         coll, stage=stage, only_missing=(only_missing and not force_all), limit=limit
     )
@@ -760,6 +803,22 @@ def run_stage(
     for rec in cursor:
         total += 1
         vid = rec.get("_id")
+
+        # Tính age video (giờ) từ latest_stats_ts - publishedAt
+        age_hrs = compute_video_age_hours(rec)
+        if age_hrs is None:
+            print(f"[SKIP] _id={vid}: cannot compute age_hrs (missing timestamps)")
+            continue
+
+        # Gate theo tuổi video cho từng stage
+        if stage == "h6" and age_hrs < 6.0:
+            # chưa đủ 6h → bỏ qua
+            continue
+        if stage == "h12" and age_hrs < 12.0:
+            continue
+        # Dùng 23h cho 24h-validation để chạy hơi sớm một chút
+        if stage == "h24_validation" and age_hrs < 23.0:
+            continue
 
         agg = aggregate_0_24h(rec)
         if agg is None:
@@ -833,20 +892,26 @@ def run_stage(
         if total % 50 == 0:
             print(
                 f"[{stage}] processed={total:,}, updated={updated:,} "
-                f"(last _id={vid}, score={score_100})"
+                f"(last _id={vid}, score={score_100}, age_hrs={age_hrs:.2f})"
             )
 
     print(
         f"[DONE-{stage}] total scanned={total:,}, docs updated={updated:,}, "
         f"model={model_path}"
     )
-    
-    # ---- NEW: ghi worker_runs ----
+
+    # ---- Ghi dấu worker_runs cho dashboard ----
     from datetime import datetime, timezone
+
     coll.database["worker_runs"].update_one(
-    {"name": f"viral_prediction_{stage}"},
-    {"$set": {"last_run": datetime.now(timezone.utc).isoformat()}},
-    upsert=True,
+        {"name": "viral_scoring"},
+        {
+            "$set": {
+                "last_run": datetime.now(timezone.utc),
+                "status": f"ok_{stage}",
+            }
+        },
+        upsert=True,
     )
     # -------------------------------
 
@@ -888,8 +953,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
             "--force-all",
             action="store_true",
             help=(
-                "Bỏ qua only-missing, ép tính lại tất cả video đủ dữ liệu, "
-                "bất kể tracking.status hay đã có score trước đó."
+                "Bỏ qua only-missing, ép tính lại tất cả video đủ dữ liệu; "
+                "logic vẫn tôn trọng điều kiện tuổi video cho từng stage."
             ),
         )
         subparser.add_argument(

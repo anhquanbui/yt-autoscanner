@@ -5,7 +5,8 @@ Streamlit page: 02_Videos (status overview)
 - Total Videos / Channels / Tracking Active
 - Tracking Status (Completed breakdown + Stopped low-quality)
 - Low-quality ML Models (3h / 6h) — flagged counts
-- Random 20 videos (video_id, title, channel, status + View)
+- Viral ML Models (6h / 12h / 24h / Final) — non-overlapping stage buckets
+- Random 10 videos (video_id, title, channel, status + View)
 """
 
 from __future__ import annotations
@@ -127,7 +128,7 @@ def get_latest_kpis() -> Dict[str, Any] | None:
     return kpis_col.find_one(sort=[("_id", -1)])
 
 
-def get_random_videos(limit: int = 20) -> List[Dict[str, Any]]:
+def get_random_videos(limit: int = 10) -> List[Dict[str, Any]]:
     """Random N videos cho bảng bên dưới."""
     pipeline = [
         {"$sample": {"size": limit}},
@@ -180,13 +181,21 @@ completed_removed = int(k.get("completed_removed", 0))
 
 stopped_low_quality = int(k.get("stopped_low_quality", 0))
 
-# ML metrics
+# ML metrics (low-quality)
 ml_3h_scored = int(k.get("ml_3h_scored", 0))
 ml_6h_scored = int(k.get("ml_6h_scored", 0))
 lowq_3h_flag = int(k.get("low_quality_flagged_3h", 0))
 lowq_6h_flag = int(k.get("low_quality_flagged_6h", 0))
 
-# ---------------- Title ----------------
+# Viral v1 metrics
+viral_likely = int(k.get("viral_likely", 0))
+viral_confirmed = int(k.get("viral_confirmed", 0))
+
+# Viral v2 stage metrics (non-overlapping buckets)
+viral2_stage_6h_only = int(k.get("viral2_stage_6h_only", 0))
+viral2_stage_12h_only = int(k.get("viral2_stage_12h_only", 0))
+viral2_stage_24h_only = int(k.get("viral2_stage_24h_only", 0))
+viral2_final_decided = int(k.get("viral2_final_decided", 0))
 
 st.title("🎥 Videos — Tracking Overview")
 st.markdown("---")
@@ -289,13 +298,53 @@ with m2:
 
 st.markdown("---")
 
-# ---------------- Random 20 Videos ----------------
+# ---------------- Viral ML Models (6h / 12h / 24h / Final) ----------------
 
-st.subheader("📄 Random 20 Videos (status sample)")
+st.subheader("🔥 Viral ML Models (6h / 12h / 24h / Final)")
+
+v1, v2, v3, v4 = st.columns(4)
+
+with v1:
+    stat_card(
+        "🕕 Viral 6h Scored (stage)",
+        viral2_stage_6h_only,
+        total_videos or 1,
+        "total videos",
+    )
+
+with v2:
+    stat_card(
+        "🕛 Viral 12h Scored (stage)",
+        viral2_stage_12h_only,
+        total_videos or 1,
+        "total videos",
+    )
+
+with v3:
+    stat_card(
+        "🌙 Viral 24h Scored (stage)",
+        viral2_stage_24h_only,
+        total_videos or 1,
+        "total videos",
+    )
+
+with v4:
+    stat_card(
+        "🏁 Finalized (Viral/Non/Unk)",
+        viral2_final_decided,
+        total_videos or 1,
+        "total videos",
+    )
+
+st.markdown("---")
+
+# ---------------- Random 10 Videos ----------------
+
+st.subheader("📄 Random 10 Videos (tracking sample)")
 
 header_left, header_right = st.columns([6, 1])
 with header_left:
-    st.caption("Random sample of 20 videos across the DB — good to spot-check tracking states.")
+    st.caption("Random sample of 10 videos across the DB — good to spot-check tracking states.")
 with header_right:
     if st.button("🎲 Shuffle", key="shuffle_videos", use_container_width=True):
         st.experimental_rerun()
@@ -303,7 +352,7 @@ with header_right:
 # container cho phần details (luôn tồn tại, kể cả khi không có rows)
 details_container = st.container()
 
-rows = get_random_videos(limit=20)
+rows = get_random_videos(limit=10)
 
 if not rows:
     st.info("No video data found.")
@@ -313,7 +362,7 @@ else:
     h1.markdown("**Video ID**")
     h2.markdown("**Title**")
     h3.markdown("**Channel**")
-    h4.markdown("**Status**")
+    h4.markdown("**📡 Tracking**")
     h5.markdown("**Action**")
 
     for idx, row in enumerate(rows):

@@ -9,6 +9,7 @@ make_indexes.py — Smart MongoDB Index Manager (v6, tuned for new pipeline)
     • Keep optimized indexes for:
         - tracking queue (track_once)
         - low_quality 3h & 6h workers
+        - viral_v2 6h / 12h / 24h + final
         - processed_videos analytics (horizons, snapshot_features)
 - Idempotent; supports --show-only and --drop-old; collection filtering.
 
@@ -275,6 +276,58 @@ INDEX_MAP: Dict[str, List[dict]] = {
                 "tracking.status": "tracking",
                 "stats_snapshots.0": {"$exists": True},
             },
+        },
+
+        # ====================================================
+        # Viral_v2 ML pipeline (6h / 12h / 24h + final)
+        # ====================================================
+
+        # Match query của viral_prediction_core:
+        #   { stats_snapshots.0: { $exists: true },
+        #     ml_flags.viral_v2.h6.score_proba: null }  (khi --only-missing)
+        {
+            "keys": [
+                ("stats_snapshots.0", 1),
+                ("ml_flags.viral_v2.h6.score_proba", 1),
+            ],
+            "name": "viral_h6_snap0_score",
+        },
+
+        #   { stats_snapshots.0: { $exists: true },
+        #     ml_flags.viral_v2.h12.score_proba: null }
+        {
+            "keys": [
+                ("stats_snapshots.0", 1),
+                ("ml_flags.viral_v2.h12.score_proba", 1),
+            ],
+            "name": "viral_h12_snap0_score",
+        },
+
+        #   { stats_snapshots.0: { $exists: true },
+        #     ml_flags.viral_v2.h24_validation.score_proba: null }
+        {
+            "keys": [
+                ("stats_snapshots.0", 1),
+                ("ml_flags.viral_v2.h24_validation.score_proba", 1),
+            ],
+            "name": "viral_h24_snap0_score",
+        },
+
+        # Dashboard / analytics: lọc final.status + sort theo publishedAt
+        {
+            "keys": [
+                ("ml_flags.viral_v2.final.status", 1),
+                ("snippet.publishedAt", -1),
+            ],
+            "name": "viral_finalStatus_publishedAt_desc",
+        },
+
+        # Optional: sort nhanh theo latest_stats_ts (dùng cho age-based filter / finalize)
+        {
+            "keys": [
+                ("latest_stats_ts", -1),
+            ],
+            "name": "latestStatsTs_desc",
         },
     ],
 

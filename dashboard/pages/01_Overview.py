@@ -30,22 +30,6 @@ WORKERS = [
     ("viral_finalize", "Viral finalize (≥24h)", "yt-viral-finalize"),
 ]
 
-# =============== OPTIONAL: RUN-ONCE COMMANDS ===============
-# Map worker key -> shell command to run once (using current Python env).
-RUN_ONCE_COMMANDS = {
-    "discover_once": f"{sys.executable} -m tools.discover_once",
-    "track_once": f"{sys.executable} -m tools.track_once",
-    "low_quality_autoflag_3h": f"{sys.executable} -m worker.low_quality_3h_worker --only-missing",
-    "low_quality_autoflag_6h": f"{sys.executable} -m worker.low_quality_6h_worker --only-missing",
-    "compute_dashboard_kpis": f"{sys.executable} -m tools.compute_dashboard_kpis",
-
-    # Viral pipeline
-    "viral_prediction_h6": f"{sys.executable} -m worker.viral_prediction_core 6h --only-missing",
-    "viral_prediction_h12": f"{sys.executable} -m worker.viral_prediction_core 12h --only-missing",
-    "viral_prediction_h24_validation": f"{sys.executable} -m worker.viral_prediction_core 24h --only-missing",
-    "viral_finalize": f"{sys.executable} -m worker.viral_finalize --only-missing --min-age-hours 24",
-}
-
 
 # =============== GLOBAL LAYOUT & THEME ===============
 st.markdown(
@@ -189,35 +173,6 @@ def render_service_state_badge(state: str) -> str:
   {text}
 </span>
 """
-
-
-def run_once_command(worker_key: str):
-    """
-    Run worker once using RUN_ONCE_COMMANDS mapping.
-    Returns (ok: bool, message: str)
-    """
-    cmd = RUN_ONCE_COMMANDS.get(worker_key)
-    if not cmd:
-        return False, "Run-once command not configured for this worker."
-
-    try:
-        # Chạy trong ROOT để import cho chắc
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            cwd=str(ROOT),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=600,
-        )
-        ok = result.returncode == 0
-        msg = (result.stdout or result.stderr).strip()
-        if not msg:
-            msg = f"{cmd} exited with code {result.returncode}"
-        return ok, msg
-    except Exception as exc:
-        return False, str(exc)
 
 
 # =============== DATA LOADERS ===============
@@ -434,60 +389,74 @@ def render_simple_metrics(kpis: dict):
 
 
 def render_viral_metrics(kpis: dict):
-    """Render 3 card cho Viral 6h / 12h / 24h (final)."""
-    h6_scored = kpis.get("viral2_h6_scored", 0)
-    h6_cand = kpis.get("viral2_h6_candidates", 0)
+    """
+    Render 3 card:
+      1) Viral Likely  (6h candidates, đã trừ video viral@12h)
+      2) Viral Confirmed (is_viral_12h)
+      3) Finalized (Viral / Non / Unknown)
+    """
+    total_videos = kpis.get("total_videos", 0)
 
-    h12_scored = kpis.get("viral2_h12_scored", 0)
-    h12_viral = kpis.get("viral2_12h_viral", 0)
+    def pct_value(v):
+        return (v / total_videos * 100.0) if total_videos else 0.0
 
-    h24_scored = kpis.get("viral2_h24_scored", 0)
-    final_viral = kpis.get("viral2_final_viral", 0)
+    def pct_str(v):
+        return f"{pct_value(v):.2f}% of total videos"
+
+    viral_likely = kpis.get("viral2_h6_candidates", 0)
+    viral_confirmed = kpis.get("viral2_12h_viral", 0)
+
     final_decided = kpis.get("viral2_final_decided", 0)
+    final_viral = kpis.get("viral2_final_viral", 0)
+    final_non = kpis.get("viral2_final_nonviral", 0) + kpis.get(
+        "viral2_final_nonviral_lowq", 0
+    )
     final_unknown = kpis.get("viral2_final_unknown", 0)
-
-    def safe_pct(num, denom):
-        return (num / denom * 100.0) if denom else 0.0
 
     c1, c2, c3 = st.columns(3)
 
-    # 6h
+    # Viral Likely (6h)
     c1.markdown(
         f"""
         <div class="metric-card">
-            <div class="metric-title">6h — Early scoring</div>
-            <div class="metric-value">{h6_cand:,} candidates</div>
-            <div class="metric-percentage">
-                {h6_scored:,} scored • {safe_pct(h6_cand, h6_scored):.1f}% candidates
+            <div class="metric-title">🔥 Viral Likely (6h)</div>
+            <div class="metric-value">{viral_likely:,}</div>
+            <div class="metric-progress-outer">
+                <div class="metric-progress-inner" style="width:{pct_value(viral_likely):.2f}%"></div>
             </div>
+            <div class="metric-percentage">{pct_str(viral_likely)}</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # 12h
+    # Viral Confirmed (12h)
     c2.markdown(
         f"""
         <div class="metric-card">
-            <div class="metric-title">12h — Viral confirmation</div>
-            <div class="metric-value">{h12_viral:,} viral@12h</div>
-            <div class="metric-percentage">
-                {h12_scored:,} scored • {safe_pct(h12_viral, h12_scored):.1f}% viral
+            <div class="metric-title">🔥 Viral Confirmed (12h)</div>
+            <div class="metric-value">{viral_confirmed:,}</div>
+            <div class="metric-progress-outer">
+                <div class="metric-progress-inner" style="width:{pct_value(viral_confirmed):.2f}%"></div>
             </div>
+            <div class="metric-percentage">{pct_str(viral_confirmed)}</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # 24h / final
+    # Finalized
+    breakdown = f"Viral {final_viral:,} • Non {final_non:,} • Unk {final_unknown:,}"
+
     c3.markdown(
         f"""
         <div class="metric-card">
-            <div class="metric-title">24h — Final decisions</div>
-            <div class="metric-value">{final_viral:,} final viral</div>
-            <div class="metric-percentage">
-                {final_decided:,} decided • {h24_scored:,} scored • {final_unknown:,} unknown
+            <div class="metric-title">🏁 Finalized (Viral / Non / Unk)</div>
+            <div class="metric-value">{final_decided:,}</div>
+            <div class="metric-progress-outer">
+                <div class="metric-progress-inner" style="width:{pct_value(final_decided):.2f}%"></div>
             </div>
+            <div class="metric-percentage">{pct_str(final_decided)}<br/>{breakdown}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -554,7 +523,7 @@ else:
 
 # ----- NEW: Viral metrics section -----
 st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
-st.markdown("### 🔥 Viral pipeline (6h / 12h / 24h)")
+st.markdown("### 🔥 Viral ML Models (6h / 12h / 24h / Final)")
 render_viral_metrics(kpis)
 
 st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
@@ -585,13 +554,12 @@ st.markdown(
 
 st.markdown("#### Worker last runs & controls")
 
-# Header row
-h_cols = st.columns([3, 2, 2, 2, 2])
+# Header row (4 cột: Worker / Last run / Start / Stop)
+h_cols = st.columns([3, 2, 2, 2])
 h_cols[0].markdown('<div class="worker-header">Worker</div>', unsafe_allow_html=True)
 h_cols[1].markdown('<div class="worker-header">Last run</div>', unsafe_allow_html=True)
-h_cols[2].markdown('<div class="worker-header">Run once</div>', unsafe_allow_html=True)
-h_cols[3].markdown('<div class="worker-header">Start auto</div>', unsafe_allow_html=True)
-h_cols[4].markdown('<div class="worker-header">Stop</div>', unsafe_allow_html=True)
+h_cols[2].markdown('<div class="worker-header">Start auto</div>', unsafe_allow_html=True)
+h_cols[3].markdown('<div class="worker-header">Stop</div>', unsafe_allow_html=True)
 
 for key, label_worker, service in WORKERS:
     row = rows_by_key.get(key, {"Last run": "No data"})
@@ -619,7 +587,7 @@ for key, label_worker, service in WORKERS:
 </span>
 """
 
-    c0, c1, c2, c3, c4 = st.columns([3, 2, 2, 2, 2])
+    c0, c1, c3, c4 = st.columns([3, 2, 2, 2])
 
     with c0:
         st.markdown(
@@ -632,17 +600,6 @@ for key, label_worker, service in WORKERS:
             f'<div class="worker-row">{last_run_text}</div>',
             unsafe_allow_html=True,
         )
-
-    with c2:
-        if st.button("Run once", key=f"{key}_run_once"):
-            ok, msg = run_once_command(key)
-            if ok:
-                st.success("Run-once finished")
-            else:
-                st.error(msg)
-            load_worker_last_runs.clear()
-            load_worker_health.clear()
-            st.experimental_rerun()
 
     # Start/Stop chỉ hiển thị nếu worker có service riêng
     with c3:

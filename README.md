@@ -348,7 +348,13 @@ sudo systemctl start yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpi
 ### Checking status
 
 ```bash
-sudo systemctl status yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral yt-viral-finalize
+systemctl status yt-auto-discover
+systemctl status yt-auto-track
+systemctl status yt-lowq-3h
+systemctl status yt-lowq-6h
+systemctl status yt-kpis
+systemctl status yt-viral
+systemctl status yt-viral-finalize
 ```
 
 ### Stop
@@ -373,6 +379,19 @@ journalctl -u yt-lowq-6h -f
 journalctl -u yt-kpis -f
 journalctl -u yt-viral -f
 journalctl -u yt-viral-finalize -f
+```
+
+### Disable
+
+```bash
+sudo systemctl disable yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral yt-viral-finalize
+```
+
+### Completely stop and remove
+
+```bash
+sudo systemctl stop yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral yt-viral-finalize && \
+sudo systemctl disable yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral yt-viral-finalize
 ```
 
 ---
