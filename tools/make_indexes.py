@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-make_indexes.py — Smart MongoDB Index Manager (v6, tuned for new pipeline)
+make_indexes.py — Smart MongoDB Index Manager (v7, tuned for new pipeline)
 -------------------------------------------------------------------------------
-- Based on your v5 script, updated to:
+- Based on your v6 script, updated to:
     • Use central config.env loader (load_env / get_env).
     • Avoid reading random system-wide .env (e.g. C:\\Users\\Admin\\.env).
     • Clean up duplicate index specs (same keys, different names).
     • Keep optimized indexes for:
         - tracking queue (track_once)
         - low_quality 3h & 6h workers
+        - viral_v2 workers (h6 / h12 / h24_validation / final)
         - processed_videos analytics (horizons, snapshot_features)
 - Idempotent; supports --show-only and --drop-old; collection filtering.
 
@@ -51,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     # Ensure .env is loaded according to config.env priority
     load_env()
 
-    p = argparse.ArgumentParser(description="Smart MongoDB index manager (v6).")
+    p = argparse.ArgumentParser(description="Smart MongoDB index manager (v7).")
 
     p.add_argument(
         "--mongo-uri",
@@ -194,6 +195,13 @@ INDEX_MAP: Dict[str, List[dict]] = {
             ],
             "name": "publishedAt_desc",
         },
+        # Latest stats timestamp (used by tracking / ML workers for recency)
+        {
+            "keys": [
+                ("latest_stats_ts", -1),
+            ],
+            "name": "latestStatsTs_desc",
+        },
 
         # --- Shared base for low-quality workers (3h & 6h) ---
         # Cả 3h & 6h đều luôn require stats_snapshots.0 + thường xuyên filter theo tracking.status
@@ -275,6 +283,70 @@ INDEX_MAP: Dict[str, List[dict]] = {
                 "tracking.status": "tracking",
                 "stats_snapshots.0": {"$exists": True},
             },
+        },
+
+        # --- viral_v2 ML pipeline (new schema) ---
+        # Final viral status for dashboard / filters
+        {
+            "keys": [
+                ("ml_flags.viral_v2.final.status", 1),
+                ("snippet.publishedAt", -1),
+            ],
+            "name": "viralV2_finalStatus_publishedAt_desc",
+        },
+        # H6 candidate worker: tracking + first snapshot + h6.evaluated_at
+        {
+            "keys": [
+                ("tracking.status", 1),
+                ("stats_snapshots.0", 1),
+                ("ml_flags.viral_v2.h6.evaluated_at", 1),
+            ],
+            "name": "viralV2_h6_track_snap0_eval_tracking",
+            "partial": {
+                "tracking.status": "tracking",
+                "stats_snapshots.0": {"$exists": True},
+            },
+        },
+        # H12 worker: tracking + first snapshot + h12.evaluated_at
+        {
+            "keys": [
+                ("tracking.status", 1),
+                ("stats_snapshots.0", 1),
+                ("ml_flags.viral_v2.h12.evaluated_at", 1),
+            ],
+            "name": "viralV2_h12_track_snap0_eval_tracking",
+            "partial": {
+                "tracking.status": "tracking",
+                "stats_snapshots.0": {"$exists": True},
+            },
+        },
+        # H24 validation worker: tracking + first snapshot + h24_validation.evaluated_at
+        {
+            "keys": [
+                ("tracking.status", 1),
+                ("stats_snapshots.0", 1),
+                ("ml_flags.viral_v2.h24_validation.evaluated_at", 1),
+            ],
+            "name": "viralV2_h24_track_snap0_eval_tracking",
+            "partial": {
+                "tracking.status": "tracking",
+                "stats_snapshots.0": {"$exists": True},
+            },
+        },
+        # Analytics on candidate and 12h result
+        {
+            "keys": [
+                ("ml_flags.viral_v2.h6.is_candidate", 1),
+                ("snippet.publishedAt", -1),
+            ],
+            "name": "viralV2_h6_isCandidate_publishedAt_desc",
+        },
+        {
+            "keys": [
+                ("ml_flags.viral_v2.h12.is_viral_12h", 1),
+                ("snippet.publishedAt", -1),
+            ],
+            "name": "viralV2_h12_isViral12h_publishedAt_desc",
         },
     ],
 

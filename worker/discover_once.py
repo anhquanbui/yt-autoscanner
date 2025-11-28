@@ -1,22 +1,24 @@
-# worker/discover_once.py (v5.0) — VIDEO DISCOVERY (3-layer: ENV + function + CLI)
-# ------------------------------------------------------------------------------
-# CHANGELOG (v5.0):
-#   - Refactored into 3 layers:
-#       * Core function: run_discover(...)
-#       * Environment-based defaults (YT_* env vars)
-#       * Optional CLI interface via argparse
-#   - Uses config.env (load_env/get_env) for consistent .env loading.
-#   - Kept the same behavior for:
-#       * near-now scan
-#       * duration & category enrichment
-#       * exclude live/upcoming
-#       * ml_flags initialization (viral + low_quality 3h/6h)
+# worker/discover_once.py (v5.1) — VIDEO DISCOVERY (3-layer: ENV + function + CLI)
+# -------------------------------------------------------------------------------
+# CHANGELOG (v5.1):
+#   - Init new ml_flags.viral_v2 schema for newly discovered videos:
+#       ml_flags: {
+#         viral_v2: {
+#           model_version, label_rule_version,
+#           h6: {...}, h12: {...}, h24_validation: {...}, final: {...}
+#         },
+#         low_quality_v1_3h: {...},
+#         low_quality_v3_6h: {...}
+#       }
 #
-# NOTE:
-#   - Can now be used in three ways:
-#       1) ENV-only (systemd, cron, PowerShell/batch)
-#       2) CLI overrides (e.g. --region, --duration-mode, --since-minutes)
-#       3) Direct Python call via run_discover(...) (e.g. from Streamlit dashboard)
+#   - viral_v2 thresholds (6h / 12h / 24h) được đọc từ .env:
+#       VIRAL_V2_MODEL_VERSION
+#       VIRAL_V2_LABEL_RULE_VERSION
+#       VIRAL_V2_THRESH_6H_PROBA,  VIRAL_V2_THRESH_6H_100
+#       VIRAL_V2_THRESH_12H_PROBA, VIRAL_V2_THRESH_12H_100
+#       VIRAL_V2_THRESH_24H_PROBA, VIRAL_V2_THRESH_24H_100
+#
+# Các hành vi khác giữ nguyên như v5.0.
 
 from __future__ import annotations
 
@@ -41,7 +43,7 @@ try:
 except Exception:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
-    
+
 # Load env once (priority: ~/.env → project/.env → subdirs)
 load_env()
 
@@ -54,6 +56,21 @@ EXIT_QUOTA = 88
 SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 
+# ======= VIRAL V2 CONFIG (từ .env) =======
+# Nếu thiếu trong .env thì dùng default hợp lý
+VIRAL_V2_MODEL_VERSION      = int(get_env("VIRAL_V2_MODEL_VERSION", "1"))
+VIRAL_V2_LABEL_RULE_VERSION = int(get_env("VIRAL_V2_LABEL_RULE_VERSION", "1"))
+
+VIRAL_V2_THRESH_6H_PROBA = float(get_env("VIRAL_V2_THRESH_6H_PROBA", "0.60"))
+VIRAL_V2_THRESH_6H_100   = int(get_env("VIRAL_V2_THRESH_6H_100", "60"))
+
+VIRAL_V2_THRESH_12H_PROBA = float(get_env("VIRAL_V2_THRESH_12H_PROBA", "0.70"))
+VIRAL_V2_THRESH_12H_100   = int(get_env("VIRAL_V2_THRESH_12H_100", "70"))
+
+VIRAL_V2_THRESH_24H_PROBA = float(get_env("VIRAL_V2_THRESH_24H_PROBA", "0.80"))
+VIRAL_V2_THRESH_24H_100   = int(get_env("VIRAL_V2_THRESH_24H_100", "80"))
+# 24h chủ yếu dùng validation, có / không threshold cũng không ảnh hưởng decision core
+
 # Duration parsing regex
 _DUR_RE = re.compile(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$", re.I)
 
@@ -63,18 +80,13 @@ def log_worker_run(worker_name: str, extra: dict | None = None) -> None:
     """
     Upsert a single document in `worker_runs` to record the last time
     a worker finished (success or failure).
-
-    This is kept lightweight and best-effort: failures are printed but do not
-    crash the worker.
     """
     try:
-        # Ensure .env is loaded (idempotent, no-op if already loaded)
         load_env()
 
         mongo_uri = get_env("MONGO_URI", "mongodb://localhost:27017/ytscan")
         db_name_env = get_env("MONGO_DB")
 
-        # Detect DB name: prefer MONGO_DB, otherwise parse from URI
         if db_name_env:
             db_name = db_name_env
         else:
@@ -95,14 +107,11 @@ def log_worker_run(worker_name: str, extra: dict | None = None) -> None:
     except Exception as e:
         print(f"[WARN] Failed to log worker run for {worker_name}: {e}", file=sys.stderr)
 
+
 # ----- Helper: weighted pool parsing -----
 def parse_weighted_pool(val: str) -> Tuple[List[str], List[float]]:
     """
     Parse a comma-separated weighted list like: "short:1,medium:2,long:0.5".
-
-    Returns:
-        choices: list of terms (e.g. ["short", "medium", "long"])
-        weights: list of float weights (same length as choices)
     """
     if not val:
         return [], []
@@ -181,10 +190,7 @@ def bucket_from_seconds(secs: Optional[int]) -> Optional[str]:
 
 def pick_duration_param(mode: str, pool: str) -> Optional[str]:
     """
-    Decide which duration to request from the YouTube Search API:
-      - 'short', 'medium', 'long' → use as-is
-      - 'any' or unknown         → None (no filter)
-      - 'mix'                    → randomly pick from weighted pool
+    Decide which duration to request from the YouTube Search API.
     """
     mode = (mode or "any").lower()
     if mode == "mix":
@@ -282,7 +288,10 @@ def upsert_minimal(
       - source: query, regionCode, randomMode
       - snippet: title, thumbnails, channelId, categoryId, durationISO, durationSec, lengthBucket
       - tracking: status=tracking, discovered_at, next_poll_after, etc.
-      - ml_flags: viral_v1, low_quality_v1_3h, low_quality_v3_6h
+      - ml_flags:
+          - viral_v2 (nested: h6, h12, h24_validation, final)
+          - low_quality_v1_3h
+          - low_quality_v3_6h
     """
     ops: List[UpdateOne] = []
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -293,14 +302,46 @@ def upsert_minimal(
         if not vid or not sn:
             continue
 
-        # Default ML flags (unified schema)
+        # ===== Default ML flags =====
         ml_flags = {
-            "viral_v1": {
-                "likely": False,
-                "confirmed": False,
-                "score": 0.0,
-                "updated_at": None,
+            "viral_v2": {
+                "model_version": VIRAL_V2_MODEL_VERSION,
+                "label_rule_version": VIRAL_V2_LABEL_RULE_VERSION,
+
+                "h6": {
+                    "score_proba": None,
+                    "score_100": None,
+                    "is_candidate": None,
+                    "threshold_proba": VIRAL_V2_THRESH_6H_PROBA,
+                    "threshold_100": VIRAL_V2_THRESH_6H_100,
+                    "evaluated_at": None,
+                },
+                "h12": {
+                    "score_proba": None,
+                    "score_100": None,
+                    "is_viral_12h": None,
+                    "threshold_proba": VIRAL_V2_THRESH_12H_PROBA,
+                    "threshold_100": VIRAL_V2_THRESH_12H_100,
+                    "evaluated_at": None,
+                },
+                "h24_validation": {
+                    "score_proba": None,
+                    "score_100": None,
+                    "evaluated_at": None,
+                },
+                "final": {
+                    "status": "unknown",       # "unknown" | "non_viral" | "candidate" | "viral"
+                    "decided_stage": None,     # "6h" | "12h" | "24h"
+                    "score_proba": None,
+                    "score_100": None,
+                    "threshold_proba": None,   # nếu muốn log lại ngưỡng decision cuối
+                    "threshold_100": None,
+                    "decided_at": None,
+                    "reason": None,
+                },
             },
+
+            # Low-quality models: giữ nguyên như cũ
             "low_quality_v1_3h": {
                 "is_low": False,
                 "score": 0.0,
@@ -378,22 +419,7 @@ def run_discover(
     """
     Core discovery logic. This can be called directly from Python code
     (e.g. Streamlit dashboard) without going through CLI or environment.
-
-    All arguments are optional. If not provided, they fall back to
-    environment variables and then to hard-coded defaults.
-
-    Returns:
-        A dictionary with:
-          - exit_code: int (0, EXIT_QUOTA, or 1/2 for errors)
-          - pages: int
-          - total_found: int
-          - total_upserted: int
-          - region_used: str
-          - query_used: Optional[str]
-          - duration_used: Optional[str]
-          - random_mode: bool
     """
-    # Ensure environment is loaded (idempotent)
     load_env()
 
     # --- Read env defaults ---
@@ -413,7 +439,7 @@ def run_discover(
 
     global_query_pool = get_env("YT_RANDOM_QUERY_POOL", "") or ""
 
-    # --- Effective values (CLI/function overrides > ENV > defaults) ---
+    # --- Effective values ---
     region_used = (region or env_region).upper()
     since_used = since_minutes if since_minutes is not None else env_since_minutes
     max_pages_used = max_pages if max_pages is not None else env_max_pages
@@ -421,12 +447,8 @@ def run_discover(
     duration_mode_used = (duration_mode or env_duration_mode).lower()
     duration_pool_used = duration_pool or env_duration_pool
 
-    random_mode = (
-        env_random_pick if random_pick is None else bool(random_pick)
-    )
-    exclude_live_used = (
-        env_exclude_live if exclude_live is None else bool(exclude_live)
-    )
+    random_mode = env_random_pick if random_pick is None else bool(random_pick)
+    exclude_live_used = env_exclude_live if exclude_live is None else bool(exclude_live)
 
     random_region_pool = [
         x.strip().upper()
@@ -434,11 +456,9 @@ def run_discover(
         if x.strip()
     ]
 
-    # --- API key guard ---
     if not API_KEY:
         if verbose:
             print("Missing YT_API_KEY", file=sys.stderr)
-        # Use exit_code=2 for missing API key
         return {
             "exit_code": 2,
             "pages": 0,
@@ -450,24 +470,21 @@ def run_discover(
             "random_mode": random_mode,
         }
 
-    # --- Pick region when random_mode is enabled ---
     if random_mode and random_region_pool:
         region_used = random.choice(random_region_pool)
 
     # --- Pick query ---
     query_used: Optional[str] = None
     if random_mode:
-        # CLI / function-specified query has highest priority in random mode
         if query:
             query_used = query
         else:
             query_used = pick_query_for_region(region_used, global_query_pool)
 
     if not query_used:
-        # Fall back to explicit query or env query if random did not provide one
         query_used = query or env_query
 
-    # --- Duration parameter for Search API ---
+    # --- Duration parameter ---
     duration_used = pick_duration_param(duration_mode_used, duration_pool_used)
 
     # --- DB client ---
@@ -479,9 +496,7 @@ def run_discover(
     published_after = (now - timedelta(minutes=since_used)).isoformat()
 
     if verbose:
-        print(
-            ">>> discover_once SCAN-ONLY (near-now + categoryId + duration filter) starting"
-        )
+        print(">>> discover_once SCAN-ONLY (near-now + categoryId + duration filter) starting")
         print(
             f"Near-now slice: {published_after}..(now) | "
             f"region={region_used} | query={query_used!r} | random={random_mode} | "
@@ -513,7 +528,6 @@ def run_discover(
             found = len(items)
             filtered_live = 0
 
-            # Exclude live / upcoming if requested
             if exclude_live_used and found > 0:
                 before = len(items)
                 items = [
@@ -548,13 +562,11 @@ def run_discover(
                     sn2 = det.get("snippet", {}) or {}
                     cd = det.get("contentDetails", {}) or {}
 
-                    # categoryId enrichment
                     cate = sn2.get("categoryId")
                     if cate:
                         sn["categoryId"] = cate
                         enriched_cate += 1
 
-                    # duration enrichment
                     dur_iso = cd.get("duration")
                     secs = iso8601_to_seconds(dur_iso) if dur_iso else None
                     if dur_iso:
@@ -572,7 +584,6 @@ def run_discover(
                         f"enriched_duration={enriched_dur}"
                     )
 
-            # Upsert into Mongo
             up = upsert_minimal(
                 items=items,
                 db=db,
@@ -645,10 +656,7 @@ def run_discover(
             "userRateLimitExceeded",
         }:
             if verbose:
-                print(
-                    "YouTube quota exhausted — update YT_API_KEY.",
-                    file=sys.stderr,
-                )
+                print("YouTube quota exhausted — update YT_API_KEY.", file=sys.stderr)
             log_worker_run(
                 "discover_once",
                 {"status": "quota_exhausted", "reason": str(reason)},
@@ -704,10 +712,6 @@ def run_discover(
 #  CLI LAYER (layer 3): argparse wrapper around run_discover(...)
 # ======================================================================
 def build_arg_parser() -> argparse.ArgumentParser:
-    """
-    Build an argparse parser for CLI usage.
-    All arguments are optional and override env defaults when provided.
-    """
     parser = argparse.ArgumentParser(
         prog="discover_once",
         description=(
@@ -715,14 +719,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "(categoryId + duration enrichment, VOD-only by default)."
         ),
     )
-    parser.add_argument(
-        "--region",
-        help="Override YT_REGION (e.g. US, JP, VN).",
-    )
-    parser.add_argument(
-        "--query",
-        help="Override YT_QUERY / random query pool result.",
-    )
+    parser.add_argument("--region", help="Override YT_REGION (e.g. US, JP, VN).")
+    parser.add_argument("--query", help="Override YT_QUERY / random query pool result.")
     parser.add_argument(
         "--since-minutes",
         type=int,
@@ -767,18 +765,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    """
-    CLI entry point.
-    Parses arguments, calls run_discover(...), and returns an exit code.
-    """
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    # Resolve random_pick tri-state: True / False / None
-    random_pick: Optional[bool]
     if args.random_pick and args.no_random_pick:
-        # If both flags are set, prefer explicit OFF (just to be deterministic)
-        random_pick = False
+        random_pick: Optional[bool] = False
     elif args.random_pick:
         random_pick = True
     elif args.no_random_pick:

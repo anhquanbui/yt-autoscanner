@@ -171,6 +171,18 @@ def normalize_document(doc: Dict[str, Any]) -> Dict[str, Any]:
             max_keep = int(os.environ.get("YT_EXPORT_SNAPSHOTS_MAX", globals().get("_ARG_SNAPSHOTS_MAX", 12)))
             doc["stats_snapshots"] = normalize_snapshots_for_parquet(doc.get("stats_snapshots"), mode, max_keep)
 
+    # Normalize ml_flags and latest_stats_ts for stability
+    if "ml_flags" in doc and not isinstance(doc["ml_flags"], str):
+        try:
+            doc["ml_flags"] = json.dumps(normalize_value(doc["ml_flags"]), ensure_ascii=False)
+        except Exception:
+            # Fallback: best-effort string conversion
+            doc["ml_flags"] = str(doc["ml_flags"])
+
+    if "latest_stats_ts" in doc and doc["latest_stats_ts"] is not None:
+        # Keep as string to avoid mixed timestamp types across chunks
+        doc["latest_stats_ts"] = str(doc["latest_stats_ts"])
+
     # Flatten remaining fields normally
     return {k: normalize_value(v) for k, v in doc.items()}
 
@@ -282,6 +294,7 @@ def main():
     codec = None if args.compression == "none" else args.compression
 
     writer = None
+    writer_cols = None
     processed_docs = 0
     total_rows = 0
     buffer: list[Dict[str, Any]] = []
@@ -314,7 +327,7 @@ def main():
                 df = pd.DataFrame(buffer)
                 all_cols.update(df.columns)
 
-                # ensure stable schema
+                # ensure stable schema across chunks
                 for c in all_cols:
                     if c not in df.columns:
                         df[c] = None
@@ -330,6 +343,11 @@ def main():
                         use_dictionary=True,
                         compression_level=(args.compression_level if codec in ("zstd", "brotli", "gzip") else None),
                     )
+                    writer_cols = list(writer.schema.names)
+
+                # Always align to the writer's schema to avoid schema drift
+                if writer_cols is not None:
+                    table = table.select(writer_cols)
 
                 writer.write_table(table)
                 total_rows += len(buffer)
@@ -356,6 +374,11 @@ def main():
                     use_dictionary=True,
                     compression_level=(args.compression_level if codec in ("zstd", "brotli", "gzip") else None),
                 )
+                writer_cols = list(writer.schema.names)
+
+            # Align to writer schema for the final chunk as well
+            if writer_cols is not None:
+                table = table.select(writer_cols)
 
             writer.write_table(table)
             total_rows += len(buffer)

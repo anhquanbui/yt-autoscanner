@@ -2,365 +2,262 @@
 """
 tools/ml_flags_migrate.py
 
-One-off migration tool for `videos.ml_flags` to the unified schema:
+One-off migration script to:
 
-  - ml_flags.viral_v1 {...}
-  - ml_flags.low_quality_v1_3h {...}
-  - ml_flags.low_quality_v3_6h {...}
+  - Drop legacy `ml_flags.viral_v1`
+  - Normalise / create the new `ml_flags.viral_v2` schema:
 
-It supports:
+      ml_flags.viral_v2 = {
+          model_version: 1,
+          label_rule_version: 1,
 
-  - Mapping from legacy flat keys:
-        ml_flags.likely_viral
-        ml_flags.viral_confirmed
-        ml_flags.score
-        ml_flags.updated_at
-  - And from the intermediate schema where ml_flags.viral_v1 / low_quality_v3_6h
-    already exist, but may be incomplete.
+          # stage-level snapshots (may be null until evaluated)
+          h6: {
+              score_proba:      float | None,   # model_6h probability 0–1
+              score_100:        int   | None,   # score_proba * 100
+              is_candidate:     bool  | None,   # score_100 >= threshold_100_6h ?
+              threshold_proba:  float | None,   # decision threshold 0–1
+              threshold_100:    int   | None,   # threshold_proba * 100
+              evaluated_at:     datetime | None,
+          },
+          h12: {
+              score_proba:      float | None,
+              score_100:        int   | None,
+              is_viral_12h:     bool  | None,   # score_100 >= threshold_100_12h ?
+              threshold_proba:  float | None,
+              threshold_100:    int   | None,
+              evaluated_at:     datetime | None,
+          },
+          h24_validation: {
+              score_proba:      float | None,   # model_24h probability 0–1
+              score_100:        int   | None,
+              evaluated_at:     datetime | None,
+          },
 
-The script is **idempotent**: you can safely run it multiple times.
+          final: {
+              status:          "unknown" | "non_viral" | "candidate" | "viral",
+              decided_stage:   "6h" | "12h" | "24h" | None,
+              score_proba:     float | None,
+              score_100:       int   | None,
+              threshold_proba: float | None,
+              threshold_100:   int   | None,
+              decided_at:      datetime | None,
+              reason:          str | None,
+          }
+      }
+
+Migration is **idempotent**:
+  - Preserves any other fields inside `ml_flags` (low_quality, …)
+  - Merges with existing `ml_flags.viral_v2` if present
+  - Always removes `ml_flags.viral_v1`
 """
 
 from __future__ import annotations
 
 import argparse
-from typing import Any, Dict, Tuple
+import os
+from typing import Any, Dict, Optional, Iterable, Tuple
 
 from pymongo import MongoClient, UpdateOne
+from pymongo.collection import Collection
 
-from config.env import load_env, get_env
 
+# ---------------------------------------------------------------------------
+# Helpers to build the new viral_v2 structure
+# ---------------------------------------------------------------------------
 
-# =====================================================================
-#                         HELPER FUNCTIONS
-# =====================================================================
-
-def has_pipeline_update(server_info: Dict[str, Any]) -> bool:
+def _merge_stage(existing: Optional[Dict[str, Any]],
+                 template: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Return True if the server likely supports update with aggregation pipeline
-    (MongoDB 4.2+).
+    Merge an existing stage sub-document with a template.
 
-    We simply check the reported "version" string, e.g. "4.4.18".
+    Any missing keys in `existing` will be filled from `template`,
+    existing keys are preserved.
     """
-    try:
-        v = server_info.get("version", "0.0.0")
-        parts = [int(x) for x in str(v).split(".")[:2]]
-        if len(parts) == 1:
-            major, minor = parts[0], 0
-        else:
-            major, minor = parts
-        return (major > 4) or (major == 4 and minor >= 2)
-    except Exception:
-        # If we cannot parse, assume "true" to try pipeline path.
-        return True
+    out: Dict[str, Any] = dict(existing or {})
+    for k, v in template.items():
+        out.setdefault(k, v)
+    return out
 
 
-def legacy_query() -> Dict[str, Any]:
+STAGE_H6_TEMPLATE: Dict[str, Any] = {
+    "score_proba": None,
+    "score_100": None,
+    "is_candidate": None,
+    "threshold_proba": None,
+    "threshold_100": None,
+    "evaluated_at": None,
+}
+
+STAGE_H12_TEMPLATE: Dict[str, Any] = {
+    "score_proba": None,
+    "score_100": None,
+    "is_viral_12h": None,
+    "threshold_proba": None,
+    "threshold_100": None,
+    "evaluated_at": None,
+}
+
+STAGE_H24_TEMPLATE: Dict[str, Any] = {
+    "score_proba": None,
+    "score_100": None,
+    "evaluated_at": None,
+}
+
+FINAL_TEMPLATE: Dict[str, Any] = {
+    "status": "unknown",
+    "decided_stage": None,
+    "score_proba": None,
+    "score_100": None,
+    "threshold_proba": None,
+    "threshold_100": None,
+    "decided_at": None,
+    "reason": None,
+}
+
+
+def _auto_fill_threshold_100(stage: Dict[str, Any]) -> None:
     """
-    A document is considered "legacy-ish" if:
-
-      - It still has any of the flat keys inside ml_flags, OR
-      - It does not have ml_flags.low_quality_v1_3h (intermediate schema).
-
-    This is intentionally broad so that running the migration twice is safe.
+    If a stage has threshold_proba but missing threshold_100,
+    auto-compute threshold_100 = round(threshold_proba * 100).
     """
-    return {
-        "$or": [
-            {"ml_flags.likely_viral": {"$exists": True}},
-            {"ml_flags.viral_confirmed": {"$exists": True}},
-            {"ml_flags.score": {"$exists": True}},
-            {"ml_flags.updated_at": {"$exists": True}},
-            {"ml_flags.low_quality_v1_3h": {"$exists": False}},
-        ]
-    }
+    th_p = stage.get("threshold_proba")
+    th_100 = stage.get("threshold_100")
+    if th_p is not None and th_100 is None:
+        try:
+            stage["threshold_100"] = int(round(float(th_p) * 100))
+        except (TypeError, ValueError):
+            # keep None if cannot parse
+            pass
 
 
-def count_docs(coll, only_legacy: bool) -> Tuple[int, int]:
+def migrate_one(doc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Return (total_docs, legacy_docs).
+    Compute the update document for a single Mongo record.
 
-    If only_legacy=True, we will only process those legacy docs later,
-    but here we still return both numbers for logging.
-    """
-    q_legacy = legacy_query()
-    total = coll.estimated_document_count()
-    legacy = coll.count_documents(q_legacy)
-    if only_legacy:
-        return legacy, legacy
-    return total, legacy
-
-
-# =====================================================================
-#                 PIPELINE-BASED UPDATE (MongoDB 4.2+)
-# =====================================================================
-
-def build_update_pipeline() -> list[Dict[str, Any]]:
-    """
-    Build an aggregation pipeline used in updateMany (MongoDB 4.2+).
-
-    The pipeline:
-
-      - Populates ml_flags.viral_v1 with:
-          - likely      ← viral_v1.likely or legacy likely_viral or False
-          - confirmed   ← viral_v1.confirmed or legacy viral_confirmed or False
-          - score       ← viral_v1.score or legacy score or 0
-          - updated_at  ← viral_v1.updated_at or legacy updated_at or null
-
-      - Ensures ml_flags.low_quality_v1_3h has all fields:
-          - is_low      (default False)
-          - score       (default 0)
-          - threshold   (default null)
-          - updated_at  (default null)
-
-      - Ensures ml_flags.low_quality_v3_6h has all fields with the same defaults.
-
-    The logic intentionally **does not** drop existing extra fields in ml_flags;
-    it only overwrites the three sub-documents mentioned above.
-    """
-    return [
-        {
-            "$set": {
-                "ml_flags.viral_v1": {
-                    "likely": {
-                        "$ifNull": [
-                            "$ml_flags.viral_v1.likely",
-                            {
-                                "$ifNull": [
-                                    "$ml_flags.likely_viral",
-                                    False,
-                                ]
-                            },
-                        ]
-                    },
-                    "confirmed": {
-                        "$ifNull": [
-                            "$ml_flags.viral_v1.confirmed",
-                            {
-                                "$ifNull": [
-                                    "$ml_flags.viral_confirmed",
-                                    False,
-                                ]
-                            },
-                        ]
-                    },
-                    "score": {
-                        "$ifNull": [
-                            "$ml_flags.viral_v1.score",
-                            {
-                                "$ifNull": [
-                                    "$ml_flags.score",
-                                    0,
-                                ]
-                            },
-                        ]
-                    },
-                    "updated_at": {
-                        "$ifNull": [
-                            "$ml_flags.viral_v1.updated_at",
-                            "$ml_flags.updated_at",
-                        ]
-                    },
-                },
-                "ml_flags.low_quality_v1_3h": {
-                    "is_low": {
-                        "$ifNull": [
-                            "$ml_flags.low_quality_v1_3h.is_low",
-                            False,
-                        ]
-                    },
-                    "score": {
-                        "$ifNull": [
-                            "$ml_flags.low_quality_v1_3h.score",
-                            0,
-                        ]
-                    },
-                    "threshold": {
-                        "$ifNull": [
-                            "$ml_flags.low_quality_v1_3h.threshold",
-                            None,
-                        ]
-                    },
-                    "updated_at": {
-                        "$ifNull": [
-                            "$ml_flags.low_quality_v1_3h.updated_at",
-                            None,
-                        ]
-                    },
-                },
-                "ml_flags.low_quality_v3_6h": {
-                    "is_low": {
-                        "$ifNull": [
-                            "$ml_flags.low_quality_v3_6h.is_low",
-                            False,
-                        ]
-                    },
-                    "score": {
-                        "$ifNull": [
-                            "$ml_flags.low_quality_v3_6h.score",
-                            0,
-                        ]
-                    },
-                    "threshold": {
-                        "$ifNull": [
-                            "$ml_flags.low_quality_v3_6h.threshold",
-                            None,
-                        ]
-                    },
-                    "updated_at": {
-                        "$ifNull": [
-                            "$ml_flags.low_quality_v3_6h.updated_at",
-                            None,
-                        ]
-                    },
-                },
-            }
-        }
-    ]
-
-
-def run_pipeline_update(coll, only_legacy: bool, verbose: bool = False) -> Tuple[int, int]:
-    """
-    Use `updateMany(filter, pipeline)` with aggregation pipeline.
+    - Removes `ml_flags.viral_v1` if present
+    - Ensures `ml_flags.viral_v2` follows the new schema
 
     Returns:
-      (matched_count, modified_count)
+        None  -> no change needed
+        dict  -> update spec for update_one / bulk_write
     """
-    match: Dict[str, Any] = legacy_query() if only_legacy else {}
+    ml: Dict[str, Any] = dict(doc.get("ml_flags") or {})
 
-    if verbose:
-        print("[DEBUG] Pipeline filter:")
-        print(match)
-        print("[DEBUG] Pipeline stages:")
-        for stage in build_update_pipeline():
-            print(stage)
+    # Drop legacy viral_v1
+    had_v1 = "viral_v1" in ml
+    if had_v1:
+        ml.pop("viral_v1", None)
 
-    res = coll.update_many(match, build_update_pipeline())
-    return res.matched_count, res.modified_count
+    v2_in: Dict[str, Any] = dict(ml.get("viral_v2") or {})
+
+    v2_out: Dict[str, Any] = {}
+    v2_out["model_version"] = int(v2_in.get("model_version") or 1)
+    v2_out["label_rule_version"] = int(v2_in.get("label_rule_version") or 1)
+
+    # Stage sub-docs
+    h6 = _merge_stage(v2_in.get("h6"), STAGE_H6_TEMPLATE)
+    _auto_fill_threshold_100(h6)
+
+    h12 = _merge_stage(v2_in.get("h12"), STAGE_H12_TEMPLATE)
+    _auto_fill_threshold_100(h12)
+
+    h24 = _merge_stage(v2_in.get("h24_validation"), STAGE_H24_TEMPLATE)
+
+    v2_out["h6"] = h6
+    v2_out["h12"] = h12
+    v2_out["h24_validation"] = h24
+
+    # Final decision block
+    final = _merge_stage(v2_in.get("final"), FINAL_TEMPLATE)
+    _auto_fill_threshold_100(final)
+    v2_out["final"] = final
+
+    ml["viral_v2"] = v2_out
+
+    original_ml = doc.get("ml_flags") or {}
+    if not had_v1 and original_ml == ml:
+        # Nothing actually changed
+        return None
+
+    return {"$set": {"ml_flags": ml}}
 
 
-# =====================================================================
-#                 FALLBACK PER-DOCUMENT BULK UPDATE
-# =====================================================================
+# ---------------------------------------------------------------------------
+# Bulk runner
+# ---------------------------------------------------------------------------
 
-def migrate_one(doc: Dict[str, Any]) -> Dict[str, Any]:
+def iter_target_docs(coll: Collection,
+                     limit: Optional[int] = None) -> Iterable[Dict[str, Any]]:
     """
-    Compute the `$set` document for a single Mongo document.
-
-    It merges:
-
-      - legacy flat keys (likely_viral, viral_confirmed, score, updated_at)
-      - existing ml_flags.viral_v1 / low_quality_v1_3h / low_quality_v3_6h
-
-    and returns something like:
-
-      {
-        "$set": {
-          "ml_flags.viral_v1": {...},
-          "ml_flags.low_quality_v1_3h": {...},
-          "ml_flags.low_quality_v3_6h": {...},
-        }
-      }
+    Iterate through candidate docs; we only need `_id` and `ml_flags`.
     """
-    ml = doc.get("ml_flags") or {}
-    # Start from existing nested values (if any)
-    out_viral = dict(ml.get("viral_v1") or {})
-    out_q3h = dict(ml.get("low_quality_v1_3h") or {})
-    out_q6h = dict(ml.get("low_quality_v3_6h") or {})
-
-    # ---- Legacy → viral_v1 ----
-    if "likely_viral" in ml and "likely" not in out_viral:
-        out_viral["likely"] = bool(ml.get("likely_viral"))
-    if "viral_confirmed" in ml and "confirmed" not in out_viral:
-        out_viral["confirmed"] = bool(ml.get("viral_confirmed"))
-    if "score" in ml and "score" not in out_viral:
-        out_viral.setdefault("score", ml.get("score") or 0)
-    if "updated_at" in ml and "updated_at" not in out_viral:
-        out_viral["updated_at"] = ml.get("updated_at")
-
-    # Ensure low_quality_v1_3h fields with defaults
-    out_q3h.setdefault("is_low", False)
-    out_q3h.setdefault("score", 0)
-    out_q3h.setdefault("threshold", None)
-    out_q3h.setdefault("updated_at", None)
-
-    # Ensure low_quality_v3_6h fields with defaults
-    out_q6h.setdefault("is_low", False)
-    out_q6h.setdefault("score", 0)
-    out_q6h.setdefault("threshold", None)
-    out_q6h.setdefault("updated_at", None)
-
-    set_fields = {
-        "ml_flags.viral_v1": out_viral,
-        "ml_flags.low_quality_v1_3h": out_q3h,
-        "ml_flags.low_quality_v3_6h": out_q6h,
-    }
-    return {"$set": set_fields}
+    cur = coll.find({}, projection={"_id": 1, "ml_flags": 1})
+    if limit is not None:
+        cur = cur.limit(int(limit))
+    return cur
 
 
-def run_fallback_updates(
-    coll,
-    only_legacy: bool,
+def run_migration(
+    coll: Collection,
     batch_size: int = 1000,
-    limit: int | None = None,
+    limit: Optional[int] = None,
+    dry_run: bool = False,
     verbose: bool = False,
 ) -> Tuple[int, int]:
     """
-    Fallback path for servers that do not support pipeline updates.
-
-    It iterates over legacy docs (or all docs, depending on flags),
-    computes per-doc `$set` with `migrate_one`, and writes them in bulk.
+    Run migration over the collection.
 
     Returns:
-      (matched_count, modified_count)
+        (matched_count, modified_count)
     """
-    match: Dict[str, Any] = legacy_query() if only_legacy else {}
-
-    cur = coll.find(match, projection={"_id": 1, "ml_flags": 1})
-    if limit is not None:
-        cur = cur.limit(int(limit))
-
     matched = 0
     modified_total = 0
     ops: list[UpdateOne] = []
 
-    for doc in cur:
-        matched += 1
+    for doc in iter_target_docs(coll, limit=limit):
         upd = migrate_one(doc)
-        ops.append(UpdateOne({"_id": doc["_id"]}, upd))
+        if upd is None:
+            continue
 
+        matched += 1
+        if verbose:
+            print(f"[DEBUG] _id={doc['_id']} -> {upd}")
+
+        if dry_run:
+            continue
+
+        ops.append(UpdateOne({"_id": doc["_id"]}, upd))
         if len(ops) >= batch_size:
             res = coll.bulk_write(ops, ordered=False)
             modified_total += res.modified_count
             if verbose:
-                print(f"[DEBUG] Bulk write: matched+={len(ops)}, modified+={res.modified_count}")
+                print(f"[DEBUG] bulk matched+={len(ops)}, modified+={res.modified_count}")
             ops = []
 
-    if ops:
+    # flush tail
+    if ops and not dry_run:
         res = coll.bulk_write(ops, ordered=False)
         modified_total += res.modified_count
         if verbose:
-            print(f"[DEBUG] Final bulk write: matched+={len(ops)}, modified+={res.modified_count}")
+            print(f"[DEBUG] final bulk matched+={len(ops)}, modified+={res.modified_count}")
 
     return matched, modified_total
 
 
-# =====================================================================
-#                               CLI
-# =====================================================================
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
-def main() -> int:
+def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
-        description=(
-            "Migrate videos.ml_flags to new schema "
-            "(viral_v1, low_quality_v1_3h, low_quality_v3_6h)."
-        )
+        description="Migrate videos.ml_flags to new viral_v2 schema (and drop viral_v1)."
     )
 
-    # Let argparse defaults be None; we resolve env / fallback inside.
     ap.add_argument(
         "--mongo-uri",
         dest="mongo_uri",
-        default=None,
+        default=os.getenv("MONGO_URI", "mongodb://localhost:27017/ytscan"),
         help=(
             "Mongo connection string (may include /db). "
             "Default: env MONGO_URI or mongodb://localhost:27017/ytscan"
@@ -369,96 +266,65 @@ def main() -> int:
     ap.add_argument(
         "--db",
         dest="db",
-        default=None,
+        default=os.getenv("MONGO_DB", "ytscan"),
         help="Database name. Default: env MONGO_DB or 'ytscan'.",
     )
     ap.add_argument(
         "--coll",
         dest="coll",
-        default=None,
+        default=os.getenv("MONGO_COLL", "videos"),
         help="Collection name. Default: env MONGO_COLL or 'videos'.",
-    )
-    ap.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Only print statistics; do not modify any data.",
-    )
-    ap.add_argument(
-        "--only-legacy",
-        action="store_true",
-        help=(
-            "Update only 'legacy-ish' docs: those that still have flat keys "
-            "or do not yet have ml_flags.low_quality_v1_3h."
-        ),
     )
     ap.add_argument(
         "--batch-size",
         type=int,
         default=1000,
-        help="Per-bulk batch size for fallback mode. Default: 1000.",
+        help="Bulk write batch size (default: 1000).",
     )
     ap.add_argument(
         "--limit",
         type=int,
         default=None,
-        help="Optional limit for number of documents processed (debug/testing).",
+        help="Optional limit on number of documents to scan (debug).",
+    )
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Do not write anything, only print stats.",
     )
     ap.add_argument(
         "--verbose",
         action="store_true",
-        help="Print extra debug information.",
+        help="Verbose debug logging.",
     )
+    return ap
 
+
+def main() -> int:
+    ap = build_arg_parser()
     args = ap.parse_args()
 
-    # --- Unified env loading ---
-    load_env()
+    print("[INFO] Connecting to MongoDB...")
+    client = MongoClient(args.mongo_uri)
+    db = client[args.db]
+    coll = db[args.coll]
 
-    mongo_uri = (
-        args.mongo_uri
-        or get_env("MONGO_URI")
-        or "mongodb://localhost:27017/ytscan"
+    print(f"[INFO] DB={db.name}  coll={coll.name}")
+    print(f"[INFO] dry_run={args.dry_run}  batch_size={args.batch_size}  limit={args.limit}")
+
+    matched, modified = run_migration(
+        coll,
+        batch_size=args.batch_size,
+        limit=args.limit,
+        dry_run=args.dry_run,
+        verbose=args.verbose,
     )
-    db_name = args.db or get_env("MONGO_DB") or "ytscan"
-    coll_name = args.coll or get_env("MONGO_COLL") or "videos"
 
-    print(f"[INFO] Mongo URI: {mongo_uri}")
-    print(f"[INFO] Target collection: {db_name}.{coll_name}")
-
-    client = MongoClient(mongo_uri)
-    db = client[db_name]
-    coll = db[coll_name]
-
-    total, legacy = count_docs(coll, args.only_legacy)
-    print(f"[INFO] Total docs: {total:,} | Legacy-ish docs: {legacy:,}")
-    if args.limit is not None:
-        print(f"[INFO] Limit enabled: will process at most {args.limit:,} documents")
-
+    print(f"[DONE] Matched (to update): {matched:,}")
     if args.dry_run:
-        print("[DRY-RUN] No changes applied.")
-        return 0
-
-    info = client.server_info()
-    support_pipeline = has_pipeline_update(info)
-    print(
-        f"[INFO] MongoDB version: {info.get('version')} | "
-        f"pipeline updates supported: {support_pipeline}"
-    )
-
-    if support_pipeline:
-        print("[INFO] Using aggregation pipeline updateMany()")
-        matched, modified = run_pipeline_update(coll, args.only_legacy, verbose=args.verbose)
+        print("[DONE] DRY RUN — no modifications written.")
     else:
-        print("[WARN] Server likely < 4.2 — falling back to per-document bulk updates.")
-        matched, modified = run_fallback_updates(
-            coll,
-            args.only_legacy,
-            batch_size=args.batch_size,
-            limit=args.limit,
-            verbose=args.verbose,
-        )
-
-    print(f"[DONE] Matched: {matched:,} | Modified: {modified:,}")
+        print(f"[DONE] Modified: {modified:,}")
     return 0
 
 
