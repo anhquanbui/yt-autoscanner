@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # auto_viral.sh — chạy vòng lặp viral_prediction_core (6h / 12h / 24h, parallel)
 
-set -uo pipefail
+set -euo pipefail
 
-REPO_DIR="/home/ytscan/yt-autoscanner/scripts"
+# Repo root (KHÔNG phải /scripts)
+REPO_DIR="/home/ytscan/yt-autoscanner"
 VENV_DIR="$REPO_DIR/.venv"
 
 # Interval giữa mỗi vòng (giây). Có thể override bằng biến môi trường AUTO_VIRAL_INTERVAL_SECONDS
@@ -18,6 +19,8 @@ cd "$REPO_DIR" || {
 if [[ -d "$VENV_DIR" ]]; then
   # shellcheck disable=SC1090
   source "$VENV_DIR/bin/activate"
+else
+  echo "[WARN] Virtualenv not found at $VENV_DIR, using system python: $(command -v python)"
 fi
 
 log() {
@@ -26,6 +29,8 @@ log() {
 }
 
 log "Starting auto_viral loop (interval = ${INTERVAL_SECONDS}s, parallel 6h/12h/24h)..."
+log "Using python: $(command -v python)"
+log "Current dir: $(pwd)"
 
 while true; do
   log "=== New auto_viral cycle ==="
