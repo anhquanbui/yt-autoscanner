@@ -294,10 +294,61 @@ ml_flags:
 - `yt-viral`
 - `yt-dashboard` (optional if using tmux)
 
+### Symlink systemd service
+
+Run each service
+
+```bash
+sudo ln -s /home/ytscan/yt-autoscanner/systemd/yt-auto-discover.service \
+    /etc/systemd/system/yt-auto-discover.service
+
+sudo ln -s /home/ytscan/yt-autoscanner/systemd/yt-auto-track.service \
+    /etc/systemd/system/yt-auto-track.service
+
+sudo ln -s /home/ytscan/yt-autoscanner/systemd/yt-lowq-3h.service \
+    /etc/systemd/system/yt-lowq-3h.service
+
+sudo ln -s /home/ytscan/yt-autoscanner/systemd/yt-lowq-6h.service \
+    /etc/systemd/system/yt-lowq-6h.service
+
+sudo ln -s /home/ytscan/yt-autoscanner/systemd/yt-kpis.service \
+    /etc/systemd/system/yt-kpis.service
+
+sudo ln -s /home/ytscan/yt-autoscanner/systemd/yt-viral.service \
+    /etc/systemd/system/yt-viral.service
+
+sudo ln -s /home/ytscan/yt-autoscanner/systemd/yt-viral-finalize.service \
+    /etc/systemd/system/yt-viral-finalize.service
+```
+
+Or just one link
+
+```bash
+sudo ln -s /home/ytscan/yt-autoscanner/systemd/yt-*.service /etc/systemd/system/
+```
+
+Check the services
+
+```bash
+ls -l /etc/systemd/system/yt-*.service
+```
+
+### Enable
+
+```bash
+sudo systemctl enable yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral yt-viral-finalize
+```
+
 ### Start
 
 ```bash
 sudo systemctl start yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral yt-viral-finalize
+```
+
+### Checking status
+
+```bash
+sudo systemctl status yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral yt-viral-finalize
 ```
 
 ### Stop
