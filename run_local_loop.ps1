@@ -1,10 +1,16 @@
 <#
-  run_local_loop.ps1 (v7.0) — Local runner for:
+  run_local_loop.ps1 (v8.0) — Local runner for:
     - worker.discover_once           (foreground, đúng tiến độ)
     - worker.track_once              (foreground, đúng tiến độ)
     - worker.low_quality_3h_worker   (background, không block vòng lặp, --only-missing)
     - worker.low_quality_6h_worker   (background, không block vòng lặp, --only-missing)
     - worker.compute_dashboard_kpis  (background, không block vòng lặp)
+
+    --- NEW (viral v2) ---
+    - worker.viral_6h                (background, không block, only-missing)
+    - worker.viral_12h               (background, không block, only-missing)
+    - worker.viral_24h               (background, không block, only-missing)
+    - worker.viral_finalize          (background, không block, --only-missing)
 
   - discover_once: quét video mới
   - track_once: cập nhật stats cho video đang tracking
@@ -12,20 +18,32 @@
   - low_quality_6h_worker: chấm điểm model 6h cho video ≥6h
   - compute_dashboard_kpis: snapshot KPI cho dashboard Overview
 
+  - viral_6h: chấm điểm viral 6h (ml_flags.viral_v2.h6, only-missing)
+  - viral_12h: chấm điểm viral 12h (ml_flags.viral_v2.h12, only-missing)
+  - viral_24h: validator viral 24h (ml_flags.viral_v2.h24_validation, only-missing)
+  - viral_finalize: quyết định ml_flags.viral_v2.final.* dựa trên h6/h12/h24 + lowq
+
   PowerShell 5 compatible (no '??' operator).
 #>
 
 # =======================
 # 🔁 Intervals (seconds)
 # =======================
-$DiscoverIntervalSeconds = 30      # discover_once every 5 minutes
-$TrackIntervalSeconds    = 10       # track_once every 15 seconds
+$DiscoverIntervalSeconds      = 30      # discover_once every 30 seconds (local dev)
+$TrackIntervalSeconds         = 10      # track_once every 10 seconds
 
-$LowQ3hIntervalSeconds   = 900      # low_quality_3h_worker every 15 minutes
-$LowQ6hIntervalSeconds   = 3600     # low_quality_6h_worker every 60 minutes
+$LowQ3hIntervalSeconds        = 900     # low_quality_3h_worker every 15 minutes
+$LowQ6hIntervalSeconds        = 3600    # low_quality_6h_worker every 60 minutes
 
-$KpiIntervalSeconds      = 300      # compute_dashboard_kpis every 5 minutes
-$TickSleepSeconds        = 5        # main loop tick sleep
+$KpiIntervalSeconds           = 300     # compute_dashboard_kpis every 5 minutes
+
+# --- NEW: viral model intervals (có thể chỉnh tuỳ ý) ---
+$Viral6hIntervalSeconds       = 1800    # viral_6h every 30 minutes
+$Viral12hIntervalSeconds      = 1800    # viral_12h every 30 minutes
+$Viral24hIntervalSeconds      = 1800    # viral_24h every 30 minutes
+$ViralFinalizeIntervalSeconds = 3600    # viral_finalize every 60 minutes
+
+$TickSleepSeconds             = 5       # main loop tick sleep
 
 # =======================
 # 🛤️ Paths
@@ -189,6 +207,11 @@ function Get-WorkerModule([string]$ScriptRelPath) {
         "low_quality_3h_worker.py"   { return "worker.low_quality_3h_worker" }
         "low_quality_6h_worker.py"   { return "worker.low_quality_6h_worker" }
         "compute_dashboard_kpis.py"  { return "worker.compute_dashboard_kpis" }
+        # --- NEW viral workers ---
+        "viral_6h.py"                { return "worker.viral_6h" }
+        "viral_12h.py"               { return "worker.viral_12h" }
+        "viral_24h.py"               { return "worker.viral_24h" }
+        "viral_finalize.py"          { return "worker.viral_finalize" }
         default                      { return $null }
     }
 }
@@ -231,9 +254,15 @@ function Run-ForegroundStep([string]$Name, [string]$ScriptRelPath) {
 # 🏃‍♂️ Background worker (non-blocking, no overlap)
 # =======================
 # Global process handles to avoid overlapping runs
-$Global:LowQ3hProcess = $null
-$Global:LowQ6hProcess = $null
-$Global:KpiProcess    = $null
+$Global:LowQ3hProcess        = $null
+$Global:LowQ6hProcess        = $null
+$Global:KpiProcess           = $null
+
+# --- NEW: viral worker process handles ---
+$Global:Viral6hProcess       = $null
+$Global:Viral12hProcess      = $null
+$Global:Viral24hProcess      = $null
+$Global:ViralFinalizeProcess = $null
 
 function Ensure-BackgroundWorker {
     param(
@@ -286,15 +315,22 @@ function Ensure-BackgroundWorker {
 # =======================
 # 🚀 Main loop
 # =======================
-Write-Log ("Starting combined runner (discover + track + low_quality_3h + low_quality_6h + KPI). " +
-          "Intervals: discover={0}s, track={1}s, low_quality_3h={2}s, low_quality_6h={3}s, kpi={4}s" -f `
-          $DiscoverIntervalSeconds, $TrackIntervalSeconds, $LowQ3hIntervalSeconds, $LowQ6hIntervalSeconds, $KpiIntervalSeconds)
+Write-Log ("Starting combined runner (discover + track + low_quality_3h + low_quality_6h + KPI + viral_6h/12h/24h + viral_finalize). " +
+          "Intervals: discover={0}s, track={1}s, low_quality_3h={2}s, low_quality_6h={3}s, kpi={4}s, viral6h={5}s, viral12h={6}s, viral24h={7}s, viralFinalize={8}s" -f `
+          $DiscoverIntervalSeconds, $TrackIntervalSeconds, $LowQ3hIntervalSeconds, $LowQ6hIntervalSeconds, $KpiIntervalSeconds, `
+          $Viral6hIntervalSeconds, $Viral12hIntervalSeconds, $Viral24hIntervalSeconds, $ViralFinalizeIntervalSeconds)
 
-$NextDiscover = Get-Date
-$NextTrack    = Get-Date
-$NextLowQ3h   = Get-Date
-$NextLowQ6h   = Get-Date
-$NextKpi      = Get-Date
+$NextDiscover      = Get-Date
+$NextTrack         = Get-Date
+$NextLowQ3h        = Get-Date
+$NextLowQ6h        = Get-Date
+$NextKpi           = Get-Date
+
+# --- NEW viral schedulers ---
+$NextViral6h       = Get-Date
+$NextViral12h      = Get-Date
+$NextViral24h      = Get-Date
+$NextViralFinalize = Get-Date
 
 while ($true) {
     $now = Get-Date
@@ -332,6 +368,38 @@ while ($true) {
                                 -ScriptRelPath "compute_dashboard_kpis.py" `
                                 -ProcVar ([ref]$Global:KpiProcess)
         $NextKpi = $now.AddSeconds($KpiIntervalSeconds)
+    }
+
+    # ---- NEW: viral background workers ----
+    if ($now -ge $NextViral6h) {
+        # worker.viral_6h tự default only-missing, nên không cần ExtraArgs
+        Ensure-BackgroundWorker -Name "viral_6h" `
+                                -ScriptRelPath "viral_6h.py" `
+                                -ProcVar ([ref]$Global:Viral6hProcess)
+        $NextViral6h = $now.AddSeconds($Viral6hIntervalSeconds)
+    }
+
+    if ($now -ge $NextViral12h) {
+        Ensure-BackgroundWorker -Name "viral_12h" `
+                                -ScriptRelPath "viral_12h.py" `
+                                -ProcVar ([ref]$Global:Viral12hProcess)
+        $NextViral12h = $now.AddSeconds($Viral12hIntervalSeconds)
+    }
+
+    if ($now -ge $NextViral24h) {
+        Ensure-BackgroundWorker -Name "viral_24h" `
+                                -ScriptRelPath "viral_24h.py" `
+                                -ProcVar ([ref]$Global:Viral24hProcess)
+        $NextViral24h = $now.AddSeconds($Viral24hIntervalSeconds)
+    }
+
+    if ($now -ge $NextViralFinalize) {
+        # Giữ behavior giống khi bạn chạy: python -m worker.viral_finalize --only-missing
+        Ensure-BackgroundWorker -Name "viral_finalize" `
+                                -ScriptRelPath "viral_finalize.py" `
+                                -ProcVar ([ref]$Global:ViralFinalizeProcess) `
+                                -ExtraArgs "--only-missing"
+        $NextViralFinalize = $now.AddSeconds($ViralFinalizeIntervalSeconds)
     }
 
     Start-Sleep -Seconds $TickSleepSeconds
