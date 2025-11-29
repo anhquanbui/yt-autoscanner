@@ -24,9 +24,15 @@ WORKERS = [
     ("low_quality_autoflag_3h", "Low-quality scoring (3h)", "yt-lowq-3h"),
     ("low_quality_autoflag_6h", "Low-quality scoring (6h)", "yt-lowq-6h"),
     ("compute_dashboard_kpis", "Dashboard KPI snapshot", "yt-kpis"),
+    # Tổng quan chung (KHÔNG liên kết service riêng)
+    ("viral_scoring", "Viral scoring (6h / 12h / 24h)", None),
+    
+    # Ba worker mới (tách service)
+    ("viral_scoring_h6", "Viral scoring 6h", "yt-viral-6h"),
+    ("viral_scoring_h12", "Viral scoring 12h", "yt-viral-12h"),
+    ("viral_scoring_h24", "Viral scoring 24h", "yt-viral-24h"),
 
-    # --- Viral pipeline ---
-    ("viral_scoring", "Viral scoring", "yt-viral"),
+    # Finalize
     ("viral_finalize", "Viral finalize (≥24h)", "yt-viral-finalize"),
 ]
 

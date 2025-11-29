@@ -2,34 +2,30 @@
 set -euo pipefail
 
 # ==========================
-# Paths
+# Shared environment
 # ==========================
-PROJECT_ROOT="/home/ytscan/yt-autoscanner"
-VENV_PY="$PROJECT_ROOT/.venv/bin/python"
+source "$(dirname "$0")/../config/env.sh"
 
 # ==========================
-# Guard: venv must exist
+# Ensure venv exists
 # ==========================
-if [ ! -x "$VENV_PY" ]; then
-  echo "[FATAL] Python venv not found at: $VENV_PY"
-  echo "-> Run:"
-  echo "   python3 -m venv $PROJECT_ROOT/.venv"
-  echo "   source $PROJECT_ROOT/.venv/bin/activate"
-  echo "   pip install -r worker/requirements.txt"
-  exit 1
-fi
+check_venv
 
-# NOTE:
-# No manual .env loading here.
-# All env resolution is handled inside Python by config.env.load_env().
+# Optionally ensure required modules exist
+# For low-quality model you likely need xgboost, sklearn, pymongo, etc.
+# Uncomment as needed:
+# ensure_module "xgboost"
+# ensure_module "pymongo"
 
+# ==========================
 # Always run from project root so Python imports work
+# ==========================
 cd "$PROJECT_ROOT"
 
 # ==========================
 # 3H low-quality loop
 # ==========================
-SLEEP_SECONDS=1200   # 20 minutes between runs (tùy bạn chỉnh)
+SLEEP_SECONDS=1200   # 20 minutes between runs (adjust if needed)
 
 while true; do
   echo "[AutoLowQ-3H] $(date) running worker.low_quality_3h_worker"

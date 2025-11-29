@@ -2,34 +2,33 @@
 set -euo pipefail
 
 # ==========================
-# Paths
+# Shared environment
 # ==========================
-PROJECT_ROOT="/home/ytscan/yt-autoscanner"
-VENV_PY="$PROJECT_ROOT/.venv/bin/python"
+source "$(dirname "$0")/../config/env.sh"
 
 # ==========================
-# Guard: venv must exist
+# Ensure venv exists
 # ==========================
-if [ ! -x "$VENV_PY" ]; then
-  echo "[FATAL] Python venv not found at: $VENV_PY"
-  echo "-> Run:"
-  echo "   python3 -m venv $PROJECT_ROOT/.venv"
-  echo "   source $PROJECT_ROOT/.venv/bin/activate"
-  echo "   pip install -r worker/requirements.txt"
-  exit 1
-fi
+check_venv
+
+# Optionally ensure required modules exist
+# For tracking you likely need pymongo, google-api-client, etc.
+# Uncomment if you want automatic install via requirements-dev.txt:
+# ensure_module "pymongo"
 
 # NOTE:
 # No manual .env loading here.
 # Env is resolved in Python via config.env.load_env().
 
+# ==========================
 # Always run from project root
+# ==========================
 cd "$PROJECT_ROOT"
 
 # ==========================
 # Track loop
 # ==========================
-SLEEP_SECONDS=30   # time between runs (tùy bạn chỉnh)
+SLEEP_SECONDS=30   # time between runs (adjust as needed)
 
 while true; do
   echo "[AutoTrack] $(date) running worker.track_once"

@@ -12,6 +12,9 @@ source "$(dirname "$0")/../config/env.sh"
 check_venv
 
 # Optionally ensure required modules exist
+# For viral model you probably need xgboost / pymongo / sklearn, etc.
+# Uncomment if you want automatic install via requirements-dev.txt:
+# ensure_module "xgboost"
 # ensure_module "pymongo"
 
 # ==========================
@@ -20,25 +23,22 @@ check_venv
 cd "$PROJECT_ROOT"
 
 # ==========================
-# KPI loop
+# Viral 6H loop
 # ==========================
-SLEEP_SECONDS=300   # 5 minutes (change if needed)
+SLEEP_SECONDS=600   # 10 minutes between runs (adjust if needed)
 
 while true; do
-  echo "[AutoKPIs] $(date) running worker.compute_dashboard_kpis"
+  echo "[AutoViral-6H] $(date) running worker.viral_6h"
 
-  if ! "$VENV_PY" -m worker.compute_dashboard_kpis; then
+  if ! "$VENV_PY" -m worker.viral_6h; then
     rc=$?
-    echo "[AutoKPIs] worker exited with code $rc"
+    echo "[AutoViral-6H] worker exited with code $rc"
 
-    # 88 = quota exhausted (if KPIs later use API)
-    if [ "$rc" -eq 88 ]; then
-      echo "[AutoKPIs] quota exhausted, sleeping 600s"
-      sleep 600
-      continue
-    fi
+    # You can add special handling for specific exit codes here
+    sleep 600
+    continue
   fi
 
-  echo "[AutoKPIs] sleeping ${SLEEP_SECONDS}s"
+  echo "[AutoViral-6H] sleeping ${SLEEP_SECONDS}s"
   sleep "$SLEEP_SECONDS"
 done

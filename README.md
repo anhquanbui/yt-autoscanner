@@ -291,7 +291,10 @@ ml_flags:
 - `yt-lowq-6h`
 - `yt-kpis`
 - `yt-viral-finalize`
-- `yt-viral`
+- `yt-viral` (optional if running one line)
+- `yt-viral-6h`
+- `yt-viral-12h`
+- `yt-viral-24h`
 - `yt-dashboard` (optional if using tmux)
 
 ### Symlink systemd service
@@ -301,6 +304,15 @@ Run each service
 ```bash
 sudo ln -s /home/ytscan/yt-autoscanner/systemd/yt-auto-discover.service \
     /etc/systemd/system/yt-auto-discover.service
+
+sudo ln -sf /home/ytscan/yt-autoscanner/systemd/yt-viral-6h.service \
+    /etc/systemd/system/yt-viral-6h.service
+
+sudo ln -sf /home/ytscan/yt-autoscanner/systemd/yt-viral-12h.service \
+    /etc/systemd/system/yt-viral-12h.service
+
+sudo ln -sf /home/ytscan/yt-autoscanner/systemd/yt-viral-24h.service \
+    /etc/systemd/system/yt-viral-24h.service
 
 sudo ln -s /home/ytscan/yt-autoscanner/systemd/yt-auto-track.service \
     /etc/systemd/system/yt-auto-track.service
@@ -313,9 +325,6 @@ sudo ln -s /home/ytscan/yt-autoscanner/systemd/yt-lowq-6h.service \
 
 sudo ln -s /home/ytscan/yt-autoscanner/systemd/yt-kpis.service \
     /etc/systemd/system/yt-kpis.service
-
-sudo ln -s /home/ytscan/yt-autoscanner/systemd/yt-viral.service \
-    /etc/systemd/system/yt-viral.service
 
 sudo ln -s /home/ytscan/yt-autoscanner/systemd/yt-viral-finalize.service \
     /etc/systemd/system/yt-viral-finalize.service
@@ -336,13 +345,13 @@ ls -l /etc/systemd/system/yt-*.service
 ### Enable
 
 ```bash
-sudo systemctl enable yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral yt-viral-finalize
+sudo systemctl enable yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-viral-6h yt-viral-12h yt-viral-24h yt-kpis yt-viral-finalize
 ```
 
 ### Start
 
 ```bash
-sudo systemctl start yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral yt-viral-finalize
+sudo systemctl start yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-viral-6h yt-viral-12h yt-viral-24h yt-kpis yt-viral-finalize
 ```
 
 ### Checking status
@@ -353,20 +362,22 @@ systemctl status yt-auto-track
 systemctl status yt-lowq-3h
 systemctl status yt-lowq-6h
 systemctl status yt-kpis
-systemctl status yt-viral
+systemctl status yt-viral-6h
+systemctl status yt-viral-12h
+systemctl status yt-viral-24h
 systemctl status yt-viral-finalize
 ```
 
 ### Stop
 
 ```bash
-sudo systemctl stop yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral yt-viral-finalize
+sudo systemctl stop yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-viral-6h yt-viral-12h yt-viral-24h yt-kpis yt-viral-finalize
 ```
 
 ### Restart
 
 ```bash
-sudo systemctl restart yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral yt-viral-finalize
+sudo systemctl restart yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-viral-6h yt-viral-12h yt-viral-24h yt-kpis yt-viral-finalize
 ```
 
 ### Logs
@@ -377,21 +388,23 @@ journalctl -u yt-auto-track -f
 journalctl -u yt-lowq-3h -f
 journalctl -u yt-lowq-6h -f
 journalctl -u yt-kpis -f
-journalctl -u yt-viral -f
+journalctl -u yt-viral-6h -f
+journalctl -u yt-viral-12h -f
+journalctl -u yt-viral-24h -f
 journalctl -u yt-viral-finalize -f
 ```
 
 ### Disable
 
 ```bash
-sudo systemctl disable yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral yt-viral-finalize
+sudo systemctl disable yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral-6h yt-viral-12h yt-viral-24h yt-viral-finalize
 ```
 
 ### Completely stop and remove
 
 ```bash
-sudo systemctl stop yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral yt-viral-finalize && \
-sudo systemctl disable yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral yt-viral-finalize
+sudo systemctl stop yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral-6h yt-viral-12h yt-viral-24h yt-viral-finalize && \
+sudo systemctl disable yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral-6h yt-viral-12h yt-viral-24h yt-viral-finalize
 ```
 
 ---

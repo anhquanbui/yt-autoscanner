@@ -768,6 +768,8 @@ def run_stage(
     only_missing: bool,
     force_all: bool,
     limit: Optional[int],
+    worker_runs_name: Optional[str] = None,
+    worker_status: Optional[str] = None,
 ) -> None:
     """
     Generic runner cho 1 stage:
@@ -902,13 +904,16 @@ def run_stage(
 
     # ---- Ghi dấu worker_runs cho dashboard ----
     from datetime import datetime, timezone
+    
+    doc_name = worker_runs_name or f"viral_scoring_{stage}"
+    status_val = worker_status or f"ok_{stage}"
 
     coll.database["worker_runs"].update_one(
-        {"name": "viral_scoring"},
+        {"name": doc_name},
         {
             "$set": {
                 "last_run": datetime.now(timezone.utc),
-                "status": f"ok_{stage}",
+                "status": status_val,
             }
         },
         upsert=True,
@@ -996,6 +1001,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             only_missing=args.only_missing,
             force_all=args.force_all,
             limit=args.limit,
+            worker_runs_name="viral_prediction_core",
+            worker_status="viral_prediction_core",
         )
 
     elif args.cmd == "12h":
@@ -1010,6 +1017,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             only_missing=args.only_missing,
             force_all=args.force_all,
             limit=args.limit,
+            worker_runs_name="viral_prediction_core",
+            worker_status="viral_prediction_core",
         )
 
     elif args.cmd == "24h":
@@ -1017,7 +1026,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         run_stage(
             stage="h24_validation",
             model_path=MODEL_24H_PATH,
-            feature_cols=[],  # placeholder, sẽ set lại từ model
+            feature_cols=[],
             build_features_fn=build_features_24h,
             mongo_uri=args.mongo_uri,
             db_name=args.db,
@@ -1025,6 +1034,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             only_missing=args.only_missing,
             force_all=args.force_all,
             limit=args.limit,
+            worker_runs_name="viral_prediction_core",
+            worker_status="viral_prediction_core",
         )
 
     else:  # pragma: no cover

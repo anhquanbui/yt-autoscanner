@@ -1,0 +1,13 @@
+[Unit]
+Description=YT Viral 12H Loop Worker
+After=network.target
+
+[Service]
+User=ytscan
+WorkingDirectory=/home/ytscan/yt-autoscanner
+ExecStart=/home/ytscan/yt-autoscanner/scripts/auto_viral_12h.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

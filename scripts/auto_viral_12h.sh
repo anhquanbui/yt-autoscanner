@@ -12,36 +12,33 @@ source "$(dirname "$0")/../config/env.sh"
 check_venv
 
 # Optionally ensure required modules exist
-# For low-quality model you probably need xgboost / pymongo, etc.
+# Viral model likely needs xgboost, sklearn, pymongo
 # Uncomment if you want auto-install via requirements-dev.txt:
 # ensure_module "xgboost"
 # ensure_module "pymongo"
 
 # ==========================
-# Always run from project root so Python imports work
+# Always run from project root
 # ==========================
 cd "$PROJECT_ROOT"
 
 # ==========================
-# 6H low-quality loop
+# Viral 12H loop
 # ==========================
-SLEEP_SECONDS=1800   # 30 minutes between runs
+SLEEP_SECONDS=600   # 10 minutes (adjust if needed)
 
 while true; do
-  echo "[AutoLowQ-6H] $(date) running worker.low_quality_6h_worker"
+  echo "[AutoViral-12H] $(date) running worker.viral_12h"
 
-  if ! "$VENV_PY" -m worker.low_quality_6h_worker; then
+  if ! "$VENV_PY" -m worker.viral_12h; then
     rc=$?
-    echo "[AutoLowQ-6H] worker exited with code $rc"
+    echo "[AutoViral-12H] worker exited with code $rc"
 
-    # 88 = quota exhausted (EXIT_QUOTA)
-    if [ "$rc" -eq 88 ]; then
-      echo "[AutoLowQ-6H] quota exhausted, sleeping 600s"
-      sleep 600
-      continue
-    fi
+    # Custom handling for specific exit codes if needed
+    sleep 600
+    continue
   fi
 
-  echo "[AutoLowQ-6H] sleeping ${SLEEP_SECONDS}s"
+  echo "[AutoViral-12H] sleeping ${SLEEP_SECONDS}s"
   sleep "$SLEEP_SECONDS"
 done

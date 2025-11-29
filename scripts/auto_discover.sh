@@ -2,28 +2,22 @@
 set -euo pipefail
 
 # ==========================
-# Paths
+# Shared environment (PROJECT_ROOT, VENV_PY, check_venv, ensure_module)
 # ==========================
-PROJECT_ROOT="/home/ytscan/yt-autoscanner"
-VENV_PY="$PROJECT_ROOT/.venv/bin/python"
+source "$(dirname "$0")/../config/env.sh"
 
 # ==========================
-# Guard: venv must exist
+# Ensure venv exists
 # ==========================
-if [ ! -x "$VENV_PY" ]; then
-  echo "[FATAL] Python venv not found at: $VENV_PY"
-  echo "-> Run:"
-  echo "   python3 -m venv $PROJECT_ROOT/.venv"
-  echo "   source $PROJECT_ROOT/.venv/bin/activate"
-  echo "   pip install -r worker/requirements.txt"
-  exit 1
-fi
+check_venv
 
-# NOTE:
-# No manual .env loading here.
-# All env resolution is handled by config.env.load_env() inside Python.
+# Optionally ensure required modules exist
+# ensure_module "pymongo"
+# ensure_module "dotenv"
 
+# ==========================
 # Always run from project root
+# ==========================
 cd "$PROJECT_ROOT"
 
 # ==========================
