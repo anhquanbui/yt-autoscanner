@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-# worker/track_once.py (v3.2) — STATISTICS TRACKER (batch 50 IDs, milestones 1h→24h)
-# CHANGELOG (v3.2):
+# worker/track_once.py (v3.3) — STATISTICS TRACKER (batch 50 IDs, milestones 1h→24h)
+#
+# v3.2:
 #   - Removed channel handle backfill & any writes to `db.channels`.
 #   - Kept channelId usage for projections only; no enrichment of channel data.
-#   - All other behaviors preserved: milestones scheduling, stats snapshots, duration backfill, quota handling.
+#   - All other behaviors preserved: milestones scheduling, stats snapshots,
+#     duration backfill, quota handling.
 #
-# worker/track_once.py (v3.3) — STATISTICS TRACKER (batch 50 IDs, milestones 1h→24h)
-# CHANGELOG (v3.3):
+# v3.3:
 #   - Respect new ML flags schema with 2 low-quality branches:
 #       * ml_flags.low_quality_v1_3h
 #       * ml_flags.low_quality_v3_6h
@@ -27,40 +28,53 @@ from typing import List, Dict, Any, Optional
 import requests
 from pymongo import MongoClient, UpdateOne
 
-from config.env import load_env, get_env  # ✅ shared env loader
+from config.env import load_env, get_env  # shared env loader
 
-# Ensure UTF-8 console logging (Windows PowerShell safety)
+# Ensure UTF-8 console logging (important for non-ASCII output on Windows)
 try:
+    # Python 3.7+ only; on older versions this may fail and fall back to TextIOWrapper.
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
+    # Fallback for environments that don't support reconfigure()
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
-# Load env once (priority: ~/.env → project/.env → subdirs)
+# Load env once (search: parent ~/.env → project/.env → subdirs)
 load_env()
 
 # ---- Config ----
+# API key for YouTube Data API and Mongo connection
 API_KEY   = get_env("YT_API_KEY")
 MONGO_URI = get_env("MONGO_URI", "mongodb://localhost:27017/ytscan")
 
+# Maximum batch size to track per API call; capped at 50 per YouTube constraint
 TRACK_BATCH_SIZE = min(50, max(1, int(get_env("TRACK_BATCH_SIZE", "50"))))
+# Max number of due videos processed per single run of this worker
 TRACK_MAX_DUE    = max(1, int(get_env("TRACK_MAX_DUE_PER_RUN", "5000")))
+# How many "sample" due items to print for debugging
 LOG_SAMPLE       = max(0, int(get_env("TRACK_LOG_SAMPLE", "5")))
 
+
 # ---- Logging to mongo ----
-def log_worker_run(worker_name: str, extra: dict | None = None):
+def log_worker_run(worker_name: str, extra: dict | None = None) -> None:
     """
     Upsert one document in `worker_runs` to record the last time
-    a worker finished (success or error).
+    a worker finished (either success or error).
+
+    This is used for:
+      - Monitoring dashboards
+      - Health checks
     """
     try:
+        # Use raw os.getenv here; load_env() has already populated os.environ.
         mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/ytscan")
         db_name_env = os.getenv("MONGO_DB")
 
         if db_name_env:
             db_name = db_name_env
         else:
+            # If no explicit DB is given, infer from URI suffix.
             tail = mongo_uri.rsplit("/", 1)[-1]
             db_name = tail.split("?", 1)[0] or "ytscan"
 
@@ -80,39 +94,58 @@ def log_worker_run(worker_name: str, extra: dict | None = None):
             upsert=True,
         )
     except Exception as e:
+        # Logging should NEVER break the worker; log to stderr and continue.
         print(f"[WARN] Failed to log worker run for {worker_name}: {e}", file=sys.stderr)
 
 
-# Milestone plan (minutes since publishedAt)
+# Milestone plan (minutes since publishedAt).
+# This controls how often we re-poll a video within the first 24 hours.
 _PLAN_ENV = os.getenv("YT_TRACK_PLAN_MINUTES")
 if _PLAN_ENV:
+    # Custom plan loaded from env, e.g. "5,10,15,30,60,..."
     PLAN_MINUTES = [int(x) for x in _PLAN_ENV.split(",") if x.strip()]
 else:
+    # Default tracking plan:
+    #   - Every 5 minutes from 0–2h
+    #   - Every 15 minutes from 2–6h
+    #   - Every 30 minutes from 6–12h
+    #   - Every 60 minutes from 12–24h
     PLAN_MINUTES = (
-        list(range(5, 120 + 1, 5))      # 0–2h (every 5m)
-        + list(range(135, 360 + 1, 15))  # 2–6h (every 15m)
-        + list(range(390, 720 + 1, 30))  # 6–12h (every 30m)
-        + list(range(780, 1440 + 1, 60))  # 12–24h (every 60m)
+        list(range(5, 120 + 1, 5))       # 0–2h  (every 5 minutes)
+        + list(range(135, 360 + 1, 15))  # 2–6h  (every 15 minutes)
+        + list(range(390, 720 + 1, 30))  # 6–12h (every 30 minutes)
+        + list(range(780, 1440 + 1, 60)) # 12–24h (every 60 minutes)
     )
 
-# Final viral statuses that should stop tracking
+# Final viral statuses that should stop tracking completely.
+# If final.status belongs to this set, we consider the video "fully decided"
+# and move tracking.status → "complete".
 TERMINAL_FINAL_STATUSES = {
     "viral",
     "non_viral",
     "non_viral_lowq",
-    # sau này nếu có thêm loại khác thì add vào đây, ví dụ:
-    # "non_viral_lowq",
+    # If new final types are added later, extend this set.
 }
 
 # YouTube Data API endpoints
 VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
+
+# Exit code used when stopping due to quota exhaustion
 EXIT_QUOTA = 88
 
 # --- Duration helpers (for backfill) ---
+# Regex to parse YouTube's ISO 8601 duration like "PT1H23M45S"
 _DUR_RE = re.compile(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$", re.I)
 
 
 def iso8601_to_seconds(s: Optional[str]) -> Optional[int]:
+    """
+    Convert ISO 8601 duration (e.g., 'PT1H23M45S') to integer seconds.
+
+    Returns:
+        - int seconds if parseable
+        - None if input is None or invalid
+    """
     if not s:
         return None
     m = _DUR_RE.match(s)
@@ -123,10 +156,18 @@ def iso8601_to_seconds(s: Optional[str]) -> Optional[int]:
 
 
 def now_utc() -> datetime:
+    """Return current UTC datetime (timezone-aware)."""
     return datetime.now(timezone.utc)
 
 
 def parse_iso(s: str) -> Optional[datetime]:
+    """
+    Parse an ISO-8601 timestamp (with optional 'Z') into a UTC datetime.
+
+    Returns:
+        - aware datetime in UTC on success
+        - None on parsing failure
+    """
     try:
         return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc)
     except Exception:
@@ -134,22 +175,44 @@ def parse_iso(s: str) -> Optional[datetime]:
 
 
 def next_due_from_publish(published_at: datetime, now: datetime) -> Optional[datetime]:
+    """
+    Given a publish timestamp and current time, compute the next tracking
+    milestone datetime according to PLAN_MINUTES.
+
+    - If the video has already passed all milestones (>= 24h), return None.
+    - Otherwise, return the first scheduled milestone > now.
+
+    This is the core scheduling logic that defines how often each video
+    is polled during its first 24h after publishing.
+    """
     age_min = (now - published_at).total_seconds() / 60.0
+
+    # Debug-print the next milestone in minutes for observability.
     try:
         print(
             f"[milestone] age={age_min:.1f}m | next> "
             f"{next((m for m in PLAN_MINUTES if m > age_min), None)}"
         )
     except Exception:
+        # Milestone debug is non-critical; ignore errors here.
         pass
+
     for m in PLAN_MINUTES:
         due = published_at + timedelta(minutes=m)
         if due > now:
             return due
+    # No more milestones → video is considered "aged out" of tracking.
     return None
 
 
 def fetch_stats(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """
+    Fetch basic statistics (views, likes, comments) from the YouTube Data API
+    for up to 50 video IDs at once.
+
+    Returns:
+        Dict[video_id, statistics_dict]
+    """
     if not video_ids:
         return {}
     params = {"key": API_KEY, "part": "statistics", "id": ",".join(video_ids[:50])}
@@ -165,8 +228,21 @@ def fetch_stats(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
 
 def enrich_duration_for_missing_videos(due_docs: List[Dict[str, Any]], db) -> None:
     """
-    Backfill snippet.durationISO / durationSec / lengthBucket for videos that miss it.
-    Does NOT touch any channel collections.
+    Backfill `snippet.durationISO`, `snippet.durationSec`, and `snippet.lengthBucket`
+    for videos that are currently missing those fields.
+
+    IMPORTANT:
+      - This function ONLY touches `db.videos`.
+      - It does NOT read or write any channel collections.
+
+    Behavior:
+      - Collects video IDs whose snippet.durationISO or snippet.lengthBucket is missing.
+      - Fetches contentDetails/liveStreamingDetails from YouTube.
+      - Derives:
+          * snippet.durationISO (raw ISO duration)
+          * snippet.durationSec (seconds)
+          * snippet.lengthBucket ('short' / 'medium' / 'long' / 'live')
+      - Applies updates via bulk_write.
     """
     missing_ids = []
     for d in due_docs:
@@ -202,6 +278,7 @@ def enrich_duration_for_missing_videos(due_docs: List[Dict[str, Any]], db) -> No
 
             length_bucket = None
             if dur_sec is not None:
+                # Simple duration bucketing; keep in sync with ML side.
                 if dur_sec < 240:
                     length_bucket = "short"
                 elif dur_sec <= 1200:
@@ -209,6 +286,7 @@ def enrich_duration_for_missing_videos(due_docs: List[Dict[str, Any]], db) -> No
                 else:
                     length_bucket = "long"
             elif lsd.get("actualStartTime") or lsd.get("scheduledStartTime"):
+                # No fixed duration but is/was a live stream → mark as "live".
                 length_bucket = "live"
 
             update_fields: Dict[str, Any] = {}
@@ -227,18 +305,35 @@ def enrich_duration_for_missing_videos(due_docs: List[Dict[str, Any]], db) -> No
 
 
 def main() -> int:
+    """
+    One-shot tracker:
+
+      - Find all videos with tracking.status="tracking" whose
+        tracking.next_poll_after <= now.
+      - Optionally backfill missing durations.
+      - For each due video:
+          * If ML low-quality flag is present → stop immediately.
+          * Else fetch YouTube statistics.
+          * Store a new stats snapshot.
+          * Respect viral final status if already decided.
+          * Otherwise, schedule next milestone or mark complete if >= 24h.
+
+    This worker is designed to be called repeatedly by a scheduler (cron/systemd).
+    """
     print(">>> track_once starting")
     if not API_KEY:
         print("Missing YT_API_KEY", file=sys.stderr)
         return 2
 
     client = MongoClient(MONGO_URI)
+    # If db name not in URI, PyMongo uses the default database.
     db = client.get_database()
     now = now_utc()
     now_iso = now.isoformat()
 
-    # NOTE: We still project snippet.channelId for internal use/filters,
-    # but do not fetch/write any channel data.
+    # NOTE:
+    #   - We still project snippet.channelId for internal usage/filters.
+    #   - We no longer fetch or write any channel documents.
     due_cur = (
         db.videos.find(
             {
@@ -270,10 +365,11 @@ def main() -> int:
         f"{' ...' if len(PLAN_MINUTES) > 8 else ''}"
     )
 
-    # Duration backfill (safe; no channel writes)
+    # Duration backfill (best-effort, safe: does not touch channels)
     try:
         enrich_duration_for_missing_videos(due_docs, db)
     except requests.HTTPError as e:
+        # Handle quota and API failures gracefully; do not kill the whole run
         try:
             body = e.response.json()
         except Exception:
@@ -284,6 +380,7 @@ def main() -> int:
             errs = err.get("errors") or []
             if isinstance(errs, list) and errs:
                 reason = errs[0].get("reason")
+            # Fallback: try other common keys from YouTube errors
             reason = reason or err.get("status") or err.get("message")
         quota_reasons = {
             "quotaExceeded",
@@ -301,13 +398,15 @@ def main() -> int:
                 "YouTube API error during duration backfill:", body, file=sys.stderr
             )
 
-    processed = 0
-    completed = 0
+    processed = 0  # number of videos we attempted to process in this run
+    completed = 0  # number of videos that transitioned out of "tracking"
 
+    # Process due videos in batches to respect YouTube's max 50 IDs per call
     for i in range(0, len(due_docs), TRACK_BATCH_SIZE):
         batch = due_docs[i : i + TRACK_BATCH_SIZE]
         ids = [str(d["_id"]) for d in batch]
 
+        # Fetch stats for this batch. If quota is exhausted, stop the whole worker.
         try:
             stats_map = fetch_stats(ids)
         except requests.HTTPError as e:
@@ -340,9 +439,10 @@ def main() -> int:
             vid = str(d["_id"])
 
             # ===== ML EARLY STOP: low-quality flags =====
+            # Short-circuit tracking if any low_quality model already decided.
             mlf_all = (d.get("ml_flags") or {})  # full ml_flags dict
 
-            # 0) Highest priority: 3h model already flagged low
+            # 0) Highest priority: 3h model already flagged this as low-quality
             mlf_3h = mlf_all.get("low_quality_v1_3h") or {}
             if mlf_3h.get("is_low") in (True, 1):
                 ops.append(
@@ -360,9 +460,10 @@ def main() -> int:
                     )
                 )
                 completed += 1
+                # Skip stats fetch / snapshot for videos already declared low-quality
                 continue
 
-            # 1) Next priority: 6h model flagged low
+            # 1) Second priority: 6h model flagged low-quality
             mlf_6h = mlf_all.get("low_quality_v3_6h") or {}
             if mlf_6h.get("is_low") in (True, 1):
                 ops.append(
@@ -380,12 +481,14 @@ def main() -> int:
                     )
                 )
                 completed += 1
-                continue  # do not fetch / store stats anymore for this video
+                # Do not fetch/store more stats after a 6h low-quality decision
+                continue
 
-            # 2) Normal process: parse publishedAt & continue
+            # 2) Normal process: parse publishedAt & continue with stats
             sn = d.get("snippet", {}) or {}
             pub = parse_iso(sn.get("publishedAt") or "")
             if not pub:
+                # If publishedAt is missing/invalid, we cannot compute age → mark complete.
                 ops.append(
                     UpdateOne(
                         {"_id": vid},
@@ -405,7 +508,7 @@ def main() -> int:
 
             st = stats_map.get(vid)
             if not st:
-                # Treat as removed/unavailable
+                # Treat as removed/unavailable (e.g., deleted/private/no longer accessible)
                 ops.append(
                     UpdateOne(
                         {"_id": vid},
@@ -423,20 +526,21 @@ def main() -> int:
                 completed += 1
                 continue
 
-            # Build snapshot
+            # Build a new snapshot using current stats.
             snap = {
                 "ts": now_iso,
                 "viewCount": int(st.get("viewCount", 0) or 0),
                 "likeCount": int(st["likeCount"]) if "likeCount" in st else None,
                 "commentCount": int(st["commentCount"]) if "commentCount" in st else None,
             }
-            
-            # Nếu đã có quyết định final (viral / non_viral) thì dừng tracking luôn
+
+            # NEW: if the viral pipeline has already produced a final decision,
+            #      we still add this last snapshot but then stop tracking.
             ml_flags = d.get("ml_flags") or {}
             viral_v2 = ml_flags.get("viral_v2") or {}
             final_info = viral_v2.get("final") or {}
             final_status = (final_info.get("status") or "unknown").lower()
-            
+
             if final_status in TERMINAL_FINAL_STATUSES:
                 ops.append(
                     UpdateOne(
@@ -448,7 +552,7 @@ def main() -> int:
                                 "tracking.stop_reason": "viral_finalized",
                                 "tracking.last_polled_at": now_iso,
                                 "tracking.next_poll_after": None,
-                                # NEW: store the latest stats timestamp as BSON Date
+                                # Store the latest stats timestamp as a BSON Date for downstream age calculations
                                 "latest_stats_ts": now,
                             },
                             "$inc": {"tracking.poll_count": 1},
@@ -456,12 +560,13 @@ def main() -> int:
                     )
                 )
                 completed += 1
-                continue  # bỏ qua phần tính next_due, qua video tiếp theo
+                # Skip milestone scheduling: this video is finalized
+                continue
 
-            # Compute next milestone (nếu chưa final)
+            # Compute next milestone if not finalized by viral pipeline
             next_due = next_due_from_publish(pub, now)
             if next_due is None:
-                # Age >= 24h → complete
+                # Age >= 24h → mark as complete due to age
                 ops.append(
                     UpdateOne(
                         {"_id": vid},
@@ -472,7 +577,7 @@ def main() -> int:
                                 "tracking.stop_reason": "age>=24h",
                                 "tracking.last_polled_at": now_iso,
                                 "tracking.next_poll_after": None,
-                                # NEW: store the latest stats timestamp as BSON Date
+                                # Store the latest stats timestamp as BSON Date
                                 "latest_stats_ts": now,
                             },
                             "$inc": {"tracking.poll_count": 1},
@@ -481,7 +586,7 @@ def main() -> int:
                 )
                 completed += 1
             else:
-                # Still within 24h → update next_poll_after
+                # Still within 24h window → update next_poll_after for future tracking.
                 ops.append(
                     UpdateOne(
                         {"_id": vid},
@@ -490,7 +595,7 @@ def main() -> int:
                             "$set": {
                                 "tracking.last_polled_at": now_iso,
                                 "tracking.next_poll_after": next_due.isoformat(),
-                                # NEW: store the latest stats timestamp as BSON Date
+                                # Store the latest stats timestamp as BSON Date
                                 "latest_stats_ts": now,
                             },
                             "$inc": {"tracking.poll_count": 1},
@@ -502,6 +607,7 @@ def main() -> int:
             db.videos.bulk_write(ops, ordered=False)
         processed += len(batch)
 
+    # Optional debug: show a few upcoming due items (before this run)
     if LOG_SAMPLE and due_docs:
         print("Sample due items:")
         for d in due_docs[:LOG_SAMPLE]:
@@ -512,7 +618,7 @@ def main() -> int:
 
     print(f"Processed: {processed}, completed: {completed}")
 
-    # 🔎 Log successful run
+    # Log successful run into worker_runs
     log_worker_run(
         "track_once",
         {

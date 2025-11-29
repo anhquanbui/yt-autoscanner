@@ -5,15 +5,16 @@ worker/compute_dashboard_kpis.py (v7)
 Background worker that computes dashboard KPIs from `videos`
 and stores them into `dashboard_kpis` (materialized KPI snapshots).
 
-- Aggregates global metrics (total videos, channels, tracking status).
-- Counts low-quality related stop reasons.
-- ML coverage + flags for low_quality 3h / 6h.
-- Viral v1 KPIs (likely / confirmed).
-- Viral v2 KPIs:
+High-level responsibilities:
+- Aggregate global metrics (total videos, channels, tracking status).
+- Count low-quality related stop reasons.
+- Compute ML coverage + flags for low_quality 3h / 6h.
+- Compute Viral v1 KPIs (likely / confirmed).
+- Compute Viral v2 KPIs:
     + Stage coverage per furthest stage (6h / 12h / 24h / Final, non-overlapping).
     + Extra details (candidates, 12h viral, etc).
-- Keeps only the latest 100 KPI snapshots.
-- Updates `worker_runs` as a lightweight heartbeat.
+- Keep only the latest 100 KPI snapshots so the collection does not grow forever.
+- Update `worker_runs` as a lightweight heartbeat for the dashboard.
 """
 
 from __future__ import annotations
@@ -33,12 +34,19 @@ from config.db import get_db             # central DB helper
 # Logging setup
 # =========================
 
+# Create a logger dedicated to this worker so logs are easy to filter
 logger = logging.getLogger("compute_dashboard_kpis")
+
+# Log to stdout (systemd will pick this up)
 handler = logging.StreamHandler(sys.stdout)
+
+# Consistent log format with timestamp + level
 formatter = logging.Formatter(
     "[%(asctime)s] [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"
 )
 handler.setFormatter(formatter)
+
+# Avoid attaching multiple handlers if the module is imported multiple times
 if not logger.handlers:
     logger.addHandler(handler)
 logger.setLevel(logging.INFO)
@@ -52,6 +60,9 @@ def build_kpi_pipeline() -> list:
     """
     Build the Mongo aggregation pipeline to compute global KPIs
     from the `videos` collection.
+
+    This is the *single source of truth* for all dashboard counters.
+    Any change here should be mirrored on the dashboard pages.
 
     Output fields:
       - total_videos
@@ -92,14 +103,15 @@ def build_kpi_pipeline() -> list:
     """
     return [
         {
+            # Massive $group that aggregates everything in one pass.
             "$group": {
                 "_id": None,
                 "total_videos": {"$sum": 1},
 
-                # Unique channels
+                # Unique channels (we compute count later using $size)
                 "total_channels_set": {"$addToSet": "$snippet.channelId"},
 
-                # Status counters
+                # ===== Tracking status counters =====
                 "tracking_active": {
                     "$sum": {"$cond": [{"$eq": ["$tracking.status", "tracking"]}, 1, 0]}
                 },
@@ -110,7 +122,7 @@ def build_kpi_pipeline() -> list:
                     "$sum": {"$cond": [{"$eq": ["$tracking.status", "stopped"]}, 1, 0]}
                 },
 
-                # Complete due to age >= 24h
+                # Completed because age >= 24h (normal finish)
                 "completed_age24": {
                     "$sum": {
                         "$cond": [
@@ -126,7 +138,7 @@ def build_kpi_pipeline() -> list:
                     }
                 },
 
-                # Completed due to removal / unavailable / deleted / not_found
+                # Completed because the video is gone: removed / unavailable / deleted / not_found
                 "completed_removed": {
                     "$sum": {
                         "$cond": [
@@ -148,6 +160,7 @@ def build_kpi_pipeline() -> list:
                 },
 
                 # Stopped due to any low_quality-related stop_reason
+                # We check if "low_quality" appears inside stop_reason string.
                 "stopped_low_quality": {
                     "$sum": {
                         "$cond": [
@@ -257,7 +270,7 @@ def build_kpi_pipeline() -> list:
                     }
                 },
 
-                # ---------- Viral v1 ----------
+                # ---------- Viral v1 (legacy) ----------
 
                 "viral_likely": {
                     "$sum": {
@@ -307,7 +320,7 @@ def build_kpi_pipeline() -> list:
                     }
                 },
 
-                # 6h candidates (exclude those already viral at 12h)
+                # 6h candidates, but excluding those already confirmed viral at 12h
                 "viral2_h6_candidates": {
                     "$sum": {
                         "$cond": [
@@ -320,6 +333,7 @@ def build_kpi_pipeline() -> list:
                                         ]
                                     },
                                     {
+                                        # NOT (is_viral_12h == True/1)
                                         "$not": [
                                             {
                                                 "$or": [
@@ -353,7 +367,7 @@ def build_kpi_pipeline() -> list:
                     }
                 },
 
-                # Marked viral at 12h
+                # Marked viral at 12h stage
                 "viral2_12h_viral": {
                     "$sum": {
                         "$cond": [
@@ -386,7 +400,11 @@ def build_kpi_pipeline() -> list:
                 },
 
                 # ---------- Viral v2 non-overlapping stages ----------
-                # final_status_unknown_or_none = (final is None or "unknown")
+                # We treat "furthest stage" as:
+                #   - 6h only   (has 6h score, no 12h / 24h score, final unknown/None)
+                #   - 12h only  (has 12h score, no 24h score, final unknown/None)
+                #   - 24h only  (has 24h validation score, final unknown/None)
+
                 "viral2_stage_6h_only": {
                     "$sum": {
                         "$cond": [
@@ -480,7 +498,7 @@ def build_kpi_pipeline() -> list:
                     }
                 },
 
-                # Final decision breakdown
+                # ---------- Final decision breakdown ----------
                 "viral2_final_viral": {
                     "$sum": {
                         "$cond": [
@@ -509,7 +527,7 @@ def build_kpi_pipeline() -> list:
                     }
                 },
 
-                # Unknown = chưa final & không phải removed/unavailable/deleted/not_found
+                # Unknown = not finalized AND not already "removed/unavailable/deleted/not_found".
                 "viral2_final_unknown": {
                     "$sum": {
                         "$cond": [
@@ -539,6 +557,7 @@ def build_kpi_pipeline() -> list:
                     }
                 },
 
+                # "Decided" = final.status is not None/unknown (any concrete label).
                 "viral2_final_decided": {
                     "$sum": {
                         "$cond": [
@@ -556,6 +575,7 @@ def build_kpi_pipeline() -> list:
             }
         },
         {
+            # Final shape of the KPI document stored on dashboard_kpis
             "$project": {
                 "_id": 0,
                 "total_videos": 1,
@@ -597,7 +617,13 @@ def build_kpi_pipeline() -> list:
 
 
 def compute_kpis(videos_col: Collection) -> Dict[str, Any]:
-    """Run the KPI aggregation pipeline on the `videos` collection."""
+    """
+    Run the KPI aggregation pipeline on the `videos` collection.
+
+    Returns a flat dict with all KPI fields. If the aggregation returns
+    no result (e.g., empty collection), we return a zero-filled struct
+    so the dashboard code does not crash on missing keys.
+    """
     logger.info("Running KPI aggregation…")
     pipeline = build_kpi_pipeline()
 
@@ -642,6 +668,9 @@ def save_snapshot(kpis_col: Collection, kpi_doc: Dict[str, Any]) -> None:
     """
     Insert a KPI snapshot into `dashboard_kpis` and keep only
     the latest 100 snapshots (by _id).
+
+    This is a simple retention policy so the collection does not grow
+    indefinitely while still allowing short-term historical views.
     """
     kpi = dict(kpi_doc)
     kpi["ts"] = datetime.now(timezone.utc)
@@ -670,17 +699,28 @@ def save_snapshot(kpis_col: Collection, kpi_doc: Dict[str, Any]) -> None:
 
 
 def main() -> int:
+    """
+    Entry point for the worker.
+
+    Steps:
+      1. Load env + connect to DB.
+      2. Run KPI aggregation pipeline against `videos`.
+      3. Save snapshot to `dashboard_kpis`.
+      4. Update `worker_runs` heartbeat for the dashboard.
+    """
     logger.info("Starting compute_dashboard_kpis worker…")
 
-    # Ensure .env is loaded before DB access
+    # Ensure .env is loaded before DB access (URI, DB_NAME, etc.)
     load_env()
 
     db = get_db()
     videos = db.videos
     kpis_col = db.dashboard_kpis
 
+    # Run aggregation
     kpis = compute_kpis(videos)
 
+    # Log a compact summary for debugging / sanity checks
     logger.info(
         "KPIs: videos=%s | channels=%s | tracking=%s | complete=%s | stopped=%s | "
         "ml3h_scored=%s | ml6h_scored=%s | low3h=%s | low6=%s | "
@@ -704,9 +744,11 @@ def main() -> int:
         kpis["viral2_final_decided"],
     )
 
+    # Persist snapshot + enforce retention
     save_snapshot(kpis_col, kpis)
 
-    # Heartbeat for Overview: update worker_runs
+    # Heartbeat for Overview: update worker_runs so dashboard
+    # can show "last run" and detect stale worker.
     try:
         db.worker_runs.update_one(
             {"name": "compute_dashboard_kpis"},
@@ -721,4 +763,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # SystemExit + numeric code so cron/systemd can see success/failure.
     raise SystemExit(main())

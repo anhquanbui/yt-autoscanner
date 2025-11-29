@@ -7,44 +7,65 @@ from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
 
+# Internal state — tracks whether we've already loaded .env
 _ENV_LOADED = False
 _ENV_SOURCE: Optional[Path] = None
 
 
 def _find_env_file() -> Optional[Path]:
     """
-    Search for .env in priority:
+    Locate a .env file using the project-wide priority search.
 
-      1. Parent folder of project root      (../.env)
-      2. Project root                       (./.env)
-      3. ANY subdirectory at ANY depth      (recursive)
+    Priority (highest → lowest)
+    ---------------------------
+    1. Parent folder of the project root      (../.env)
+       - This allows sharing env settings between multiple project clones
+         or grouping secrets outside the repo.
 
-    Returns Path if found.
+    2. Project root                           (./.env)
+       - Standard placement: <project_root>/.env
+
+    3. Recursive search under project root    (any subdir)
+       - Useful for cases where the project is deployed in nested structures
+         or the user accidentally placed .env deeper in the tree.
+
+    Behavior
+    --------
+    Returns
+        Path to the first .env file found in the priority scan.
+        None if no .env file exists anywhere.
+
+    Notes
+    -----
+    - Does not load the file; only locates it.
+    - Robust to permission errors or broken symlinks.
     """
-
     here = Path(__file__).resolve()
 
-    # config/env.py → parents[1] = project root
+    # Example:
+    #   config/env.py → parents[1] = project root
+    #   parents[0] is the 'config' folder
     project_root = here.parents[1]
     parent_folder = project_root.parent
 
-    # -------- Priority list ----------
+    # Priority candidate list (ordered)
     candidates: list[Path] = []
 
-    # 1️⃣ Parent folder
+    # 1️⃣ Parent folder of project root
     candidates.append(parent_folder / ".env")
 
     # 2️⃣ Project root
     candidates.append(project_root / ".env")
 
-    # 3️⃣ Recursive search inside project root
+    # 3️⃣ Recursive search within project root
     try:
         for p in project_root.rglob(".env"):
             candidates.append(p)
     except Exception:
+        # Ignore filesystem issues silently
         pass
 
-    # Return the first existing file
+    # Return the first existing .env file in the priority list
     for p in candidates:
         if p.is_file():
             return p
@@ -53,7 +74,26 @@ def _find_env_file() -> Optional[Path]:
 
 
 def load_env(force: bool = False) -> Optional[Path]:
-    """Load .env once with priority search."""
+    """
+    Load a .env file once using the priority search from `_find_env_file()`.
+
+    Parameters
+    ----------
+    force:
+        If True, reload .env even if it was previously loaded.
+        (Useful for testing or environments where settings change at runtime.)
+
+    Behavior
+    --------
+    - Uses python-dotenv to load variables into the environment.
+    - Does **not** override environment variables that are already defined.
+    - Logs where .env was loaded from, or indicates fallback to system env.
+
+    Returns
+    -------
+    Path | None
+        The path of the loaded .env file, or None if no file was loaded.
+    """
     global _ENV_LOADED, _ENV_SOURCE
 
     if _ENV_LOADED and not force:
@@ -63,6 +103,7 @@ def load_env(force: bool = False) -> Optional[Path]:
 
     if env_path:
         try:
+            # override=False means we do NOT clobber system env vars
             load_dotenv(env_path, override=False)
             print(f"[INFO] .env loaded from: {env_path}")
             _ENV_LOADED = True
@@ -80,7 +121,26 @@ def load_env(force: bool = False) -> Optional[Path]:
 
 
 def get_env(name: str, default: Optional[str] = None) -> Optional[str]:
-    """Safe wrapper around os.getenv with auto-loading."""
+    """
+    Safe wrapper around os.getenv with automatic .env loading.
+
+    Behavior
+    --------
+    - Ensures load_env() has been executed.
+    - Returns the environment variable if present, otherwise the provided default.
+
+    Parameters
+    ----------
+    name:
+        Environment variable key.
+    default:
+        Value returned when `name` is not present in environment.
+
+    Returns
+    -------
+    str | None
+        The resolved environment variable or the default value.
+    """
     if not _ENV_LOADED:
         load_env()
     return os.getenv(name, default)
