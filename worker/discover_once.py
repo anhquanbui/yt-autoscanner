@@ -1,7 +1,7 @@
 # worker/discover_once.py (v5.1) — VIDEO DISCOVERY (3-layer: ENV + function + CLI)
 # -------------------------------------------------------------------------------
 # CHANGELOG (v5.1):
-#   - Init new ml_flags.viral_v2 schema for newly discovered videos:
+#   - Initialize new ml_flags.viral_v2 schema for newly discovered videos:
 #       ml_flags: {
 #         viral_v2: {
 #           model_version, label_rule_version,
@@ -11,14 +11,14 @@
 #         low_quality_v3_6h: {...}
 #       }
 #
-#   - viral_v2 thresholds (6h / 12h / 24h) được đọc từ .env:
+#   - viral_v2 thresholds (6h / 12h / 24h) are loaded from .env:
 #       VIRAL_V2_MODEL_VERSION
 #       VIRAL_V2_LABEL_RULE_VERSION
 #       VIRAL_V2_THRESH_6H_PROBA,  VIRAL_V2_THRESH_6H_100
 #       VIRAL_V2_THRESH_12H_PROBA, VIRAL_V2_THRESH_12H_100
 #       VIRAL_V2_THRESH_24H_PROBA, VIRAL_V2_THRESH_24H_100
 #
-# Các hành vi khác giữ nguyên như v5.0.
+# All other behavior stays the same as v5.0.
 
 from __future__ import annotations
 
@@ -37,6 +37,8 @@ from pymongo import MongoClient, UpdateOne
 from config.env import load_env, get_env  # ✅ shared env loader
 
 # ----- Console UTF-8 (Windows-safe) -----
+# Ensure stdout/stderr always use UTF-8 so YouTube titles with
+# non-ASCII characters won't break printing on Windows/other shells.
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -44,23 +46,26 @@ except Exception:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
-# Load env once (priority: ~/.env → project/.env → subdirs)
+# Load env once (search order: ~/.env → project/.env → subdirs)
 load_env()
 
-# ---- Config ----
+# ---- Core config (API + Mongo) ----
 API_KEY   = get_env("YT_API_KEY")
 MONGO_URI = get_env("MONGO_URI", "mongodb://localhost:27017/ytscan")
 
+# Special exit code to signal "quota exhausted" to systemd/cron
 EXIT_QUOTA = 88
 
 SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 
-# ======= VIRAL V2 CONFIG (từ .env) =======
-# Nếu thiếu trong .env thì dùng default hợp lý
+# ======= VIRAL V2 CONFIG (from .env) =======
+# Model + rule versions (for tracking experiments / upgrades)
 VIRAL_V2_MODEL_VERSION      = int(get_env("VIRAL_V2_MODEL_VERSION", "1"))
 VIRAL_V2_LABEL_RULE_VERSION = int(get_env("VIRAL_V2_LABEL_RULE_VERSION", "1"))
 
+# Thresholds for 6h / 12h / 24h stages, both probability and 0–100 scale.
+# These are used when initializing ml_flags for newly-discovered videos.
 VIRAL_V2_THRESH_6H_PROBA = float(get_env("VIRAL_V2_THRESH_6H_PROBA", "0.60"))
 VIRAL_V2_THRESH_6H_100   = int(get_env("VIRAL_V2_THRESH_6H_100", "60"))
 
@@ -69,9 +74,9 @@ VIRAL_V2_THRESH_12H_100   = int(get_env("VIRAL_V2_THRESH_12H_100", "70"))
 
 VIRAL_V2_THRESH_24H_PROBA = float(get_env("VIRAL_V2_THRESH_24H_PROBA", "0.80"))
 VIRAL_V2_THRESH_24H_100   = int(get_env("VIRAL_V2_THRESH_24H_100", "80"))
-# 24h chủ yếu dùng validation, có / không threshold cũng không ảnh hưởng decision core
+# 24h is used mainly for validation; the exact threshold has less impact on the pipeline.
 
-# Duration parsing regex
+# Duration parsing regex for ISO 8601 durations (e.g. PT5M30S)
 _DUR_RE = re.compile(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$", re.I)
 
 
@@ -80,6 +85,8 @@ def log_worker_run(worker_name: str, extra: dict | None = None) -> None:
     """
     Upsert a single document in `worker_runs` to record the last time
     a worker finished (success or failure).
+
+    This is used by the dashboard to show "last run" and detect stale workers.
     """
     try:
         load_env()
@@ -90,6 +97,7 @@ def log_worker_run(worker_name: str, extra: dict | None = None) -> None:
         if db_name_env:
             db_name = db_name_env
         else:
+            # Fallback: derive DB name from URI tail (e.g. .../ytscan?param=...)
             tail = mongo_uri.rsplit("/", 1)[-1]
             db_name = tail.split("?", 1)[0] or "ytscan"
 
@@ -105,6 +113,7 @@ def log_worker_run(worker_name: str, extra: dict | None = None) -> None:
 
         db.worker_runs.update_one({"name": worker_name}, {"$set": payload}, upsert=True)
     except Exception as e:
+        # Logging failure is non-fatal for discovery
         print(f"[WARN] Failed to log worker run for {worker_name}: {e}", file=sys.stderr)
 
 
@@ -112,6 +121,10 @@ def log_worker_run(worker_name: str, extra: dict | None = None) -> None:
 def parse_weighted_pool(val: str) -> Tuple[List[str], List[float]]:
     """
     Parse a comma-separated weighted list like: "short:1,medium:2,long:0.5".
+
+    Returns:
+        (choices, weights) where both lists are aligned.
+        Invalid weights fall back to 1.0.
     """
     if not val:
         return [], []
@@ -142,6 +155,8 @@ def pick_query_for_region(region_code: str, global_query_pool: str) -> Optional[
     Pick a random keyword for a given region, using:
       1) Region-specific pool: YT_RANDOM_QUERY_POOL_<REGION>
       2) Fallback global pool: YT_RANDOM_QUERY_POOL
+
+    This allows different keyword distributions per region (e.g. JP vs US).
     """
     env_name = f"YT_RANDOM_QUERY_POOL_{region_code.upper()}"
     val = (get_env(env_name, "") or "").strip()
@@ -191,6 +206,10 @@ def bucket_from_seconds(secs: Optional[int]) -> Optional[str]:
 def pick_duration_param(mode: str, pool: str) -> Optional[str]:
     """
     Decide which duration to request from the YouTube Search API.
+
+    - If mode == "mix", we sample from a weighted pool (short/medium/long).
+    - If mode is one of [short, medium, long], use it directly.
+    - Otherwise, return None → API will not filter by duration.
     """
     mode = (mode or "any").lower()
     if mode == "mix":
@@ -219,6 +238,8 @@ def search_page(
 ) -> Dict[str, Any]:
     """
     Call the YouTube Search API for a single page of results.
+
+    This is the "discovery" endpoint (search by date / keyword / region).
     """
     if not API_KEY:
         raise RuntimeError("Missing YT_API_KEY")
@@ -227,7 +248,7 @@ def search_page(
         "key": API_KEY,
         "part": "snippet",
         "type": "video",
-        "order": "date",
+        "order": "date",          # newest first
         "maxResults": 50,
         "regionCode": region_code,
         "publishedAfter": published_after_iso,
@@ -247,6 +268,10 @@ def search_page(
 def videos_details(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     """
     Fetch snippet + contentDetails for a list of video IDs via the Videos API.
+
+    We use this to enrich:
+      - categoryId
+      - duration (ISO + seconds + length bucket)
     Returns a mapping: videoId -> {snippet, contentDetails}
     """
     out: Dict[str, Dict[str, Any]] = {}
@@ -284,7 +309,8 @@ def upsert_minimal(
 ) -> int:
     """
     Upsert minimal video documents into the `videos` collection.
-    Initializes:
+
+    For each video, we initialize:
       - source: query, regionCode, randomMode
       - snippet: title, thumbnails, channelId, categoryId, durationISO, durationSec, lengthBucket
       - tracking: status=tracking, discovered_at, next_poll_after, etc.
@@ -292,6 +318,10 @@ def upsert_minimal(
           - viral_v2 (nested: h6, h12, h24_validation, final)
           - low_quality_v1_3h
           - low_quality_v3_6h
+
+    Upsert strategy:
+      - `$setOnInsert` for heavy/static fields (source/tracking/ml_flags/stats_snapshots)
+      - `$set` for snippet → always refresh basic metadata.
     """
     ops: List[UpdateOne] = []
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -302,12 +332,13 @@ def upsert_minimal(
         if not vid or not sn:
             continue
 
-        # ===== Default ML flags =====
+        # ===== Default ML flags for viral_v2 + low_quality models =====
         ml_flags = {
             "viral_v2": {
                 "model_version": VIRAL_V2_MODEL_VERSION,
                 "label_rule_version": VIRAL_V2_LABEL_RULE_VERSION,
 
+                # 6h stage: candidate detection
                 "h6": {
                     "score_proba": None,
                     "score_100": None,
@@ -316,6 +347,7 @@ def upsert_minimal(
                     "threshold_100": VIRAL_V2_THRESH_6H_100,
                     "evaluated_at": None,
                 },
+                # 12h stage: viral confirmation
                 "h12": {
                     "score_proba": None,
                     "score_100": None,
@@ -324,24 +356,26 @@ def upsert_minimal(
                     "threshold_100": VIRAL_V2_THRESH_12H_100,
                     "evaluated_at": None,
                 },
+                # 24h stage: validation of previous decision
                 "h24_validation": {
                     "score_proba": None,
                     "score_100": None,
                     "evaluated_at": None,
                 },
+                # Final decision summary across stages
                 "final": {
-                    "status": "unknown",       # "unknown" | "non_viral" | "candidate" | "viral"
+                    "status": "unknown",       # "unknown" | "non_viral" | "candidate" | "viral" | "non_viral_lowq"
                     "decided_stage": None,     # "6h" | "12h" | "24h"
                     "score_proba": None,
                     "score_100": None,
-                    "threshold_proba": None,   # nếu muốn log lại ngưỡng decision cuối
+                    "threshold_proba": None,   # optional: record final decision threshold
                     "threshold_100": None,
                     "decided_at": None,
                     "reason": None,
                 },
             },
 
-            # Low-quality models: giữ nguyên như cũ
+            # Low-quality models (kept same as previous versions)
             "low_quality_v1_3h": {
                 "is_low": False,
                 "score": 0.0,
@@ -356,6 +390,7 @@ def upsert_minimal(
             },
         }
 
+        # Full doc template for NEW videos
         full_doc = {
             "_id": vid,
             "source": {
@@ -385,11 +420,14 @@ def upsert_minimal(
             "ml_flags": ml_flags,
         }
 
-        # Upsert: set heavy fields only on insert, but always refresh snippet
+        # We don't want to overwrite snippet inside $setOnInsert so we pop it out
         insert_doc = full_doc.copy()
         insert_doc.pop("snippet", None)
+
         update_doc = {
+            # Heavy, mostly-static fields only on first insert
             "$setOnInsert": insert_doc,
+            # Always refresh snippet on each discovery run
             "$set": {"snippet": full_doc["snippet"]},
         }
         ops.append(UpdateOne({"_id": vid}, update_doc, upsert=True))
@@ -398,6 +436,7 @@ def upsert_minimal(
         return 0
 
     res = db.videos.bulk_write(ops, ordered=False)
+    # upserted_count counts only *new* documents inserted
     return int(res.upserted_count or 0)
 
 
@@ -419,10 +458,17 @@ def run_discover(
     """
     Core discovery logic. This can be called directly from Python code
     (e.g. Streamlit dashboard) without going through CLI or environment.
+
+    It reads defaults from env, applies per-call overrides, then:
+      - Defines a "near-now" time window (publishedAfter).
+      - Calls YouTube Search API page by page.
+      - Enriches categoryId + duration via Videos API.
+      - Filters out live/upcoming if configured.
+      - Upserts videos into MongoDB with initial tracking + ml_flags.
     """
     load_env()
 
-    # --- Read env defaults ---
+    # --- Read env defaults (used if user does not override) ---
     env_region = get_env("YT_REGION", "US")
     env_query = get_env("YT_QUERY", "money")
 
@@ -439,7 +485,7 @@ def run_discover(
 
     global_query_pool = get_env("YT_RANDOM_QUERY_POOL", "") or ""
 
-    # --- Effective values ---
+    # --- Effective values: env defaults overridden by function arguments ---
     region_used = (region or env_region).upper()
     since_used = since_minutes if since_minutes is not None else env_since_minutes
     max_pages_used = max_pages if max_pages is not None else env_max_pages
@@ -450,6 +496,7 @@ def run_discover(
     random_mode = env_random_pick if random_pick is None else bool(random_pick)
     exclude_live_used = env_exclude_live if exclude_live is None else bool(exclude_live)
 
+    # Pool of regions for random-mode (if enabled)
     random_region_pool = [
         x.strip().upper()
         for x in env_random_region_pool_raw.split(",")
@@ -470,28 +517,31 @@ def run_discover(
             "random_mode": random_mode,
         }
 
+    # If random region is enabled and a pool is configured, pick one region at random
     if random_mode and random_region_pool:
         region_used = random.choice(random_region_pool)
 
-    # --- Pick query ---
+    # --- Pick query (random vs fixed) ---
     query_used: Optional[str] = None
     if random_mode:
+        # If a query is explicitly provided, honor it even in random mode
         if query:
             query_used = query
         else:
             query_used = pick_query_for_region(region_used, global_query_pool)
 
     if not query_used:
+        # Fallback: explicit override or env default
         query_used = query or env_query
 
-    # --- Duration parameter ---
+    # --- Duration parameter for YouTube search ---
     duration_used = pick_duration_param(duration_mode_used, duration_pool_used)
 
-    # --- DB client ---
+    # --- DB client / database selection ---
     client = MongoClient(MONGO_URI)
     db = client.get_database()
 
-    # --- Near-now window ---
+    # --- Define "near-now" time window for search ---
     now = datetime.now(timezone.utc)
     published_after = (now - timedelta(minutes=since_used)).isoformat()
 
@@ -509,6 +559,7 @@ def run_discover(
     total_upserted = 0
 
     try:
+        # Main page-loop over YouTube Search API
         while True:
             if pages >= max_pages_used:
                 if verbose:
@@ -528,6 +579,7 @@ def run_discover(
             found = len(items)
             filtered_live = 0
 
+            # Optionally remove live / upcoming content (VOD-only behavior)
             if exclude_live_used and found > 0:
                 before = len(items)
                 items = [
@@ -542,6 +594,7 @@ def run_discover(
 
             total_found += len(items)
 
+            # If we got items, enrich them with categoryId + duration via Videos API
             if items:
                 ids = [
                     it.get("id", {}).get("videoId")
@@ -562,11 +615,13 @@ def run_discover(
                     sn2 = det.get("snippet", {}) or {}
                     cd = det.get("contentDetails", {}) or {}
 
+                    # Merge category from detail call
                     cate = sn2.get("categoryId")
                     if cate:
                         sn["categoryId"] = cate
                         enriched_cate += 1
 
+                    # Merge duration & derived features
                     dur_iso = cd.get("duration")
                     secs = iso8601_to_seconds(dur_iso) if dur_iso else None
                     if dur_iso:
@@ -584,6 +639,7 @@ def run_discover(
                         f"enriched_duration={enriched_dur}"
                     )
 
+            # Upsert into Mongo
             up = upsert_minimal(
                 items=items,
                 db=db,
@@ -594,6 +650,7 @@ def run_discover(
             total_upserted += up
 
             if verbose:
+                # Print a small sample for human sanity check
                 for it in items[:5]:
                     vid = it.get("id", {}).get("videoId")
                     sn = it.get("snippet", {}) or {}
@@ -613,6 +670,7 @@ def run_discover(
                 f"total_upserted={total_upserted}"
             )
 
+        # Log success to worker_runs
         log_worker_run(
             "discover_once",
             {
@@ -635,6 +693,7 @@ def run_discover(
         }
 
     except requests.HTTPError as e:
+        # Handle HTTP errors from YouTube API (including quota issues)
         try:
             body = e.response.json()
         except Exception:
@@ -655,6 +714,7 @@ def run_discover(
             "rateLimitExceeded",
             "userRateLimitExceeded",
         }:
+            # Special case: YouTube quota exhausted → use EXIT_QUOTA code
             if verbose:
                 print("YouTube quota exhausted — update YT_API_KEY.", file=sys.stderr)
             log_worker_run(
@@ -672,6 +732,7 @@ def run_discover(
                 "random_mode": random_mode,
             }
 
+        # Other HTTP errors: log and return generic error exit code
         if verbose:
             print("YouTube API error:", body, file=sys.stderr)
         log_worker_run(
@@ -690,6 +751,7 @@ def run_discover(
         }
 
     except Exception as e:
+        # Catch-all for unexpected runtime errors
         if verbose:
             print("Error:", e, file=sys.stderr)
         log_worker_run(
@@ -712,6 +774,14 @@ def run_discover(
 #  CLI LAYER (layer 3): argparse wrapper around run_discover(...)
 # ======================================================================
 def build_arg_parser() -> argparse.ArgumentParser:
+    """
+    Build argparse.ArgumentParser for CLI usage.
+
+    Layer design:
+      - Layer 1: run_discover(...) — pure Python function
+      - Layer 2: (env) — default configuration from environment
+      - Layer 3: CLI — overrides via command-line arguments
+    """
     parser = argparse.ArgumentParser(
         prog="discover_once",
         description=(
@@ -765,10 +835,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    """
+    CLI entrypoint: parse arguments, resolve overrides, and call run_discover().
+    """
     parser = build_arg_parser()
     args = parser.parse_args()
 
+    # Resolve random_pick tri-state: True / False / None (use env)
     if args.random_pick and args.no_random_pick:
+        # If both are passed, default to False to avoid ambiguous behavior
         random_pick: Optional[bool] = False
     elif args.random_pick:
         random_pick = True
@@ -777,6 +852,7 @@ def main() -> int:
     else:
         random_pick = None
 
+    # Convert exclude_live CLI int into Optional[bool]
     exclude_live: Optional[bool] = None
     if args.exclude_live is not None:
         exclude_live = bool(args.exclude_live)
@@ -793,6 +869,7 @@ def main() -> int:
         verbose=not args.quiet,
     )
 
+    # Make sure exit_code is always an int so systemd/cron can interpret it
     return int(info.get("exit_code", 1))
 
 

@@ -2,22 +2,30 @@
 """
 worker.viral_prediction_core
 
-Core logic để chạy 3 mô hình viral (6h, 12h, 24h) trực tiếp trên MongoDB
-và ghi kết quả vào ml_flags.viral_v2.*
+Core logic for running the three viral models (6h, 12h, 24h) directly on MongoDB
+and writing results into `ml_flags.viral_v2.*`.
 
-- 6h  : early signal (ml_flags.viral_v2.h6)
-- 12h : confirmation (ml_flags.viral_v2.h12)
-- 24h : validator       (ml_flags.viral_v2.h24_validation)
+Stages:
+    - 6h  : early signal          → ml_flags.viral_v2.h6
+    - 12h : confirmation          → ml_flags.viral_v2.h12
+    - 24h : late validator        → ml_flags.viral_v2.h24_validation
 
-CLI:
+CLI examples:
+
+    # Run 6h early-signal model
     python -m worker.viral_prediction_core 6h
+
+    # Run 12h confirmation model
     python -m worker.viral_prediction_core 12h
+
+    # Run 24h validation model
     python -m worker.viral_prediction_core 24h
 
-    # ví dụ: chỉ tính cho video còn thiếu score
+    # Only score videos that are still missing score_proba for that stage
     python -m worker.viral_prediction_core 6h --only-missing
 
-    # ví dụ: ép tính lại tất cả, bất kể tracking.status hay đã có score
+    # Force recompute for all videos that meet the age condition
+    # (ignores only-missing, but still respects age gating per stage)
     python -m worker.viral_prediction_core 12h --force-all
 """
 
@@ -33,9 +41,15 @@ from pandas import to_datetime
 from pymongo import MongoClient
 import joblib
 
+from config.env import load_env
+
+# Load environment variables once (shared logic with other workers)
+load_env()
+
+# orjson is optional but faster if available
 try:
     import orjson as _orjson
-except Exception:  # fallback nếu chưa có orjson
+except Exception:  # fall back to stdlib json if orjson is not installed
     _orjson = None
 
 
@@ -43,35 +57,40 @@ except Exception:  # fallback nếu chưa có orjson
 # CONFIG
 # ============================================================
 
-# Mongo
+# Mongo connection defaults
 DEFAULT_MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/ytscan")
 DEFAULT_DB_NAME = os.getenv("MONGO_DB", "ytscan")
 DEFAULT_COLLECTION = os.getenv("MONGO_VIDEOS_COLLECTION", "videos")
 
-# Model paths
+# Model paths (can be overridden via env)
 MODEL_DIR = Path(os.getenv("VIRAL_MODEL_DIR", "models/viral"))
 
-MODEL_6H_PATH = Path(
-    os.getenv("VIRAL_MODEL_6H", MODEL_DIR / "viral_xgb_6h.joblib")
-)
-MODEL_12H_PATH = Path(
-    os.getenv("VIRAL_MODEL_12H", MODEL_DIR / "viral_xgb_12h.joblib")
-)
-MODEL_24H_PATH = Path(
-    os.getenv("VIRAL_MODEL_24H", MODEL_DIR / "viral_xgb_24h.joblib")
-)
+MODEL_6H_PATH = Path(os.getenv("VIRAL_MODEL_6H", MODEL_DIR / "viral_xgb_6h.joblib"))
+MODEL_12H_PATH = Path(os.getenv("VIRAL_MODEL_12H", MODEL_DIR / "viral_xgb_12h.joblib"))
+MODEL_24H_PATH = Path(os.getenv("VIRAL_MODEL_24H", MODEL_DIR / "viral_xgb_24h.joblib"))
 
-# version metadata để ghi vào ml_flags.viral_v2
+# Version metadata written into ml_flags.viral_v2
 MODEL_VERSION = 1
 LABEL_RULE_VERSION = 1
 
-# ============================================================
-# Aggregation helpers (copy & simplify từ training 6h/12h)
-# ============================================================
 
+# ============================================================
+# Aggregation helpers (adapted from training 6h / 12h notebooks)
+# ============================================================
 
 def _loads_fast(s: Any) -> Any:
-    """Fast JSON loader supporting dict / list / JSON string / None."""
+    """
+    Fast JSON loader with a "no-op" behavior for already-parsed objects.
+
+    Accepts:
+      - dict / list           → returned as-is
+      - JSON string (object / array)
+      - other scalars / None  → returned as-is
+
+    Returns:
+      - Parsed Python object on valid JSON
+      - None on parse failure (for both orjson and json)
+    """
     if isinstance(s, (dict, list)):
         return s
     if not isinstance(s, str):
@@ -95,7 +114,12 @@ def _loads_fast(s: Any) -> Any:
 
 
 def _dig(d: Any, dotted_key: str) -> Any:
-    """Safe nested dict getter using dotted paths."""
+    """
+    Safe nested dict getter using a dotted key path.
+
+    Example:
+        _dig({"a": {"b": 1}}, "a.b") -> 1
+    """
     if not isinstance(d, dict):
         return None
     if dotted_key in d:
@@ -110,7 +134,13 @@ def _dig(d: Any, dotted_key: str) -> Any:
 
 
 def _safe_int(x: Any) -> int:
-    """Convert to int, fallback to 0 on failure."""
+    """
+    Convert a value to int with robust fallback:
+
+      - First try int(x)
+      - If that fails, try int(float(x))
+      - If that fails, return 0
+    """
     try:
         return int(x)
     except Exception:
@@ -122,8 +152,10 @@ def _safe_int(x: Any) -> int:
 
 def _first_leq(xs: List[float], ys: List[int], target: float) -> float:
     """
-    Given sorted xs (hours) and ys (values),
-    return the last y where x <= target.
+    Given sorted xs (timestamps in hours) and corresponding ys (values),
+    return the last y such that x <= target.
+
+    If no such point exists, returns np.nan.
     """
     out = np.nan
     for x, y in zip(xs, ys):
@@ -136,21 +168,24 @@ def _first_leq(xs: List[float], ys: List[int], target: float) -> float:
 
 def aggregate_0_24h(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Aggregate stats into 0–24h buckets cho 1 video.
-    Copy từ _aggregate_one trong notebook training 6h/12h.
+    Aggregate stats for a single video into fixed 0–24h buckets.
 
-    Trả về dict chứa các cột:
-      - views_*, likes_*, comms_*
-      - g_*, slope_views_*
-      - like_rate_*, comm_rate_*
+    Returns a feature dict containing:
+      - Raw counts: views_*, likes_*, comms_*
+      - Growth ratios: g_*
+      - Slopes: slope_views_*
+      - Engagement rates: like_rate_*, comm_rate_*
       - durationSec, lengthBucket
+
+    If anything is fundamentally missing (no publishedAt or no snapshots),
+    returns None and the caller should skip this record.
     """
     if isinstance(rec, str):
         rec = _loads_fast(rec)
     if not isinstance(rec, dict):
         return None
 
-    # --- Basic snippet ---
+    # --- Basic snippet / metadata ---
     sn = _loads_fast(rec.get("snippet"))
     if isinstance(sn, dict):
         pub = sn.get("publishedAt")
@@ -191,6 +226,7 @@ def aggregate_0_24h(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if t is None or str(t) == "NaT":
             continue
         h = (t - t0).total_seconds() / 3600.0
+        # Ignore clearly-invalid negative ages
         if h < -0.1:
             continue
 
@@ -202,12 +238,14 @@ def aggregate_0_24h(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not th:
         return None
 
+    # Sort by time just in case snapshots are out of order
     arr = sorted(zip(th, v, l, c), key=lambda z: z[0])
     th = [a[0] for a in arr]
     v = [a[1] for a in arr]
     l = [a[2] for a in arr]
     c = [a[3] for a in arr]
 
+    # Fixed time horizons (in hours)
     targets = [0.1667, 0.5, 1.0, 3.0, 6.0, 12.0, 24.0]
     v10, v30, v1, v3, v6, v12, v24 = [_first_leq(th, v, t) for t in targets]
     l10, l30, l1, l3, l6, l12, l24 = [_first_leq(th, l, t) for t in targets]
@@ -215,7 +253,7 @@ def aggregate_0_24h(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     eps = 1e-6
 
-    # Growth
+    # Growth ratios
     g_10_1 = (v1 + eps) / (v10 + eps)
     g_1_3 = (v3 + eps) / (v1 + eps)
     g_3_6 = (v6 + eps) / (v3 + eps)
@@ -225,7 +263,7 @@ def aggregate_0_24h(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     g_6_24 = (v24 + eps) / (v6 + eps)
     g_1_24 = (v24 + eps) / (v1 + eps)
 
-    # Slopes
+    # Slopes (approximate "velocity" over different windows)
     slope_10_1 = (v1 - v10) / max(0.8333, eps)
     slope_1_3 = (v3 - v1) / max(2.0, eps)
     slope_3_6 = (v6 - v3) / max(3.0, eps)
@@ -234,7 +272,7 @@ def aggregate_0_24h(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     slope_1_6 = (v6 - v1) / max(5.0, eps)
     slope_6_24 = (v24 - v6) / max(18.0, eps)
 
-    # Engagement
+    # Engagement rates at different horizons
     like_rate_3h = l3 / max(v3, 1.0)
     like_rate_6h = l6 / max(v6, 1.0)
     like_rate_12h = l12 / max(v12, 1.0)
@@ -302,25 +340,81 @@ def aggregate_0_24h(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 # ============================================================
-# Feature sets (giống training 6h/12h + base 24h)
+# Video age helper (using latest_stats_ts)
+# ============================================================
+
+def compute_video_age_hours(rec: Dict[str, Any]) -> Optional[float]:
+    """
+    Compute video age (in hours) using:
+
+        age = latest_stats_ts - publishedAt
+
+    Priority:
+      1) stats.latest_stats_ts (if present)
+      2) root.latest_stats_ts (set by track_once)
+      3) Last timestamp from stats_snapshots
+
+    Returns:
+      - float hours if timestamps are available
+      - None if we cannot derive any valid pair of timestamps
+    """
+    # publishedAt
+    sn = _loads_fast(rec.get("snippet")) or {}
+    pub = sn.get("publishedAt") or rec.get("publishedAt")
+    pub_dt = to_datetime(pub, utc=True, errors="coerce")
+    if pub_dt is None or str(pub_dt) == "NaT":
+        return None
+
+    # Prefer stats.latest_stats_ts if present; otherwise use root.latest_stats_ts
+    stats = rec.get("stats") or {}
+    latest_ts = stats.get("latest_stats_ts") or rec.get("latest_stats_ts")
+
+    latest_dt = to_datetime(latest_ts, utc=True, errors="coerce") if latest_ts else None
+
+    # Fallback: use last snapshot timestamp
+    if latest_dt is None or str(latest_dt) == "NaT":
+        snaps = _loads_fast(rec.get("stats_snapshots")) or _loads_fast(
+            rec.get("stats.snapshots")
+        )
+        if isinstance(snaps, list) and snaps:
+            last_ts_val: Optional[str] = None
+            for s in snaps:
+                s = _loads_fast(s) if isinstance(s, str) else s
+                if not isinstance(s, dict):
+                    continue
+                ts = s.get("ts") or s.get("timestamp") or s.get("time")
+                if ts:
+                    last_ts_val = ts
+            if last_ts_val:
+                latest_dt = to_datetime(last_ts_val, utc=True, errors="coerce")
+
+    if latest_dt is None or str(latest_dt) == "NaT":
+        return None
+
+    age_hours = (latest_dt - pub_dt).total_seconds() / 3600.0
+    return float(age_hours)
+
+
+# ============================================================
+# Feature sets (aligned with training logic for 6h / 12h / 24h)
 # ============================================================
 
 HARDER_FEATURES_6H = [
-    # Early views (tới 1h)
+    # Early views (up to 1h)
     "views_10m",
     "views_30m",
     "views_1h",
-    # Early likes & comms (tới 1h)
+    # Early likes & comments (up to 1h)
     "likes_10m",
     "likes_30m",
     "likes_1h",
     "comms_10m",
     "comms_30m",
     "comms_1h",
-    # Growth & slope cực early
+    # Very early growth / slope
     "g_10m_to_1h",
     "slope_views_10m_to_1h",
-    # Một chút info 3h về engagement
+    # Some 3h engagement information
     "like_rate_3h",
     "comm_rate_3h",
     # Meta
@@ -328,12 +422,12 @@ HARDER_FEATURES_6H = [
 ]
 
 HARDER_FEATURES_12H = [
-    # Views đến 3h
+    # Views up to 3h
     "views_10m",
     "views_30m",
     "views_1h",
     "views_3h",
-    # Likes / comms đến 3h
+    # Likes / comments up to 3h
     "likes_10m",
     "likes_30m",
     "likes_1h",
@@ -342,21 +436,21 @@ HARDER_FEATURES_12H = [
     "comms_30m",
     "comms_1h",
     "comms_3h",
-    # Growth & slope đến 3h
+    # Growth & slopes up to 3h
     "g_10m_to_1h",
     "g_1h_to_3h",
     "slope_views_10m_to_1h",
     "slope_views_1h_to_3h",
-    # Engagement 3h
+    # 3h engagement
     "like_rate_3h",
     "comm_rate_3h",
     # Meta
     "durationSec",
 ]
 
-# Base 24h: dùng khi model không có feature_names_in_ (fallback)
+# Base 24h feature list used when model does not expose feature_names_in_
 FEATURES_24H_HARD_BASE = [
-    # Các feature 0–24h
+    # 0–24h raw stats
     "views_10m",
     "views_30m",
     "views_1h",
@@ -412,10 +506,10 @@ FEATURES_24H_HARD_BASE = [
     "lowq_3h_score",
     "lowq_6h_score",
     "lowq_ever_flagged",
-    # lengthBucket one-hot (len_*) sẽ lấy từ model nếu có
+    # Note: len_* one-hot features (if used) come from the model's feature list
 ]
 
-# Biến global sẽ được set động từ model 24h
+# Global 24h feature metadata (populated from the model)
 FEATURES_24H_FULL: List[str] = []
 LEN_COLS_24H: List[str] = []
 FEATURES_24H_BASE_ONLY: List[str] = []
@@ -423,14 +517,15 @@ FEATURES_24H_BASE_ONLY: List[str] = []
 
 def init_24h_features_from_model(model) -> List[str]:
     """
-    Dùng metadata trong model để thiết lập:
-      - FEATURES_24H_FULL
-      - LEN_COLS_24H
-      - FEATURES_24H_BASE_ONLY
+    Initialize 24h feature metadata from the model:
 
-    Ưu tiên:
-      1) model.feature_list_24h (mình embed lúc training)
-      2) model.feature_names_in_ (nếu có)
+      - FEATURES_24H_FULL: complete list of features for the 24h model
+      - LEN_COLS_24H: any lengthBucket one-hot columns (prefix "len_")
+      - FEATURES_24H_BASE_ONLY: full list minus len_* columns
+
+    Priority for feature list:
+      1) model.feature_list_24h (embedded at training time)
+      2) model.feature_names_in_ (scikit-learn-style metadata)
       3) fallback: FEATURES_24H_HARD_BASE
     """
     global FEATURES_24H_FULL, LEN_COLS_24H, FEATURES_24H_BASE_ONLY
@@ -441,31 +536,35 @@ def init_24h_features_from_model(model) -> List[str]:
 
     if feats is not None:
         FEATURES_24H_FULL = [str(f) for f in feats]
-        print(
-            f"[24H] Using {len(FEATURES_24H_FULL)} features from model metadata"
-        )
+        print(f"[24H] Using {len(FEATURES_24H_FULL)} features from model metadata")
     else:
         FEATURES_24H_FULL = FEATURES_24H_HARD_BASE
         print(
-            "[24H] WARNING: model has no embedded feature list, "
+            "[24H] WARNING: model has no embedded feature list; "
             "falling back to FEATURES_24H_HARD_BASE (no len_* one-hot)."
         )
 
     LEN_COLS_24H = [c for c in FEATURES_24H_FULL if c.startswith("len_")]
-    FEATURES_24H_BASE_ONLY = [
-        c for c in FEATURES_24H_FULL if not c.startswith("len_")
-    ]
+    FEATURES_24H_BASE_ONLY = [c for c in FEATURES_24H_FULL if not c.startswith("len_")]
 
     return FEATURES_24H_FULL
 
 
 # ============================================================
-# Meta feature helpers cho 24h
+# Meta-feature helpers for 24h
 # ============================================================
 
-
 def build_meta_features_for_24h(rec: Dict[str, Any]) -> Dict[str, Any]:
-    """Tạo isShorts, title_len, desc_len, hashtag_count, upload_hour, upload_dow."""
+    """
+    Construct meta features for the 24h model:
+
+      - isShorts        : 1 if lengthBucket == "short" (including snippet/agg)
+      - title_len       : character count of title
+      - desc_len        : character count of description
+      - hashtag_count   : frequency of '#' in title+description
+      - upload_hour     : hour-of-day (0–23) in UTC
+      - upload_dow      : day-of-week (0=Monday, 6=Sunday)
+    """
     sn = _loads_fast(rec.get("snippet")) or {}
     title = (sn.get("title") or "").strip()
     desc = (sn.get("description") or "").strip()
@@ -495,7 +594,13 @@ def build_meta_features_for_24h(rec: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def build_lowq_features(rec: Dict[str, Any]) -> Dict[str, Any]:
-    """Dùng ml_flags.low_quality_* để tạo lowq_* feature cho 24h."""
+    """
+    Use low-quality flags to construct additional features for the 24h model:
+
+      - lowq_3h_score       : ml_flags.low_quality_v1_3h.score (or 0.0)
+      - lowq_6h_score       : ml_flags.low_quality_v3_6h.score (or 0.0)
+      - lowq_ever_flagged   : 1 if any low-quality model marked is_low=True
+    """
     ml = rec.get("ml_flags") or {}
     lq3 = ml.get("low_quality_v1_3h", {}) or {}
     lq6 = ml.get("low_quality_v3_6h", {}) or {}
@@ -513,8 +618,13 @@ def build_lowq_features(rec: Dict[str, Any]) -> Dict[str, Any]:
 
 def make_len_dummies(length_bucket: Optional[str]) -> Dict[str, float]:
     """
-    Tạo one-hot lengthBucket theo danh sách LEN_COLS_24H.
-    Nếu feature-list không có len_* thì trả về dict rỗng.
+    Build one-hot encoding for lengthBucket according to LEN_COLS_24H.
+
+    Behavior:
+      - If LEN_COLS_24H is empty (model doesn't use len_*), returns {}.
+      - If length_bucket is None → try len_nan if present.
+      - If length_bucket not present in LEN_COLS_24H → fall back to len_other
+        or len_nan if available.
     """
     if not LEN_COLS_24H:
         return {}
@@ -526,7 +636,7 @@ def make_len_dummies(length_bucket: Optional[str]) -> Dict[str, float]:
         key = f"len_{length_bucket}"
 
     if key not in out:
-        # fallback: len_other hoặc len_nan nếu có
+        # Fallback: len_other or len_nan if they exist
         if "len_other" in out:
             key = "len_other"
         elif "len_nan" in out:
@@ -539,11 +649,15 @@ def make_len_dummies(length_bucket: Optional[str]) -> Dict[str, float]:
 
 
 # ============================================================
-# Build feature vectors cho từng stage
+# Build feature vectors for each stage
 # ============================================================
 
-
 def build_features_6h(agg: Dict[str, Any]) -> Dict[str, float]:
+    """
+    Build feature dict for the 6h model based on HARDER_FEATURES_6H.
+
+    `agg` here is the 0–24h aggregation; we only pick the subset needed.
+    """
     row: Dict[str, float] = {}
     for col in HARDER_FEATURES_6H:
         row[col] = float(agg.get(col, 0.0))
@@ -551,22 +665,24 @@ def build_features_6h(agg: Dict[str, Any]) -> Dict[str, float]:
 
 
 def build_features_12h(agg: Dict[str, Any]) -> Dict[str, float]:
+    """
+    Build feature dict for the 12h model based on HARDER_FEATURES_12H.
+    """
     row: Dict[str, float] = {}
     for col in HARDER_FEATURES_12H:
         row[col] = float(agg.get(col, 0.0))
     return row
 
 
-def build_features_24h(
-    rec: Dict[str, Any], agg: Dict[str, Any]
-) -> Dict[str, float]:
+def build_features_24h(rec: Dict[str, Any], agg: Dict[str, Any]) -> Dict[str, float]:
     """
-    Build full vector cho model 24h theo FEATURES_24H_FULL.
-    Kết hợp:
-      - agg 0–24h
-      - meta (isShorts, title_len, ...)
-      - low_quality features
-      - len_* one-hot (nếu có trong FEATURES_24H_FULL)
+    Build the full 24h feature vector according to FEATURES_24H_FULL.
+
+    Combines:
+      - 0–24h aggregation (`agg`)
+      - meta features (isShorts, title_len, ...)
+      - low-quality features (lowq_*)
+      - len_* one-hot encodings (if present in FEATURES_24H_FULL)
     """
     meta = build_meta_features_for_24h(rec)
     lowq = build_lowq_features(rec)
@@ -582,14 +698,14 @@ def build_features_24h(
         elif col in lowq:
             row[col] = float(lowq.get(col, 0.0))
         else:
-            # nếu cột không tồn tại (trường hợp missing hoặc NaN) -> 0
+            # If the column is not present anywhere (missing / NaN), default to 0.
             row[col] = 0.0
 
-    # append len_* nếu cần
+    # Add len_* one-hot columns, if any
     for col, val in len_dummy.items():
         row[col] = float(val)
 
-    # đảm bảo đầy đủ tất cả cột theo FEATURES_24H_FULL
+    # Ensure all columns from FEATURES_24H_FULL are present
     for col in FEATURES_24H_FULL:
         row.setdefault(col, 0.0)
 
@@ -600,10 +716,8 @@ def build_features_24h(
 # Mongo helpers
 # ============================================================
 
-
-def get_collection(
-    mongo_uri: str, db_name: str, coll_name: str
-):
+def get_collection(mongo_uri: str, db_name: str, coll_name: str):
+    """Connect to MongoDB and return the target collection handle."""
     client = MongoClient(mongo_uri)
     db = client[db_name]
     return db[coll_name]
@@ -616,10 +730,24 @@ def fetch_candidates(
     limit: Optional[int] = None,
 ):
     """
-    stage: 'h6', 'h12', 'h24_validation'
-    only_missing: nếu True thì chỉ lấy video chưa có score_proba cho stage đó.
-    KHÔNG filter theo tracking.status → thỏa yêu cầu "tính toán lại
-    bất kể tracking.status".
+    Fetch candidate videos to score for a given stage.
+
+    Args:
+        stage:
+            - "h6"
+            - "h12"
+            - "h24_validation"
+        only_missing:
+            - If True, only return videos whose
+              ml_flags.viral_v2.<stage>.score_proba is None/missing.
+            - If False, no filter is applied on score_proba.
+        limit:
+            - Optional max number of docs (for debugging / safety).
+
+    NOTE:
+        We do NOT filter by tracking.status here. The idea is to allow
+        recomputation regardless of tracking status, as long as the video
+        has stats snapshots and passes the age gating inside run_stage().
     """
     field_score = f"ml_flags.viral_v2.{stage}.score_proba"
 
@@ -627,7 +755,8 @@ def fetch_candidates(
         "stats_snapshots.0": {"$exists": True},
     }
     if only_missing:
-        query[field_score] = None  # match cả missing lẫn null
+        # In Mongo, field == None matches both missing field and explicit null.
+        query[field_score] = None
 
     projection = {
         "_id": 1,
@@ -640,6 +769,7 @@ def fetch_candidates(
         "tracking": 1,
         "source": 1,
         "publishedAt": 1,
+        "latest_stats_ts": 1,
     }
 
     cursor = coll.find(query, projection=projection)
@@ -650,8 +780,10 @@ def fetch_candidates(
 
 def ensure_viral_flags(rec: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Đảm bảo rec["ml_flags"]["viral_v2"] tồn tại với cấu trúc default.
-    (hàm này chỉ tạo object Python tạm thời; update thực sẽ qua $set)
+    Ensure rec["ml_flags"]["viral_v2"] exists with a default structure.
+
+    This function mutates the in-memory Python dict only.
+    Actual persistence to MongoDB is done using `$set` in run_stage().
     """
     ml = rec.setdefault("ml_flags", {})
     viral = ml.setdefault("viral_v2", {})
@@ -704,15 +836,15 @@ def ensure_viral_flags(rec: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def utc_now_iso() -> str:
+    """Return current UTC time as an ISO-8601 string (timezone-aware)."""
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat()
 
 
 # ============================================================
-# Core runners cho từng stage
+# Core runners for each stage
 # ============================================================
-
 
 def run_stage(
     stage: str,
@@ -725,13 +857,36 @@ def run_stage(
     only_missing: bool,
     force_all: bool,
     limit: Optional[int],
+    worker_runs_name: Optional[str] = None,
+    worker_status: Optional[str] = None,
 ) -> None:
     """
-    Generic runner cho 1 stage:
-      - stage: 'h6', 'h12', 'h24_validation'
-      - model_path: đường dẫn .joblib tương ứng
-      - feature_cols: danh sách cột theo đúng thứ tự training
-      - build_features_fn(rec, agg) -> dict[col] = value
+    Generic runner for a single stage.
+
+    Args:
+        stage:
+            - "h6"
+            - "h12"
+            - "h24_validation"
+        model_path:
+            Path to the .joblib model used for this stage.
+        feature_cols:
+            Ordered list of feature names to feed into the model
+            (ignored for 24h, where we derive from model metadata).
+        build_features_fn:
+            Callable(rec, agg) -> feature dict.
+            For 6h/12h, agg is used; for 24h both rec+agg are used.
+        mongo_uri/db_name/coll_name:
+            MongoDB connection parameters.
+        only_missing:
+            If True, only consider videos missing score_proba for this stage.
+        force_all:
+            If True, ignore only_missing and recompute for all candidates
+            (still subject to age gating per stage).
+        limit:
+            Optional limit on number of videos (debug/safety).
+        worker_runs_name/worker_status:
+            Identifiers written into worker_runs to support dashboards.
     """
     if not model_path.exists():
         raise SystemExit(f"[ERROR] Model file not found: {model_path}")
@@ -743,13 +898,13 @@ def run_stage(
 
     model = joblib.load(model_path)
 
-    # Với 24h: lấy danh sách cột trực tiếp từ model.feature_names_in_
+    # For 24h, feature_cols are dynamically taken from the model metadata
     if stage == "h24_validation":
         feature_cols = init_24h_features_from_model(model)
 
     coll = get_collection(mongo_uri, db_name, coll_name)
 
-    # Nếu force_all=True → bỏ qua only_missing
+    # If force_all=True, we ignore only_missing but still respect age gating
     cursor = fetch_candidates(
         coll, stage=stage, only_missing=(only_missing and not force_all), limit=limit
     )
@@ -761,19 +916,37 @@ def run_stage(
         total += 1
         vid = rec.get("_id")
 
+        # Compute video age in hours from latest_stats_ts - publishedAt
+        age_hrs = compute_video_age_hours(rec)
+        if age_hrs is None:
+            print(f"[SKIP] _id={vid}: cannot compute age_hrs (missing timestamps)")
+            continue
+
+        # Stage-specific age gating:
+        #   - h6  : age >= 6h
+        #   - h12 : age >= 12h
+        #   - h24 : age >= 23h (slightly early to catch almost-24h)
+        if stage == "h6" and age_hrs < 6.0:
+            continue
+        if stage == "h12" and age_hrs < 12.0:
+            continue
+        if stage == "h24_validation" and age_hrs < 23.0:
+            continue
+
         agg = aggregate_0_24h(rec)
         if agg is None:
             print(f"[SKIP] _id={vid}: aggregation failed")
             continue
 
-        # build feature row
+        # Build feature row
         feat_dict = build_features_fn(rec, agg)
-        # đảm bảo thứ tự & đủ cột
+        # Ensure correct ordering and full coverage for all feature columns
         x = np.array([[feat_dict.get(c, 0.0) for c in feature_cols]], dtype=np.float32)
 
         proba = float(model.predict_proba(x)[0, 1])
         score_100 = int(round(proba * 100))
 
+        # Ensure ml_flags.viral_v2 exists, then update only the intended paths
         ensure_viral_flags(rec)
         ml_viral = rec["ml_flags"]["viral_v2"]
         now_iso = utc_now_iso()
@@ -833,7 +1006,7 @@ def run_stage(
         if total % 50 == 0:
             print(
                 f"[{stage}] processed={total:,}, updated={updated:,} "
-                f"(last _id={vid}, score={score_100})"
+                f"(last _id={vid}, score={score_100}, age_hrs={age_hrs:.2f})"
             )
 
     print(
@@ -841,13 +1014,36 @@ def run_stage(
         f"model={model_path}"
     )
 
+    # ---- Record worker run in worker_runs for dashboards / monitoring ----
+    from datetime import datetime, timezone
+
+    doc_name = worker_runs_name or f"viral_scoring_{stage}"
+    status_val = worker_status or f"ok_{stage}"
+
+    coll.database["worker_runs"].update_one(
+        {"name": doc_name},
+        {
+            "$set": {
+                "last_run": datetime.now(timezone.utc),
+                "status": status_val,
+            }
+        },
+        upsert=True,
+    )
+
 
 # ============================================================
 # CLI
 # ============================================================
 
-
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    """
+    CLI parser for running viral models:
+
+      python -m worker.viral_prediction_core 6h  [--only-missing|--force-all ...]
+      python -m worker.viral_prediction_core 12h [...]
+      python -m worker.viral_prediction_core 24h [...]
+    """
     parser = argparse.ArgumentParser(
         description="Run viral prediction models (6h / 12h / 24h) on MongoDB."
     )
@@ -873,21 +1069,21 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         subparser.add_argument(
             "--only-missing",
             action="store_true",
-            help="Chỉ tính cho video chưa có score_proba cho stage tương ứng.",
+            help="Only score videos that have no score_proba for this stage yet.",
         )
         subparser.add_argument(
             "--force-all",
             action="store_true",
             help=(
-                "Bỏ qua only-missing, ép tính lại tất cả video đủ dữ liệu, "
-                "bất kể tracking.status hay đã có score trước đó."
+                "Ignore --only-missing and recompute for all videos with enough data; "
+                "age gating per stage is still enforced."
             ),
         )
         subparser.add_argument(
             "--limit",
             type=int,
             default=None,
-            help="Giới hạn số video (debug). Mặc định: không giới hạn.",
+            help="Limit number of videos (debug). Default: no limit.",
         )
 
     p6 = sub.add_parser("6h", help="Run 6h early-signal model (ml_flags.viral_v2.h6)")
@@ -908,6 +1104,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 
 def main(argv: Optional[List[str]] = None) -> None:
+    """
+    CLI entry point. Dispatches to run_stage() for the requested command
+    (6h, 12h, or 24h).
+    """
     args = parse_args(argv)
 
     if args.cmd == "6h":
@@ -922,6 +1122,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             only_missing=args.only_missing,
             force_all=args.force_all,
             limit=args.limit,
+            worker_runs_name="viral_prediction_core",
+            worker_status="viral_prediction_core",
         )
 
     elif args.cmd == "12h":
@@ -936,14 +1138,16 @@ def main(argv: Optional[List[str]] = None) -> None:
             only_missing=args.only_missing,
             force_all=args.force_all,
             limit=args.limit,
+            worker_runs_name="viral_prediction_core",
+            worker_status="viral_prediction_core",
         )
 
     elif args.cmd == "24h":
-        # feature_cols sẽ bị override bên trong run_stage bằng model.feature_names_in_
+        # feature_cols will be overridden inside run_stage based on model metadata
         run_stage(
             stage="h24_validation",
             model_path=MODEL_24H_PATH,
-            feature_cols=[],  # placeholder, sẽ set lại từ model
+            feature_cols=[],
             build_features_fn=build_features_24h,
             mongo_uri=args.mongo_uri,
             db_name=args.db,
@@ -951,6 +1155,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             only_missing=args.only_missing,
             force_all=args.force_all,
             limit=args.limit,
+            worker_runs_name="viral_prediction_core",
+            worker_status="viral_prediction_core",
         )
 
     else:  # pragma: no cover

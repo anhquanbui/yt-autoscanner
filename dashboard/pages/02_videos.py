@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Streamlit page: 02_Videos (minimal KPI view)
+Streamlit page: 02_Videos (status overview)
 
+This page shows:
 - Total Videos / Channels / Tracking Active
 - Tracking Status (Completed breakdown + Stopped low-quality)
 - Low-quality ML Models (3h / 6h) — flagged counts
-- Latest 200 videos (video_id, title, channel)
+- Viral ML Models (6h / 12h / 24h / Final) — non-overlapping stage buckets
+- Random 10 videos (video_id, title, channel, status + View)
 """
 
 from __future__ import annotations
@@ -16,13 +18,28 @@ import streamlit as st
 import pandas as pd
 import datetime
 
-from config.db import get_db
+import sys
+from pathlib import Path
+
+# --------------------------------------------------
+# Add project root (../.. from this file) to sys.path
+# so that local modules (config.db, etc.) can be imported
+# when Streamlit runs this file as a script.
+# --------------------------------------------------
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from config.db import get_db  # _resolve_db_name is not used here
 
 
 # ======================================================
 # Page config
 # ======================================================
 
+# Configure this Streamlit page:
+# - Title in the browser tab
+# - Layout is "wide" for more horizontal space
 st.set_page_config(page_title="Videos Overview", layout="wide")
 
 
@@ -30,6 +47,7 @@ st.set_page_config(page_title="Videos Overview", layout="wide")
 # DB init
 # ======================================================
 
+# Initialize MongoDB collections used on this page
 db = get_db()
 videos_col = db.videos
 kpis_col = db.dashboard_kpis
@@ -40,7 +58,7 @@ kpis_col = db.dashboard_kpis
 # ======================================================
 
 def pct(num: float, den: float) -> float:
-    """Safe percentage helper."""
+    """Safe percentage helper: returns num/den * 100, or 0.0 if invalid."""
     try:
         if not den:
             return 0.0
@@ -56,9 +74,18 @@ def stat_card(
     base_label: str,
     icon: str = "",
 ) -> None:
-    """Render a card with value + mini progress bar."""
+    """
+    Render a "stat card" with:
+    - a title
+    - the numeric value (formatted with thousands separator)
+    - a mini progress bar based on value / base
+    - a small caption showing the percentage and base_label
+
+    This is used throughout the page for top-level KPIs.
+    """
     percentage = pct(value, base)
 
+    # Simple HTML progress bar (pure CSS, no Streamlit native widget)
     bar_html = f"""
         <div style="background:#eee; height:6px; width:100%; border-radius:4px; margin-top:4px;">
             <div style="
@@ -96,36 +123,80 @@ def stat_card(
     )
 
 
-@st.cache_data(ttl=30)
+def format_status_badge(status: str | None, stop_reason: str | None) -> str:
+    """
+    Map internal tracking status + stop_reason into a small emoji + label.
+
+    Examples:
+      - tracking          -> "🟢 tracking"
+      - complete          -> "✅ complete"
+      - stopped, lowq     -> "⛔ stopped (low-quality)"
+      - stopped, other    -> "⛔ stopped (<reason>)"
+      - unknown/missing   -> "⚪ unknown"
+    """
+    if status == "tracking":
+        return "🟢 tracking"
+    if status == "complete":
+        return "✅ complete"
+    if status == "stopped":
+        if stop_reason and stop_reason.startswith("ml.low_quality"):
+            return "⛔ stopped (low-quality)"
+        elif stop_reason:
+            return f"⛔ stopped ({stop_reason})"
+        else:
+            return "⛔ stopped"
+    if status:
+        return f"⚪ {status}"
+    return "⚪ unknown"
+
+
 def get_latest_kpis() -> Dict[str, Any] | None:
-    """Latest snapshot from dashboard_kpis."""
+    """
+    Fetch the latest snapshot document from `dashboard_kpis`.
+
+    We sort by _id descending so the newest inserted doc is returned.
+    """
     return kpis_col.find_one(sort=[("_id", -1)])
 
 
-@st.cache_data(ttl=30)
-def get_recent_videos(limit: int = 200) -> List[Dict[str, Any]]:
-    """Latest N videos for table (id, title, channel)."""
-    cursor = (
-        videos_col.find(
-            {},
-            {
+def get_random_videos(limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    Return a random sample of N videos from `videos` collection.
+
+    The result is a list of dicts with:
+      - video_id
+      - title
+      - channel
+      - status
+      - stop_reason
+
+    This is used for the "Random 10 videos" section to quickly
+    spot-check tracking behavior without building a heavy table.
+    """
+    pipeline = [
+        {"$sample": {"size": limit}},  # random sampling in Mongo
+        {
+            "$project": {
                 "_id": 1,
                 "snippet.title": 1,
                 "snippet.channelTitle": 1,
-            },
-        )
-        .sort("published_at", -1)
-        .limit(limit)
-    )
+                "tracking.status": 1,
+                "tracking.stop_reason": 1,
+            }
+        },
+    ]
 
     rows: List[Dict[str, Any]] = []
-    for doc in cursor:
+    for doc in videos_col.aggregate(pipeline):
         snippet = doc.get("snippet", {}) or {}
+        tracking = doc.get("tracking", {}) or {}
         rows.append(
             {
                 "video_id": doc.get("_id"),
                 "title": snippet.get("title"),
                 "channel": snippet.get("channelTitle"),
+                "status": tracking.get("status"),
+                "stop_reason": tracking.get("stop_reason"),
             }
         )
 
@@ -139,10 +210,11 @@ def get_recent_videos(limit: int = 200) -> List[Dict[str, Any]]:
 k = get_latest_kpis()
 
 if not k:
+    # Hard stop if KPIs haven't been computed yet
     st.error("No KPI snapshot found in `dashboard_kpis`. Run compute_dashboard_kpis.py first.")
     st.stop()
 
-# Base metrics
+# -------- Base metrics from KPI snapshot --------
 total_videos = int(k.get("total_videos", 0))
 total_channels = int(k.get("total_channels", 0))
 tracking_active = int(k.get("tracking_active", 0))
@@ -153,14 +225,27 @@ completed_removed = int(k.get("completed_removed", 0))
 
 stopped_low_quality = int(k.get("stopped_low_quality", 0))
 
-# ML metrics (may be 0 if worker version cũ)
+# ML metrics (low-quality 3h / 6h coverage + flagged counts)
 ml_3h_scored = int(k.get("ml_3h_scored", 0))
 ml_6h_scored = int(k.get("ml_6h_scored", 0))
 lowq_3h_flag = int(k.get("low_quality_flagged_3h", 0))
 lowq_6h_flag = int(k.get("low_quality_flagged_6h", 0))
 
-# ---------------- Title ----------------
+# Viral v1 metrics (legacy)
+viral_likely = int(k.get("viral_likely", 0))
+viral_confirmed = int(k.get("viral_confirmed", 0))
 
+# Viral v2 stage metrics:
+# each stage_*_only bucket is non-overlapping, i.e.
+# a video appears in at most one stage bucket.
+viral2_stage_6h_only = int(k.get("viral2_stage_6h_only", 0))
+viral2_stage_12h_only = int(k.get("viral2_stage_12h_only", 0))
+viral2_stage_24h_only = int(k.get("viral2_stage_24h_only", 0))
+viral2_final_decided = int(k.get("viral2_final_decided", 0))
+
+# ------------------------------------------------------
+# Global title + separator
+# ------------------------------------------------------
 st.title("🎥 Videos — Tracking Overview")
 st.markdown("---")
 
@@ -183,6 +268,7 @@ st.subheader("⏱️ Tracking Status")
 c1, c2 = st.columns(2)
 
 with c1:
+    # "Completed" overview card with breakdown (age ≥ 24h vs removed)
     percent_completed = pct(completed_total, total_videos or 1)
 
     completed_html = f"""
@@ -236,6 +322,7 @@ with c1:
 
 
 with c2:
+    # Total number of videos stopped because of low-quality reason
     stat_card(
         "Stopped (Low Quality reason)",
         stopped_low_quality,
@@ -251,6 +338,7 @@ st.subheader("🤖 Low-quality ML Models (3h / 6h)")
 m1, m2 = st.columns(2)
 
 with m1:
+    # Use ml_3h_scored as base if available; otherwise fallback to total_videos
     base_3h = ml_3h_scored or total_videos or 1
     label_3h = "3h-scored videos" if ml_3h_scored else "total videos"
     stat_card("❌ Low-quality flagged at 3h", lowq_3h_flag, base_3h, label_3h, "")
@@ -262,47 +350,93 @@ with m2:
 
 st.markdown("---")
 
-# ---------------- Latest 200 Videos ----------------
+# ---------------- Viral ML Models (6h / 12h / 24h / Final) ----------------
 
-# ---------------- Latest 200 Videos ----------------
+st.subheader("🔥 Viral ML Models (6h / 12h / 24h / Final)")
 
-st.subheader("📄 Latest 200 Videos")
+v1, v2, v3, v4 = st.columns(4)
 
-# Header + nút refresh
+with v1:
+    stat_card(
+        "🕕 Viral 6h Scored (stage)",
+        viral2_stage_6h_only,
+        total_videos or 1,
+        "total videos",
+    )
+
+with v2:
+    stat_card(
+        "🕛 Viral 12h Scored (stage)",
+        viral2_stage_12h_only,
+        total_videos or 1,
+        "total videos",
+    )
+
+with v3:
+    stat_card(
+        "🌙 Viral 24h Scored (stage)",
+        viral2_stage_24h_only,
+        total_videos or 1,
+        "total videos",
+    )
+
+with v4:
+    stat_card(
+        "🏁 Finalized (Viral/Non/Unk)",
+        viral2_final_decided,
+        total_videos or 1,
+        "total videos",
+    )
+
+st.markdown("---")
+
+# ---------------- Random 10 Videos ----------------
+
+st.subheader("📄 Random 10 Videos (tracking sample)")
+
 header_left, header_right = st.columns([6, 1])
 with header_left:
-    st.caption("Newest videos by published_at (limit 200)")
+    st.caption("Random sample of 10 videos across the DB — good to spot-check tracking states.")
 with header_right:
-    if st.button("🔄 Refresh", key="refresh_videos", use_container_width=True):
-        # clear cache của hàm get_recent_videos để lấy dữ liệu mới nhất
-        get_recent_videos.clear()
+    # Shuffle button: simply reruns the script so get_random_videos()
+    # is called again and returns a new sampled set.
+    if st.button("🎲 Shuffle", key="shuffle_videos", use_container_width=True):
+        st.experimental_rerun()
 
-# luôn gọi sau khi xử lý nút refresh
-rows = get_recent_videos(limit=200)
+# Container used to render the detailed panel for the selected video.
+# It is defined before rows so the details block always exists.
+details_container = st.container()
+
+rows = get_random_videos(limit=10)
 
 if not rows:
     st.info("No video data found.")
 else:
-    # Header của danh sách
-    h1, h2, h3, h4 = st.columns([2, 5, 3, 1])
+    # Header for the video list: ID | Title | Channel | Status | Action
+    h1, h2, h3, h4, h5 = st.columns([2, 5, 3, 2, 1])
     h1.markdown("**Video ID**")
     h2.markdown("**Title**")
     h3.markdown("**Channel**")
-    h4.markdown("**Action**")
-
-    details_container = st.container()
+    h4.markdown("**📡 Tracking**")
+    h5.markdown("**Action**")
 
     for idx, row in enumerate(rows):
-        c1, c2, c3, c4 = st.columns([2, 5, 3, 1])
+        c1, c2, c3, c4, c5 = st.columns([2, 5, 3, 2, 1])
 
+        # Video basic info
         c1.code(row["video_id"], language=None)
-        c2.write(row["title"])
-        c3.write(row["channel"])
+        c2.write(row["title"] or "")
+        c3.write(row["channel"] or "—")
 
-        if c4.button("View", key=f"view_{idx}"):
+        # Status badge based on tracking.status + stop_reason
+        status_badge = format_status_badge(row.get("status"), row.get("stop_reason"))
+        c4.markdown(status_badge)
+
+        # "View" button sets selected_video_id in session_state
+        if c5.button("View", key=f"view_{idx}"):
             st.session_state["selected_video_id"] = row["video_id"]
 
-# khối hiển thị chi tiết gọn
+# --------- details block for the selected video ---------
 with details_container:
     selected_id = st.session_state.get("selected_video_id")
     if not selected_id:
@@ -312,6 +446,7 @@ with details_container:
         if not doc:
             st.warning(f"Video `{selected_id}` not found in database.")
         else:
+            # Unpack relevant sub-documents
             snippet = doc.get("snippet", {}) or {}
             tracking = doc.get("tracking", {}) or {}
             ml_flags = doc.get("ml_flags", {}) or {}
@@ -322,48 +457,46 @@ with details_container:
             low6 = (ml_flags.get("low_quality_v3_6h") or {})
             viral = (ml_flags.get("viral_v1") or {})
 
-            # ===== thời gian tracking =====
+            # ===== tracking duration =====
             now = datetime.datetime.utcnow()
             started = tracking.get("started_at")
             tracked_for = "-"
             started_str = "-"
 
             if started:
+                # Convert ISO8601 string into datetime, handle "Z"
                 try:
                     started_dt = datetime.datetime.fromisoformat(
                         started.replace("Z", "+00:00")
                     )
                     delta = now - started_dt
-                    tracked_for = str(delta).split(".")[0]  # bỏ microseconds
+                    tracked_for = str(delta).split(".")[0]
                     started_str = started
                 except Exception:
                     tracked_for = "n/a (invalid timestamp)"
                     started_str = started
             else:
-                # status complete nên không lưu started_at là bình thường
+                # Explain missing start time depending on status
                 if tracking.get("status") == "complete":
                     tracked_for = "n/a (completed; start time not stored)"
                 else:
                     tracked_for = "n/a (not started yet)"
 
-            # ===== region + query =====
-            region = source.get("regionCode")
-            if not region:
-                region = "not recorded"
-
+            # ===== region + search query used to discover the video =====
+            region = source.get("regionCode") or "not recorded"
             query_used = (
                 source.get("query")
                 or source.get("query_raw")
                 or source.get("search_query")
+                or "not recorded"
             )
-            if not query_used:
-                query_used = "not recorded"
 
-            # ===== snapshot / trending =====
+            # ===== snapshots: last + previous (for delta / trend) =====
             num_snaps = len(snapshots)
             last_snap = snapshots[-1] if num_snaps >= 1 else None
             prev_snap = snapshots[-2] if num_snaps >= 2 else None
 
+            # Helper to parse snapshot timestamps
             def get_ts(s):
                 if not s:
                     return None
@@ -375,6 +508,7 @@ with details_container:
                 except Exception:
                     return None
 
+            # Helpers to get views/likes from possibly different schema variants
             def get_views(s):
                 if not s:
                     return None
@@ -403,6 +537,8 @@ with details_container:
             view_per_hour = None
             like_per_hour = None
 
+            # Compute deltas & rates only if we have at least two snapshots
+            # with valid timestamps
             if last_snap and prev_snap and last_ts and prev_ts:
                 dt_hours = (last_ts - prev_ts).total_seconds() / 3600.0
                 if dt_hours > 0:
@@ -413,6 +549,7 @@ with details_container:
                         like_delta = last_likes - get_likes(prev_snap)
                         like_per_hour = like_delta / dt_hours
 
+            # Formatting helpers
             def fmt_int(x):
                 return f"{int(x):,}" if isinstance(x, (int, float)) else "-"
 
@@ -422,8 +559,7 @@ with details_container:
             def fmt_score(x):
                 return f"{x:.4f}" if isinstance(x, (int, float)) else "-"
 
-            # ==== Chuẩn bị chuỗi hiển thị "thông minh" ====
-            # last snapshot time
+            # Last snapshot time as a readable string
             if last_ts:
                 last_ts_str = last_ts.isoformat()
             elif num_snaps == 0:
@@ -431,13 +567,13 @@ with details_container:
             else:
                 last_ts_str = "-"
 
-            # likes hiển thị rõ hơn
+            # More explicit message when likes are hidden / unavailable
             if last_likes is None:
                 last_likes_str = "🔒 hidden / not available"
             else:
                 last_likes_str = fmt_int(last_likes)
 
-            # delta & per-hour: nếu thiếu dữ liệu thì giải thích
+            # Prepare display strings for deltas and per-hour metrics
             if num_snaps < 2:
                 view_delta_str = "🛏 not enough snapshots"
                 like_delta_str = "🛏 not enough snapshots"
@@ -460,7 +596,7 @@ with details_container:
                         fmt_float(like_per_hour) if like_per_hour is not None else "-"
                     )
 
-            # low-quality scores: thông báo nếu chưa chấm
+            # Low-quality model scores & thresholds (3h / 6h)
             low3_score_str = (
                 fmt_score(low3.get("score"))
                 if low3.get("score") is not None
@@ -471,7 +607,6 @@ with details_container:
                 if low3.get("threshold") is not None
                 else "-"
             )
-
             low6_score_str = (
                 fmt_score(low6.get("score"))
                 if low6.get("score") is not None
@@ -487,20 +622,17 @@ with details_container:
             st.markdown("---")
             st.subheader("🔍 Video details")
 
-            # Info top
             st.markdown(f"**ID:** `{selected_id}`")
             st.markdown(f"**Title:** {snippet.get('title') or '—'}")
             st.markdown(f"**Channel:** {snippet.get('channelTitle') or '—'}")
             st.markdown(f"**Published at:** `{snippet.get('publishedAt', '—')}`")
-
-            # region + query + tracking time
             st.markdown(f"**Region code:** `{region}`")
             st.markdown(f"**Query used:** `{query_used}`")
             st.markdown(f"**Tracked for:** `{tracked_for}`")
 
             col_a, col_b, col_c = st.columns(3)
 
-            # Tracking info
+            # Tracking info column
             with col_a:
                 st.markdown("**Tracking**")
                 st.markdown(
@@ -510,7 +642,7 @@ with details_container:
                     f"- Tracked for: `{tracked_for}`"
                 )
 
-            # LowQ 3h
+            # Low-quality 3h column
             with col_b:
                 st.markdown("**Low-quality 3h**")
                 st.markdown(
@@ -519,7 +651,7 @@ with details_container:
                     f"- is_low: `{low3.get('is_low', '—')}`"
                 )
 
-            # LowQ 6h
+            # Low-quality 6h column
             with col_c:
                 st.markdown("**Low-quality 6h**")
                 st.markdown(
@@ -528,7 +660,7 @@ with details_container:
                     f"- is_low: `{low6.get('is_low', '—')}`"
                 )
 
-            # Viral
+            # Viral v1 flags
             st.markdown("**Viral v1**")
             st.markdown(
                 f"- Score: `{fmt_score(viral.get('score'))}`\n"
@@ -536,7 +668,7 @@ with details_container:
                 f"- Confirmed: `{viral.get('confirmed', '—')}`"
             )
 
-            # Engagement snapshots & trend
+            # Engagement / growth metrics based on snapshots
             st.markdown("**📈 Engagement snapshots**")
             st.markdown(
                 f"- Total snapshots: `{num_snaps}`\n"

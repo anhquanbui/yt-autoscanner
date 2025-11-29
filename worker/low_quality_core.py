@@ -2,20 +2,32 @@
 """
 low_quality_core.py
 
-Core logic for low-quality autoflag worker, supporting 3 modes:
+Core logic for the "low-quality" auto-flag worker, supporting 3 modes:
 
-- mode="both"    : 3h window + 6h window (3h for [3h,6h), 6h for >=6h)
-- mode="3h-only" : only run 3h model for videos with 3h <= age < 6h
-- mode="6h-only" : only run 6h model for videos with age >= 6h
+- mode="both"    : run both 3h and 6h logic
+                   * 3h model for videos with 3h <= age < 6h
+                   * 6h model for videos with age >= 6h
 
-Extra:
-- --include-all-status  : bỏ filter tracking.status="tracking"
-- --status-in ...       : lọc theo nhiều status cụ thể (tracking, complete, stopped,...)
+- mode="3h-only" : only run the 3h model for videos with 3h <= age < 6h
+
+- mode="6h-only" : only run the 6h model for videos with age >= 6h
+
+Extra filters:
+- --include-all-status : do not filter on tracking.status at all
+- --status-in ...      : explicitly filter by a list of tracking.status values
+                         (e.g. tracking, complete, stopped, ...)
 
 Intended usage:
-  - Thin wrappers can import `run_low_quality` and call it with a chosen mode.
-  - This file can still be used as a CLI script with `--mode`.
+  - Other worker scripts (thin wrappers) import `run_low_quality` and call it
+    with the desired mode and config.
+  - This file still works as a standalone CLI script via the `main()` entrypoint.
 
+This worker:
+  - Builds a Mongo query to find candidate videos.
+  - Derives 3h/6h features from stats snapshots.
+  - Scores each video using ML models (3h and/or 6h).
+  - Writes ml_flags.low_quality_* fields back to Mongo.
+  - Optionally flips tracking.status → "stopped" if the video is low-quality.
 """
 
 from __future__ import annotations
@@ -44,6 +56,9 @@ load_env()
 # ==========================
 # Optional envs (kept for compatibility)
 # ==========================
+# These are loaded for backward compatibility with older workers / configs.
+# The "real" configuration is passed via CLI or env in main(), so these are mostly
+# for default/fallback behavior.
 
 ENV_MODEL_3H = get_env("LOWQ_MODEL_3H_PATH")
 ENV_MODEL_6H = get_env("LOWQ_MODEL_6H_PATH")
@@ -60,7 +75,7 @@ ENV_ONLY_MISSING_6H = (get_env("LOWQ_6H_ONLY_MISSING", "true") or "true").lower(
 ENV_STOP_3H = (get_env("LOWQ_3H_STOP_IF_LOW", "true") or "true").lower() == "true"
 ENV_STOP_6H = (get_env("LOWQ_6H_STOP_IF_LOW", "true") or "true").lower() == "true"
 
-# Disable noisy warnings (e.g., sklearn version mismatch)
+# Disable noisy warnings (e.g., sklearn / XGBoost version mismatch when loading old models)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
 
@@ -68,10 +83,20 @@ warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
 # Mongo logging helper
 # ==========================
 
-def log_worker_run(worker_name: str, extra: dict | None = None):
-    """Upsert one document in `worker_runs` to record last run (success or error)."""
+def log_worker_run(worker_name: str, extra: dict | None = None) -> None:
+    """
+    Upsert a single document in the `worker_runs` collection to record the
+    last execution of this worker.
+
+    This is used for monitoring / dashboards:
+      - Always writes the worker name and last_run timestamp.
+      - Optionally merges `extra` stats (e.g., processed count, mode).
+
+    The function is best-effort:
+      - Any error is printed to stderr but does NOT crash the worker.
+    """
     try:
-        # Ensure env is loaded (idempotent)
+        # Idempotent: safe to call repeatedly.
         load_env()
 
         mongo_uri = get_env("MONGO_URI", "mongodb://localhost:27017/ytscan")
@@ -80,6 +105,7 @@ def log_worker_run(worker_name: str, extra: dict | None = None):
         if db_name_env:
             db_name = db_name_env
         else:
+            # Infer DB from the URI suffix if MONGO_DB is not set.
             tail = mongo_uri.rsplit("/", 1)[-1]
             db_name = tail.split("?", 1)[0] or "ytscan"
 
@@ -99,6 +125,7 @@ def log_worker_run(worker_name: str, extra: dict | None = None):
             upsert=True,
         )
     except Exception as e:
+        # The worker should still continue even if logging fails.
         print(f"[WARN] Failed to log worker run for {worker_name}: {e}", file=sys.stderr)
 
 
@@ -111,6 +138,7 @@ try:
     import xgboost as xgb
     XGB_AVAILABLE = True
 except Exception:
+    # xgboost is optional; only needed if .xgb models are used.
     pass
 
 SK_AVAILABLE = False
@@ -118,8 +146,10 @@ try:
     import joblib
     SK_AVAILABLE = True
 except Exception:
+    # joblib (sklearn models) is also optional in case only XGB models are used.
     pass
 
+# Small epsilon used to avoid division by zero when computing ratios.
 EPS = 1e-6
 
 
@@ -128,12 +158,23 @@ EPS = 1e-6
 # ==========================
 
 def _now_utc_iso() -> str:
-    """Return current UTC time as ISO-8601 string (timezone-aware)."""
-    # Use timezone-aware datetime to avoid DeprecationWarning and be explicit
+    """
+    Return the current UTC time as an ISO-8601 string (timezone-aware).
+
+    Example format:
+      "2025-11-29T06:30:15.123456+00:00"
+    """
     return datetime.now(timezone.utc).isoformat()
 
 
-def _safe_int(x):
+def _safe_int(x: Any) -> int:
+    """
+    Convert a value to int in a very defensive way.
+
+    - If x is directly convertible to int, return that.
+    - Else, try casting to float then int.
+    - On any failure, return 0 (safe default).
+    """
     try:
         return int(x)
     except Exception:
@@ -143,14 +184,30 @@ def _safe_int(x):
             return 0
 
 
-def _loads_jsonish(x):
+def _loads_jsonish(x: Any) -> Any:
+    """
+    Attempt to parse JSON-ish inputs.
+
+    Behaviors:
+    - If x is already a dict or list: return it unchanged.
+    - If x is a non-string: return it unchanged.
+    - If x is a string that *looks* like JSON (starts with '{' or '['),
+      try to parse using orjson, then json as a fallback.
+    - If parsing fails, return None.
+    - If it doesn't look like JSON, return the original string.
+
+    This helper allows fields that are "JSON stored as string" to be used
+    transparently, while also handling already-decoded objects.
+    """
     if isinstance(x, (dict, list)):
         return x
     if not isinstance(x, str):
         return x
+
     s = x.strip()
     if not s:
         return None
+
     if (s[0] == "{" and s[-1] == "}") or (s[0] == "[" and s[-1] == "]"):
         try:
             import orjson as _orjson
@@ -164,11 +221,24 @@ def _loads_jsonish(x):
     return x
 
 
-def _dig(d: dict, dotted: str):
+def _dig(d: dict, dotted: str) -> Any:
+    """
+    Read a potentially nested field from dict `d` using a dotted path.
+
+    Examples:
+        _dig({"a": {"b": 1}}, "a.b") → 1
+        _dig({"snippet": {"publishedAt": "..." }}, "snippet.publishedAt")
+
+    Returns:
+        - The retrieved value if path exists.
+        - None if any level is missing or d is not a dict.
+    """
     if not isinstance(d, dict):
         return None
     if dotted in d:
+        # Allow direct key match as a fast path
         return d[dotted]
+
     cur = d
     for k in dotted.split("."):
         if isinstance(cur, dict) and k in cur:
@@ -178,7 +248,20 @@ def _dig(d: dict, dotted: str):
     return cur
 
 
-def _first_leq(xs, ys, t_target):
+def _first_leq(xs: List[float], ys: List[float], t_target: float) -> float:
+    """
+    Given a time series (xs, ys), return the last y where x <= t_target.
+
+    - xs: list of time points (assumed sorted ascending).
+    - ys: list of values at those time points.
+    - t_target: target x threshold.
+
+    Returns:
+        - The last value y such that x <= t_target, or
+        - np.nan if no such value exists.
+
+    This is used to pick the "value at 10m, 30m, 1h, 3h, 6h, ..." etc.
+    """
     out = np.nan
     for x, y in zip(xs, ys):
         if x <= t_target:
@@ -190,10 +273,19 @@ def _first_leq(xs, ys, t_target):
 
 def _age_hours(rec: dict) -> Optional[float]:
     """
-    Compute hours from publishedAt to last snapshot (or latest_stats_ts if present).
+    Compute the video age in hours from `snippet.publishedAt` to the latest stats time.
 
-    This is used as a safety check to decide if record has reached >=3h / >=6h.
-    With latest_stats_ts present, we avoid scanning all snapshots just to compute age.
+    The age is used to decide whether a video belongs in the 3h window or 6h window.
+
+    Order of precedence for the "latest time":
+      1) If `latest_stats_ts` is present on the document, use that as the end time.
+         This is the fast path and avoids scanning the snapshots.
+      2) Otherwise, fall back to scanning `stats_snapshots` (or `stats.snapshots`)
+         and use the maximum snapshot timestamp.
+
+    Returns:
+        - Age in hours (float) if it can be computed.
+        - None if publishedAt or any timestamp is invalid or missing.
     """
     rec = _loads_jsonish(rec) if isinstance(rec, str) else rec
     if not isinstance(rec, dict):
@@ -219,10 +311,10 @@ def _age_hours(rec: dict) -> Optional[float]:
         t_latest = to_datetime(latest, utc=True, errors="coerce")
         if t_latest is not None and str(t_latest) != "NaT":
             h = (t_latest - t0).total_seconds() / 3600.0
-            # Ignore obviously negative ages
+            # Protect against slightly negative ages due to clock issues.
             return max(h, 0.0)
 
-    # --- Fallback: compute from stats_snapshots (old behaviour) ---
+    # --- Fallback: compute from stats_snapshots (legacy behaviour) ---
     snaps = (
         _loads_jsonish(rec.get("stats_snapshots"))
         or _loads_jsonish(rec.get("stats.snapshots"))
@@ -243,7 +335,7 @@ def _age_hours(rec: dict) -> Optional[float]:
             continue
         h = (t - t0).total_seconds() / 3600.0
         if h < -0.1:
-            # Ignore clearly invalid negative ages
+            # Ignore clearly invalid negative ages (e.g., bad timestamps).
             continue
         if (max_h is None) or (h > max_h):
             max_h = h
@@ -251,11 +343,12 @@ def _age_hours(rec: dict) -> Optional[float]:
     return max_h
 
 
-
 # ==========================
 # Feature builders
 # ==========================
 
+# This is the canonical numeric feature order used for legacy models that do not
+# store feature_names_in_. Newer models should prefer feature_names_in_ instead.
 FEATURE_ORDER_6H = [
     "views_10m",
     "views_30m",
@@ -285,7 +378,21 @@ FEATURE_ORDER_6H = [
 
 
 def _extract_time_series(rec: dict):
-    """Return (t_hours, views, likes, comms) sorted by time."""
+    """
+    Extract time series (t_hours, views, likes, comments) from a video record.
+
+    Reads:
+      - snippet.publishedAt as the reference "time 0".
+      - stats_snapshots (or stats.snapshots) as a list of snapshots with:
+          ts / timestamp / time
+          viewCount / likeCount / commentCount
+
+    Returns:
+      (t_hours, views, likes, comments) where:
+        - t_hours is a list of hours since publish (sorted ascending)
+        - views, likes, comments are aligned lists
+      If anything is invalid or missing, returns (None, None, None, None).
+    """
     rec = _loads_jsonish(rec) if isinstance(rec, str) else rec
     if not isinstance(rec, dict):
         return None, None, None, None
@@ -323,6 +430,7 @@ def _extract_time_series(rec: dict):
             continue
         h = (t - t0).total_seconds() / 3600.0
         if h < -0.1:
+            # Ignore snapshots that appear before publish time (bad data).
             continue
         th.append(h)
         v.append(_safe_int(s.get("viewCount")))
@@ -332,6 +440,7 @@ def _extract_time_series(rec: dict):
     if not th:
         return None, None, None, None
 
+    # Ensure everything is sorted by time ascending.
     arr = sorted(zip(th, v, l, c), key=lambda z: z[0])
     th = [a[0] for a in arr]
     v = [a[1] for a in arr]
@@ -341,6 +450,17 @@ def _extract_time_series(rec: dict):
 
 
 def _snippet_duration_and_bucket(rec: dict):
+    """
+    Extract durationSec and lengthBucket from snippet (if available).
+
+    durationSec:
+      - numeric duration in seconds, used as a numeric feature.
+
+    lengthBucket:
+      - categorical length bucket (short/medium/long/live/etc),
+        used for one-hot encoding by `score_one()` when the model exposes
+        feature_names_in_ including len_* features.
+    """
     rec = _loads_jsonish(rec) if isinstance(rec, str) else rec
     sn = _loads_jsonish(rec.get("snippet"))
     if isinstance(sn, dict):
@@ -353,12 +473,21 @@ def _snippet_duration_and_bucket(rec: dict):
 
 
 def features_6h(rec: dict) -> Optional[dict]:
-    """Aggregate stats up to 6h after publish."""
+    """
+    Aggregate features up to 6 hours after publish.
+
+    The resulting dict contains:
+      - raw counts at 10m/30m/1h/3h/6h for views/likes/comments
+      - growth ratios between different horizons (e.g., g_1h_to_3h)
+      - approximate slopes (views growth per hour in certain windows)
+      - like_rate_6h and comm_rate_6h
+      - durationSec and lengthBucket (duration + categorical bucket)
+    """
     th, v, l, c = _extract_time_series(rec)
     if th is None:
         return None
 
-    # Use points <= 6h
+    # Use only points with t <= 6h.
     idx = [i for i, h in enumerate(th) if h <= 6.0 + 1e-9]
     if not idx:
         return None
@@ -367,17 +496,23 @@ def features_6h(rec: dict) -> Optional[dict]:
     l6_vals = [l[i] for i in idx]
     c6_vals = [c[i] for i in idx]
 
+    # Target horizons (hours): 10m, 30m, 1h, 3h, 6h
     targets = [0.1667, 0.5, 1.0, 3.0, 6.0]
     v10, v30, v1, v3, v6_ = [_first_leq(th6, v6_vals, t) for t in targets]
     l10, l30, l1, l3, l6_ = [_first_leq(th6, l6_vals, t) for t in targets]
     c10, c30, c1, c3, c6_ = [_first_leq(th6, c6_vals, t) for t in targets]
 
+    # Growth ratios
     g_10_1 = (v1 + EPS) / (v10 + EPS)
     g_1_3 = (v3 + EPS) / (v1 + EPS)
     g_3_6 = (v6_ + EPS) / (v3 + EPS)
     g_1_6 = (v6_ + EPS) / (v1 + EPS)
-    slope_1_6 = (v6_ - v1) / max(5.0, EPS)  # ~1h→6h
+
+    # Approximate slopes in views per hour
+    slope_1_6 = (v6_ - v1) / max(5.0, EPS)   # roughly between 1h and 6h
     slope_0_1 = (v1 - v10) / max(0.8333, EPS)
+
+    # Engagement rates
     like_rate_6 = l6_ / max(v6_, 1.0)
     comm_rate_6 = c6_ / max(v6_, 1.0)
 
@@ -414,15 +549,23 @@ def features_6h(rec: dict) -> Optional[dict]:
 
 def features_3h(rec: dict) -> Optional[dict]:
     """
-    Aggregate stats up to 3h.
-    NOTE: we reuse the same feature names as 6h version so training
-    can share the same feature_cols if you want (views_6h etc will
-    simply be the value at <=3h horizon).
+    Aggregate features up to 3 hours after publish.
+
+    Important design note:
+      - We intentionally reuse the same feature names as the 6h version.
+      - The "6h" fields (views_6h, likes_6h, comms_6h, etc.) are filled with
+        values at the 3h horizon. This allows training and inference to share
+        the same feature set between 3h and 6h models.
+
+    This makes it easier to:
+      - Reuse the same preprocessing / feature-order logic.
+      - Swap between 3h and 6h models without changing code.
     """
     th, v, l, c = _extract_time_series(rec)
     if th is None:
         return None
 
+    # Only use points with t <= 3h
     idx = [i for i, h in enumerate(th) if h <= 3.0 + 1e-9]
     if not idx:
         return None
@@ -436,17 +579,19 @@ def features_3h(rec: dict) -> Optional[dict]:
     l10, l30, l1, l3 = [_first_leq(th3, l3s, t) for t in targets]
     c10, c30, c1, c3 = [_first_leq(th3, c3s, t) for t in targets]
 
-    # For 3h model we still expose "6h" fields, but they actually reflect 3h horizon.
+    # For 3h model we still expose "6h" fields, but they reflect 3h horizon.
     v6_ = v3
     l6_ = l3
     c6_ = c3
 
     g_10_1 = (v1 + EPS) / (v10 + EPS)
     g_1_3 = (v3 + EPS) / (v1 + EPS)
-    g_3_6 = 1.0  # dummy, no real 6h yet
+    g_3_6 = 1.0  # dummy (no real 6h yet)
     g_1_6 = g_1_3  # treat 3h as pseudo-6h
-    slope_1_6 = (v3 - v1) / max(2.0, EPS)
+
+    slope_1_6 = (v3 - v1) / max(2.0, EPS)  # approximate slope from 1h to 3h
     slope_0_1 = (v1 - v10) / max(0.8333, EPS)
+
     like_rate_6 = l3 / max(v3, 1.0)
     comm_rate_6 = c3 / max(v3, 1.0)
 
@@ -487,9 +632,18 @@ def features_3h(rec: dict) -> Optional[dict]:
 
 def load_model(path: str):
     """
-    Load model:
-    - .joblib → sklearn (logistic regression, etc.)
-    - .xgb    → XGBoost classifier
+    Load a model from disk based on the file extension.
+
+    Supported formats:
+      - *.xgb    → XGBoost model (XGBClassifier) via `load_model()`
+      - *.joblib → sklearn / joblib model via `joblib.load()`
+
+    Returns:
+      (model, kind) where kind is "xgb" or "sk".
+
+    Raises:
+      RuntimeError if the extension is unsupported or the required
+      dependency (xgboost / joblib) is not available.
     """
     if path.endswith(".xgb") and XGB_AVAILABLE:
         m = xgb.XGBClassifier()
@@ -501,13 +655,24 @@ def load_model(path: str):
     raise RuntimeError(f"Unsupported model format or missing packages: {path}")
 
 
-def auto_threshold_from_model_or_meta(model, model_path: str, fallback: float) -> float:
+def auto_threshold_from_model_or_meta(model: Any, model_path: str, fallback: float) -> float:
     """
-    Try to infer threshold from:
-    - model.best_threshold_ or model.threshold_
-    - sidecar meta JSON: <model>.meta.json or <stem>.meta.json
-      with keys: best_threshold / threshold / thr / best_thr
-    Otherwise, use fallback.
+    Auto-detect a classification threshold for the model.
+
+    Priority order:
+      1. Model attributes:
+         - best_threshold_, threshold_, best_thr_, thr_
+      2. Sidecar meta JSON files:
+         - <model>.meta.json
+         - <model-stem>.meta.json
+         - <model-stem>.json
+         Each may contain keys: best_threshold, threshold, thr, best_thr.
+
+    If nothing is found or parsing fails, use `fallback`.
+
+    This allows:
+      - Hyperparameter tuning pipelines to store the best threshold per model.
+      - Workers to automatically pick up the optimal threshold without hard-coding.
     """
     # 1) Attribute on the model
     for attr in ("best_threshold_", "threshold_", "best_thr_", "thr_"):
@@ -547,10 +712,21 @@ def auto_threshold_from_model_or_meta(model, model_path: str, fallback: float) -
     return fallback
 
 
-def score_one(model, feat: dict) -> float:
+def score_one(model: Any, feat: dict) -> float:
     """
-    Build feature vector using model.feature_names_in_ if available,
-    else use a fixed numeric feature order.
+    Compute a score (probability of being low-quality) for a single feature dict.
+
+    Two main paths:
+
+    1) Newer sklearn-style models with `feature_names_in_`:
+       - We respect the exact order of feature_names_in_.
+       - We support categorical lengthBucket via one-hot on columns named "len_*".
+       - If model exposes `predict_proba`, we use the positive class probability.
+       - Otherwise, we use `predict()` and clamp to [0, 1].
+
+    2) Legacy models without `feature_names_in_`:
+       - We build a fixed feature vector using FEATURE_ORDER_6H (numeric only).
+       - This matches older training pipelines that assumed a fixed order.
     """
     # Case 1: sklearn model with feature_names_in_
     if hasattr(model, "feature_names_in_"):
@@ -560,7 +736,8 @@ def score_one(model, feat: dict) -> float:
 
         for name in names:
             if name.startswith("len_"):
-                # one-hot for lengthBucket
+                # One-hot encoding for lengthBucket category.
+                # Example: len_short, len_long, len_live, len_nan, ...
                 cat = name[len("len_"):]  # live / long / medium / short / nan ...
                 if cat == "nan":
                     val = 1.0 if not len_raw else 0.0
@@ -579,6 +756,7 @@ def score_one(model, feat: dict) -> float:
             p = model.predict_proba(X)[:, 1]
             return float(p[0])
 
+        # Fallback: model does not expose predict_proba
         y = model.predict(X)
         y = float(y)
         return max(0.0, min(1.0, y))
@@ -597,6 +775,7 @@ def score_one(model, feat: dict) -> float:
         p = model.predict_proba(X)[:, 1]
         return float(p[0])
 
+    # Fallback: direct prediction, then clamp.
     y = model.predict(X)
     y = float(y)
     return max(0.0, min(1.0, y))
@@ -613,17 +792,34 @@ def build_query(
     status_in: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
-    Build Mongo query based on mode + only_missing + status semantics.
+    Build a MongoDB query for candidate videos to score.
 
     Always:
-      - Require at least one stats snapshot.
-      - Optionally filter by tracking.status.
-      - Optionally restrict to docs missing 3h/6h flags.
-      - If latest_stats_ts is present, also filter by age window using $dateDiff:
+      - Require at least one stats snapshot:
+            stats_snapshots.0 exists
+
+    Status filter:
+      - If `status_in` is provided:
+          tracking.status ∈ status_in
+      - Else if `include_all_status` is False:
+          tracking.status == "tracking"
+      - Else:
+          no status filter.
+
+    only_missing:
+      - If True, restrict to documents that are missing 3h and/or 6h updated_at
+        fields (depending on mode). This keeps the old "only update once" behaviour.
+
+    Age filter:
+      - When `latest_stats_ts` exists, we use $dateDiff to filter by age window:
 
         mode = "3h-only" → 3h <= age < 6h
         mode = "6h-only" → age >= 6h
-        mode = "both"    → age >= 3h (either 3h- or 6h-window is relevant)
+        mode = "both"    → age >= 3h (we still branch 3h vs 6h in Python)
+
+      - The age filter is applied on the server side using $expr.
+      - Documents without latest_stats_ts are excluded and will be handled once
+        track_once populates latest_stats_ts for them.
     """
     q: Dict[str, Any] = {
         "stats_snapshots.0": {"$exists": True},
@@ -635,8 +831,9 @@ def build_query(
     elif not include_all_status:
         q["tracking.status"] = "tracking"
 
-    # --- Only missing flags (keep old semantics) ---
+    # --- Only missing flags (old semantics) ---
     if only_missing:
+        # Note: we treat "missing" as either field non-existent or explicitly None.
         or_list: List[Dict[str, Any]] = []
 
         if mode in ("3h-only", "both"):
@@ -648,17 +845,16 @@ def build_query(
             or_list.append({"ml_flags.low_quality_v3_6h.updated_at": None})
 
         if or_list:
+            # A document is eligible if *any* of the fields is missing.
             q["$or"] = or_list
 
     # --- Age filter using latest_stats_ts + $dateDiff (MongoDB 5+) ---
-    # We only apply this optimization when latest_stats_ts is present.
-    # Older docs without this field will be handled once track_once touches them.
     age_expr: Optional[Dict[str, Any]] = None
 
     age_diff_expr: Dict[str, Any] = {
         "$dateDiff": {
-            "startDate": "$snippet.publishedAt",
-            "endDate": "$latest_stats_ts",
+            "startDate": {"$toDate": "$snippet.publishedAt"},
+            "endDate": {"$toDate": "$latest_stats_ts"},
             "unit": "hour",
         }
     }
@@ -686,7 +882,6 @@ def build_query(
     return q
 
 
-
 def run_low_quality(
     *,
     mode: str,
@@ -702,22 +897,50 @@ def run_low_quality(
     stop_if_low: bool = True,
     include_all_status: bool = False,
     status_in: Optional[List[str]] = None,
-):
+) -> None:
     """
     Core runner for low-quality ML flags.
 
-    mode:
-      - "both"    : use 3h model for age in [3h, 6h) + 6h model for age >= 6h
-      - "3h-only" : only use 3h model for age in [3h, 6h)
-      - "6h-only" : only use 6h model for age >= 6h
+    Args:
+        mode:
+          - "both"    : run 3h model for 3h<=age<6h AND 6h model for age>=6h
+          - "3h-only" : only run 3h model for 3h<=age<6h
+          - "6h-only" : only run 6h model for age>=6h
 
-    include_all_status:
-      - True  -> do not filter by tracking.status; score videos with any status (tracking, complete, stopped, etc.)
-      - False -> if status_in is not set, default to only videos with tracking.status = "tracking"
+        mongo_uri: MongoDB connection URI.
+        db_name:   Database name.
+        col_name:  Collection name (typically "videos").
 
-    status_in:
-      - If provided (e.g. ["tracking", "complete"]), it overrides include_all_status logic
-      - The query will include: {"tracking.status": {"$in": status_in}}
+        model_3h_path: Filesystem path to 3h model (joblib/xgb).
+        model_6h_path: Filesystem path to 6h model (joblib/xgb).
+
+        thr3, thr6:
+          - Optional thresholds for 3h/6h models.
+          - If None, thresholds will be auto-detected from model attributes or meta files.
+          - If still not found, we default to 0.5.
+
+        batch_size:
+          - Mongo bulk_write batch size.
+
+        only_missing:
+          - If True, restrict scoring to docs that are missing ml_flags updated_at fields.
+
+        stop_if_low:
+          - If True, when a video is flagged as low-quality and current tracking.status
+            is "tracking", we set:
+                tracking.status = "stopped"
+                tracking.stop_reason = "ml.low_quality_v*_Xh"
+
+        include_all_status:
+          - If True and status_in is not set:
+              do not filter by tracking.status at all.
+          - Else if False and status_in is not set:
+              restrict to tracking.status == "tracking".
+
+        status_in:
+          - Optional list of status strings (e.g. ["tracking", "complete"]).
+          - If provided, overrides include_all_status and uses:
+                tracking.status ∈ status_in
     """
     mode = mode or "both"
     if mode not in ("both", "3h-only", "6h-only"):
@@ -753,6 +976,7 @@ def run_low_quality(
     mc = MongoClient(mongo_uri)
     col = mc[db_name][col_name]
 
+    # Build query and log it for debugging.
     q = build_query(
         mode=mode,
         only_missing=only_missing,
@@ -760,11 +984,12 @@ def run_low_quality(
         status_in=status_in,
     )
     print(f"[INFO] Mongo query: {q}")
-    
-    # Count total docs that match query for progress logging
+
+    # Count total docs that match query for progress logging.
     total_candidates = col.count_documents(q)
     print(f"[INFO] Total candidates matching query: {total_candidates:,}")
 
+    # Main cursor for candidate documents.
     cur = col.find(
         q,
         {
@@ -779,9 +1004,10 @@ def run_low_quality(
     )
 
     buf: List[UpdateOne] = []
-    n = 0
-    n_up = 0
+    n = 0          # scanned documents
+    n_up = 0       # documents actually updated
 
+    # Counters for diagnostics / stats
     skipped_age_lt_3h = 0
     skipped_age_lt_6h = 0
     skipped_feat_3h = 0
@@ -812,7 +1038,7 @@ def run_low_quality(
 
             age_h = _age_hours(doc)
             if age_h is None:
-                # no valid age → treat as <3h for stats
+                # No valid age → treat as "too young" for stats purposes.
                 skipped_age_lt_3h += 1
                 continue
 
@@ -829,8 +1055,10 @@ def run_low_quality(
                 is_low_3h = False
 
                 if age_h < 3.0 - 1e-6:
+                    # Too young for 3h window
                     skipped_age_lt_3h += 1
                 elif age_h < 6.0 - 1e-6:
+                    # In [3h, 6h) window → run 3h model if we can build features.
                     x3 = features_3h(doc)
                     if x3 is None:
                         skipped_feat_3h += 1
@@ -855,15 +1083,16 @@ def run_low_quality(
                             }
                         )
 
-                        # Early-stop if 3h model flags as low
+                        # Early-stop at tracking level if 3h model already says "low".
                         if stop_if_low and is_low_3h and cur_status == "tracking":
                             update["tracking.status"] = "stopped"
                             update["tracking.stop_reason"] = "ml.low_quality_v1_3h"
                 else:
-                    # age_h >= 6h → do not run the 3h model anymore by design
+                    # age_h >= 6h → by design we no longer run the 3h model.
                     pass
 
-                # If the 3h model has already stopped the video → no need to run the 6h model
+                # If the 3h model has already stopped the video,
+                # we skip the 6h model for that document.
                 if update.get("tracking.status") == "stopped":
                     buf.append(
                         UpdateOne({"_id": doc["_id"]}, {"$set": update}, upsert=False)
@@ -888,6 +1117,7 @@ def run_low_quality(
             # ======================
             if mode in ("both", "6h-only"):
                 if age_h < 6.0 - 1e-6:
+                    # Too young for 6h window.
                     skipped_age_lt_6h += 1
                 else:
                     x6 = features_6h(doc)
@@ -917,6 +1147,7 @@ def run_low_quality(
                             update["tracking.status"] = "stopped"
                             update["tracking.stop_reason"] = "ml.low_quality_v3_6h"
 
+            # Buffer Mongo update if there's anything to write.
             if update:
                 buf.append(
                     UpdateOne({"_id": doc["_id"]}, {"$set": update}, upsert=False)
@@ -936,6 +1167,7 @@ def run_low_quality(
         except Exception:
             pass
 
+    # Flush remaining updates.
     if buf:
         res = col.bulk_write(buf, ordered=False)
         n_up += res.modified_count
@@ -954,7 +1186,7 @@ def run_low_quality(
         f"skipped_feat_6h={skipped_feat_6h:,}"
     )
 
-    # Worker name for worker_runs
+    # Worker name used for worker_runs logging
     if mode == "3h-only":
         worker_name = "low_quality_autoflag_3h"
     elif mode == "6h-only":
@@ -999,17 +1231,28 @@ def backfill_all_scores(
     thr6: Optional[float] = None,
     batch_size: int = 500,
     status_in: Optional[List[str]] = None,
-):
+) -> None:
     """
-    Backfill full scores for 3h + 6h for ANY video (tracking, complete, stopped),
-    regardless of age.
+    Backfill full 3h + 6h scores for videos, without touching tracking.status.
+
+    Typical use case:
+      - Offline training / analysis.
+      - Ensure every video has both 3h and 6h scores and thresholds, even if the
+        online worker was configured with only_missing=True at some point.
 
     Logic:
-      - If ml_flags.low_quality_v1_3h.threshold is None → compute 3h score
-      - If ml_flags.low_quality_v3_6h.threshold is None → compute 6h score
-      - Do NOT change tracking.status / stop_reason
-      - Only compute if snapshots exist
-      - Idempotent: safe to rerun anytime
+      - Only consider docs that:
+          * have stats_snapshots, and
+          * are missing either 3h or 6h thresholds.
+      - If ml_flags.low_quality_v1_3h.threshold is None → compute 3h score.
+      - If ml_flags.low_quality_v3_6h.threshold is None → compute 6h score.
+      - Do NOT change tracking.status or tracking.stop_reason.
+      - Safe to re-run many times: already-filled fields are skipped.
+
+    Args:
+      status_in:
+        - Optional filter by tracking.status (e.g. ["tracking", "complete"]).
+        - If None, run on all matching statuses.
     """
     print("[BACKFILL] Starting backfill-all-scores...")
 
@@ -1043,6 +1286,10 @@ def backfill_all_scores(
             {"ml_flags.low_quality_v3_6h.threshold": None},
         ],
     }
+
+    if status_in:
+        # Optional restriction: only backfill for specific tracking.status values.
+        q["tracking.status"] = {"$in": status_in}
 
     cur = col.find(
         q,
@@ -1145,7 +1392,20 @@ def backfill_all_scores(
 # CLI entry (optional)
 # ==========================
 
-def main(argv=None):
+def main(argv=None) -> None:
+    """
+    CLI entrypoint for the low-quality worker.
+
+    Two main modes:
+
+      1) Normal worker mode (default):
+         - Score candidate videos and optionally stop low-quality ones.
+         - Controlled by --mode, --only-missing, --stop-if-low, etc.
+
+      2) Backfill mode:
+         - Use --backfill-all-scores to compute 3h+6h scores for any status
+           without modifying tracking.status.
+    """
     ap = argparse.ArgumentParser("low_quality_core (3h + 6h)")
 
     # Mongo / collection
@@ -1284,7 +1544,7 @@ def main(argv=None):
             "Missing 6h model path: pass --model-6h or set LOWQ_MODEL_6H_PATH/LOWQ_MODEL_PATH in .env"
         )
 
-    # Resolve thresholds
+    # Resolve thresholds (CLI overrides env; env overrides auto-detect fallback)
     thr3 = args.threshold_3h
     if thr3 is None and ENV_THR_3H is not None:
         try:
@@ -1302,7 +1562,7 @@ def main(argv=None):
             except Exception:
                 thr6 = None
 
-    # Backfill mode: compute full scores for training, do not change tracking.status
+    # Backfill mode: compute full scores for training, do not change tracking.status.
     if args.backfill_all_scores:
         backfill_all_scores(
             mongo_uri=args.mongo_uri,

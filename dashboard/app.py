@@ -4,8 +4,13 @@
 import sys
 from pathlib import Path
 
+# We assume this file lives under:
+#   <project_root>/dashboard/00_Home.py  (for example)
+# so `parents[1]` should be the project root itself.
 ROOT = Path(__file__).resolve().parents[1]  # .../yt-autoscanner
 if str(ROOT) not in sys.path:
+    # Prepend project root to sys.path so imports like `config.*` work
+    # even when Streamlit runs from a different working directory.
     sys.path.insert(0, str(ROOT))
 
 # ============================
@@ -13,6 +18,10 @@ if str(ROOT) not in sys.path:
 # ============================
 import streamlit as st
 
+# Global page configuration for this app tab.
+# - page_title: title in browser tab
+# - page_icon : emoji/favicon
+# - layout    : "wide" to take advantage of horizontal space for dashboards
 st.set_page_config(
     page_title="YT AutoScanner Dashboard",
     page_icon="📊",
@@ -22,6 +31,8 @@ st.set_page_config(
 # ========== SIDEBAR ==========
 
 with st.sidebar:
+    # Brand / header block: small logo + product name + subtitle.
+    # Using raw HTML to get more control over layout & styling than Markdown alone.
     st.markdown(
         """
 <div style="
@@ -56,6 +67,7 @@ with st.sidebar:
 
     st.markdown("---")
 
+    # Quick navigation hints for users landing on the dashboard for the first time.
     st.markdown("#### 🧭 Navigation tips")
     st.markdown(
         """
@@ -68,6 +80,8 @@ with st.sidebar:
     )
 
     st.markdown("---")
+
+    # Short one-line explanation of what AutoScanner does, in smaller, muted text.
     st.markdown(
         """
 <small style="color:#9ca3af;">
@@ -79,7 +93,9 @@ YouTube AutoScanner runs a 24h window to track early performance and keep your d
 
 # ========== MAIN CONTENT (HOME) ==========
 
-# Hero banner
+# Hero banner:
+# - High-level explanation of what this dashboard is about.
+# - Visual emphasis via gradient background & drop shadow.
 st.markdown(
     """
 <div style="
@@ -106,12 +122,17 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Section title
+# Section title for the three feature cards below.
 st.markdown("### 🧩 What you can do here")
 
+# We use three columns for three main "entry points" of the dashboard:
+#   - Overview
+#   - Videos & Channels
+#   - ML & System
 col1, col2, col3 = st.columns(3)
 
 with col1:
+    # Card 1: Overview page explanation.
     st.markdown(
         """
 <div style="
@@ -135,6 +156,7 @@ with col1:
     )
 
 with col2:
+    # Card 2: Videos & Channels pages explanation.
     st.markdown(
         """
 <div style="
@@ -158,6 +180,7 @@ with col2:
     )
 
 with col3:
+    # Card 3: ML & System pages explanation.
     st.markdown(
         """
 <div style="
@@ -180,8 +203,10 @@ with col3:
         unsafe_allow_html=True,
     )
 
+# Horizontal separator before closing note.
 st.markdown("---")
 
+# Final hint about the recommended navigation flow.
 st.markdown(
     """
 <small style="color:#9ca3af;">

@@ -1,20 +1,60 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timezone
+import subprocess
+import sys
+from pathlib import Path
+
+# --------------------------------------------------
+# Ensure project root is on sys.path so we can import
+# local modules like config.db when running via Streamlit
+# --------------------------------------------------
+ROOT = Path(__file__).resolve().parents[2]  # .../yt-autoscanner
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from config.db import get_db, _resolve_db_name
 
 
+# =============== WORKER DEFINITIONS ===============
+# Each tuple in WORKERS describes one logical "worker"
+# used in the pipeline. This drives the status table +
+# start/stop buttons in the UI.
+#
+# Format:
+#   key     = name stored in Mongo.worker_runs.name
+#   label   = human-readable label on the dashboard
+#   service = systemd service name on the VPS (WITHOUT ".service")
+#
+# NOTE:
+# - If a worker has a dedicated systemd service, we set "service"
+#   to that name and the UI will show Start/Stop buttons.
+# - If service is None, the UI will NOT show Start/Stop and only
+#   display the last_run information (for shared / logical workers).
+WORKERS = [
+    ("discover_once", "Discover new videos", "yt-auto-discover"),
+    ("track_once", "Track stats & snapshots", "yt-auto-track"),
+    ("low_quality_autoflag_3h", "Low-quality scoring (3h)", "yt-lowq-3h"),
+    ("low_quality_autoflag_6h", "Low-quality scoring (6h)", "yt-lowq-6h"),
+    ("compute_dashboard_kpis", "Dashboard KPI snapshot", "yt-kpis"),
+    ("viral_scoring_h6", "Viral scoring 6h", "yt-viral-6h"),
+    ("viral_scoring_h12", "Viral scoring 12h", "yt-viral-12h"),
+    ("viral_scoring_h24", "Viral scoring 24h", "yt-viral-24h"),
+    ("viral_finalize", "Viral finalize (≥24h)", "yt-viral-finalize"),
+]
+
+
 # =============== GLOBAL LAYOUT & THEME ===============
+# Global CSS injected into the Streamlit app to customize
+# background, container width, typography and the worker table
+# look & feel.
 st.markdown(
     """
 <style>
-/* App background */
 [data-testid="stAppViewContainer"] {
     background: #f3f4f6;
 }
 
-/* Center main content + nicer paddings */
 .main .block-container {
     max-width: 1200px;
     padding-top: 2.2rem;
@@ -24,7 +64,6 @@ st.markdown(
     margin-right: auto;
 }
 
-/* Headings */
 h1 {
     font-weight: 700 !important;
     letter-spacing: -0.02em;
@@ -33,23 +72,28 @@ h2, h3 {
     font-weight: 600 !important;
 }
 
-/* Horizontal rule spacing */
 .block-container hr {
     margin-top: 1.7rem;
     margin-bottom: 1.7rem;
 }
 
-/* Dataframe “card” look */
-[data-testid="stDataFrame"] {
-    border-radius: 12px;
-    border: 1px solid #e5e7eb;
-    box-shadow: 0 2px 5px rgba(15,23,42,0.04);
-    background: #ffffff;
-}
-
 /* Small caption tweak */
 .block-container p, .block-container .stMarkdown {
     font-size: 0.95rem;
+}
+
+/* Worker table styling */
+.worker-row {
+    padding: 8px 12px;
+    border-bottom: 1px solid #e5e7eb;
+}
+.worker-header {
+    padding: 6px 12px;
+    border-bottom: 1px solid #d1d5db;
+    background: #f9fafb;
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: #374151;
 }
 </style>
     """,
@@ -57,13 +101,148 @@ h2, h3 {
 )
 
 
+# =============== SMALL HELPERS ===============
+
+def run_systemctl(action: str, service: str):
+    """
+    Run a systemctl action on a given service.
+
+    Parameters
+    ----------
+    action : str
+        One of "start", "stop" or "restart".
+    service : str
+        Systemd service name WITHOUT the ".service" suffix.
+
+    Returns
+    -------
+    (ok, message) : (bool, str)
+        ok      = True if systemctl returned exit code 0.
+        message = stdout or stderr from systemctl for debugging.
+    """
+    cmd = f"sudo systemctl {action} {service}.service"
+    try:
+        result = subprocess.run(
+            cmd,
+            shell=True,                # run through /bin/sh
+            stdout=subprocess.PIPE,    # capture stdout
+            stderr=subprocess.PIPE,    # capture stderr
+            text=True,                 # decode as string
+            timeout=10,                # avoid hanging
+        )
+        ok = result.returncode == 0
+        # Prefer stdout, fall back to stderr, and if both empty create a generic message
+        msg = (result.stdout or result.stderr).strip()
+        if not msg:
+            msg = f"{cmd} exited with code {result.returncode}"
+        return ok, msg
+    except Exception as exc:
+        # Any unexpected error (timeout, OSError, etc.)
+        return False, str(exc)
+
+
+def get_service_state(service: str) -> str:
+    """
+    Query current systemd service state via `systemctl is-active`.
+
+    Parameters
+    ----------
+    service : str
+        Systemd service name WITHOUT ".service".
+
+    Returns
+    -------
+    str
+        One of the standard states: "active", "inactive", "failed",
+        "activating", "deactivating", or "unknown" if we cannot detect it.
+    """
+    cmd = f"systemctl is-active {service}.service"
+    try:
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+        )
+        state = (result.stdout or "").strip()
+        if not state:
+            state = "unknown"
+        return state
+    except Exception:
+        # If systemctl fails for any reason, treat as unknown
+        return "unknown"
+
+
+def render_service_state_badge(state: str) -> str:
+    """
+    Render a small colored status pill for the given systemd state.
+
+    Parameters
+    ----------
+    state : str
+        Raw service state string (e.g. "active", "inactive", "failed"...).
+
+    Returns
+    -------
+    str
+        HTML snippet that draws a badge with appropriate color & label.
+    """
+    s = state.lower()
+    if s == "active":
+        color = "#22c55e"
+        text = "Running"
+    elif s in {"activating"}:
+        color = "#3b82f6"
+        text = "Starting"
+    elif s in {"deactivating"}:
+        color = "#f97316"
+        text = "Stopping"
+    elif s in {"failed"}:
+        color = "#ef4444"
+        text = "Failed"
+    elif s in {"inactive"}:
+        color = "#9ca3af"
+        text = "Stopped"
+    else:
+        color = "#6b7280"
+        text = state or "Unknown"
+
+    return f"""
+<span style="
+  display:inline-flex;
+  align-items:center;
+  padding:2px 10px;
+  border-radius:999px;
+  background:{color}1a;
+  border:1px solid {color};
+  font-size:0.8rem;
+  color:#111827;
+">
+  <span style="width:8px;height:8px;border-radius:999px;background:{color};margin-right:6px;"></span>
+  {text}
+</span>
+"""
+
+
 # =============== DATA LOADERS ===============
 
 @st.cache_data(ttl=10)
 def load_kpis() -> dict:
+    """
+    Load the latest dashboard KPIs from Mongo.
+
+    - Reads the most recent document from `dashboard_kpis`.
+    - Fills any missing fields with defaults from `base`.
+    - Normalizes numbers to int and formats snapshot timestamp.
+
+    Cache TTL = 10 seconds to avoid hammering Mongo on every rerender.
+    """
     db = get_db()
     doc = db.dashboard_kpis.find_one(sort=[("ts", -1)])
 
+    # Default values when the collection is empty or fields are missing
     base = {
         "total_videos": 0,
         "total_channels": 0,
@@ -75,19 +254,35 @@ def load_kpis() -> dict:
         "stopped_low_quality": 0,
         "low_quality_flagged": 0,
         "snapshot_ts": None,
+
+        # Viral v2 metrics (6h / 12h / 24h + final)
+        "viral2_h6_scored": 0,
+        "viral2_h6_candidates": 0,
+        "viral2_h12_scored": 0,
+        "viral2_12h_viral": 0,
+        "viral2_h24_scored": 0,
+        "viral2_final_viral": 0,
+        "viral2_final_nonviral": 0,
+        "viral2_final_nonviral_lowq": 0,
+        "viral2_final_unknown": 0,
+        "viral2_final_decided": 0,
     }
 
     if not doc:
+        # No KPI document yet: return pure defaults
         return base
 
+    # Copy numeric fields from Mongo doc to base dict
     for key in base:
         if key == "snapshot_ts":
             continue
         try:
             base[key] = int(doc.get(key, 0))
-        except:
+        except Exception:
+            # If casting fails, fall back to 0
             base[key] = 0
 
+    # Human-readable timestamp for the latest KPI snapshot
     ts = doc.get("ts")
     if isinstance(ts, datetime):
         ts = ts.astimezone(timezone.utc)
@@ -100,33 +295,37 @@ def load_kpis() -> dict:
 
 @st.cache_data(ttl=60)
 def load_worker_last_runs():
+    """
+    Load last_run timestamps for each worker from Mongo.worker_runs.
+
+    Returns
+    -------
+    List[dict]
+        Each dict has:
+        - "Key"      = worker key
+        - "Worker"   = human-readable name
+        - "Last run" = relative time string (e.g. "3m ago", "2h ago") or "No data".
+    """
     db = get_db()
-
-    workers = [
-        ("discover_once", "Discover new videos"),
-        ("track_once", "Track stats & snapshots"),
-        ("low_quality_autoflag_3h", "Low-quality scoring (3h)"),
-        ("low_quality_autoflag_6h", "Low-quality scoring (6h)"),
-        ("compute_dashboard_kpis", "Dashboard KPI snapshot"),
-    ]
-
     now = datetime.now(timezone.utc)
     rows = []
 
-    for key, label in workers:
+    for key, label, _service in WORKERS:
         doc = db.worker_runs.find_one({"name": key}, sort=[("last_run", -1)])
 
         if not doc or "last_run" not in doc:
-            rows.append({"Worker": label, "Last run": "No data"})
+            rows.append({"Key": key, "Worker": label, "Last run": "No data"})
             continue
 
         ts = doc["last_run"]
         if isinstance(ts, datetime):
+            # Normalize to UTC to avoid timezone issues
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
             diff = now - ts
             sec = diff.total_seconds()
 
+            # Convert to nice relative description
             if sec < 60:
                 pretty = f"{int(sec)}s ago"
             elif sec < 3600:
@@ -138,7 +337,7 @@ def load_worker_last_runs():
         else:
             pretty = str(ts)
 
-        rows.append({"Worker": label, "Last run": pretty})
+        rows.append({"Key": key, "Worker": label, "Last run": pretty})
 
     return rows
 
@@ -146,23 +345,28 @@ def load_worker_last_runs():
 @st.cache_data(ttl=60)
 def load_worker_health():
     """
-    Determine worker health:
-    - Healthy: status=ok AND last_run < 3h old
-    - Warning: some worker stale or error
-    - Stopped: no record for worker
+    Compute a high-level health summary for all defined workers.
+
+    A worker is considered:
+    - "stopped"  if there is no last_run at all.
+    - "warning"  if last_run is stale (> 3h) OR status in Mongo indicates error.
+    - "healthy"  otherwise.
+
+    Returns
+    -------
+    dict
+        {
+          "total":   number of workers,
+          "healthy": count of healthy workers,
+          "warning": count of warning workers,
+          "stopped": count of stopped workers
+        }
     """
     db = get_db()
-
-    core_workers = [
-        "discover_once",
-        "track_once",
-        "low_quality_autoflag_3h",
-        "low_quality_autoflag_6h",
-        "compute_dashboard_kpis",
-    ]
+    core_workers = [w[0] for w in WORKERS]
 
     now = datetime.now(timezone.utc)
-    stale_sec = 3 * 3600  # >3h considered stale
+    stale_sec = 3 * 3600  # 3 hours threshold
 
     summary = {"total": len(core_workers), "healthy": 0, "warning": 0, "stopped": 0}
 
@@ -170,6 +374,7 @@ def load_worker_health():
         doc = db.worker_runs.find_one({"name": w}, sort=[("last_run", -1)])
 
         if not doc or "last_run" not in doc:
+            # Never ran or no timestamp: treat as stopped
             summary["stopped"] += 1
             continue
 
@@ -179,7 +384,7 @@ def load_worker_health():
                 ts = ts.replace(tzinfo=timezone.utc)
             age = (now - ts).total_seconds()
         else:
-            age = 99999999
+            age = 99999999  # effectively "very stale"
 
         status_raw = str(doc.get("status", "")).lower()
 
@@ -200,6 +405,13 @@ def load_worker_health():
 # =============== METRIC CARDS ===============
 
 def render_simple_metrics(kpis: dict):
+    """
+    Render 4 basic metric cards:
+      - Tracking active
+      - Completed (24h reached)
+      - Removed / Unavailable
+      - Stopped (low quality)
+    """
     total_videos = kpis.get("total_videos", 0)
 
     def pct_value(v):
@@ -208,6 +420,7 @@ def render_simple_metrics(kpis: dict):
     def pct_str(v):
         return f"{pct_value(v):.2f}%"
 
+    # Local CSS for metric cards
     st.markdown(
         """
 <style>
@@ -264,6 +477,7 @@ def render_simple_metrics(kpis: dict):
         ("Stopped (low quality)", kpis["stopped_low_quality"]),
     ]
 
+    # Render each card using the above template
     for col, (title, value) in zip([c1, c2, c3, c4], cards):
         col.markdown(
             f"""
@@ -280,9 +494,94 @@ def render_simple_metrics(kpis: dict):
         )
 
 
+def render_viral_metrics(kpis: dict):
+    """
+    Render 3 cards summarizing viral ML metrics:
+
+      1) Viral Likely  (6h candidates, already excluding 12h confirmed)
+      2) Viral Confirmed (12h viral)
+      3) Finalized (Viral / Non / Unknown breakdown)
+    """
+    total_videos = kpis.get("total_videos", 0)
+
+    def pct_value(v):
+        return (v / total_videos * 100.0) if total_videos else 0.0
+
+    def pct_str(v):
+        return f"{pct_value(v):.2f}% of total videos"
+
+    viral_likely = kpis.get("viral2_h6_candidates", 0)
+    viral_confirmed = kpis.get("viral2_12h_viral", 0)
+
+    final_decided = kpis.get("viral2_final_decided", 0)
+    final_viral = kpis.get("viral2_final_viral", 0)
+    final_non = kpis.get("viral2_final_nonviral", 0) + kpis.get(
+        "viral2_final_nonviral_lowq", 0
+    )
+    final_unknown = kpis.get("viral2_final_unknown", 0)
+
+    c1, c2, c3 = st.columns(3)
+
+    # Viral Likely (6h)
+    c1.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-title">🔥 Viral Likely (6h)</div>
+            <div class="metric-value">{viral_likely:,}</div>
+            <div class="metric-progress-outer">
+                <div class="metric-progress-inner" style="width:{pct_value(viral_likely):.2f}%"></div>
+            </div>
+            <div class="metric-percentage">{pct_str(viral_likely)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Viral Confirmed (12h)
+    c2.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-title">🔥 Viral Confirmed (12h)</div>
+            <div class="metric-value">{viral_confirmed:,}</div>
+            <div class="metric-progress-outer">
+                <div class="metric-progress-inner" style="width:{pct_value(viral_confirmed):.2f}%"></div>
+            </div>
+            <div class="metric-percentage">{pct_str(viral_confirmed)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Finalized (viral vs non vs unknown)
+    breakdown = f"Viral {final_viral:,} • Non {final_non:,} • Unk {final_unknown:,}"
+
+    c3.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-title">🏁 Finalized (Viral / Non / Unk)</div>
+            <div class="metric-value">{final_decided:,}</div>
+            <div class="metric-progress-outer">
+                <div class="metric-progress-inner" style="width:{pct_value(final_decided):.2f}%"></div>
+            </div>
+            <div class="metric-percentage">{pct_str(final_decided)}<br/>{breakdown}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # =============== SYSTEM STATUS ===============
 
 def compute_system_status(kpis: dict, wh: dict):
+    """
+    Derive a high-level system status badge from KPIs + worker health.
+
+    Logic:
+    - If there are no videos at all → "Idle".
+    - If no healthy workers and at least one warning/stopped → "Stopped".
+    - If some workers have issues → "Warning".
+    - Otherwise → "Healthy".
+    """
     total_videos = kpis.get("total_videos", 0)
 
     if total_videos == 0:
@@ -291,7 +590,6 @@ def compute_system_status(kpis: dict, wh: dict):
     healthy = wh["healthy"]
     warning = wh["warning"]
     stopped = wh["stopped"]
-    total = wh["total"]
 
     if healthy == 0 and (warning + stopped) > 0:
         return ("Stopped", "All workers appear stopped or stale", "#ef4444")
@@ -302,35 +600,39 @@ def compute_system_status(kpis: dict, wh: dict):
     return ("Healthy", "All core workers running normally", "#22c55e")
 
 
-
 # =============== PAGE BODY ===============
 
+# ---- Page title & reload button ----
 st.title("📊 YouTube AutoScanner — Overview")
 st.subheader("📌 System KPIs")
 
+# Manual refresh: clear caches and rerun the script
 if st.button("🔄 Refresh now"):
     load_kpis.clear()
     load_worker_last_runs.clear()
     load_worker_health.clear()
     st.experimental_rerun()
 
+# Load core KPI data
 kpis = load_kpis()
 
 if kpis.get("snapshot_ts"):
     st.caption(f"Last KPI snapshot: {kpis['snapshot_ts']}")
 
+# Top-level video / channel counts
 c1, c2 = st.columns(2)
 c1.metric("Total Videos", f"{kpis['total_videos']:,}")
 c2.metric("Total Channels", f"{kpis['total_channels']:,}")
 
 st.markdown("---")
 
+# ---- Tracking & completion metrics ----
 st.markdown("### 🎯 Tracking & Completion Overview")
 render_simple_metrics(kpis)
 
 st.markdown("<div style='margin-top:1.4rem'></div>", unsafe_allow_html=True)
 
-# === Tracking progress bar ===
+# ---- Tracking progress bar (how many finished vs still tracking) ----
 st.markdown("### 📈 Tracking Progress")
 tracking_total = kpis["tracking_active"] + kpis["completed_total"] + kpis["stopped_total"]
 finished = kpis["completed_total"] + kpis["stopped_total"]
@@ -341,17 +643,23 @@ if tracking_total > 0:
 else:
     st.info("No videos in tracking pipeline.")
 
+# ---- Viral ML metrics ----
+st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
+st.markdown("### 🔥 Viral ML Models (6h / 12h / 24h / Final)")
+render_viral_metrics(kpis)
+
 st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
 
-
-# === System status & worker activity ===
+# ---- System status + worker activity table ----
 st.markdown("### 💡 System Status & Worker Activity")
 
 worker_rows = load_worker_last_runs()
 worker_health = load_worker_health()
+rows_by_key = {r["Key"]: r for r in worker_rows}
 
 label, desc, color = compute_system_status(kpis, worker_health)
 
+# Status pill at the top of the worker section
 st.markdown(
     f"""
 <div style="
@@ -367,8 +675,96 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.markdown("#### Worker last runs")
-st.dataframe(pd.DataFrame(worker_rows), hide_index=True, use_container_width=True)
+st.markdown("#### Worker last runs & controls")
+
+# Header row for the worker table: 4 columns
+h_cols = st.columns([3, 2, 2, 2])
+h_cols[0].markdown('<div class="worker-header">Worker</div>', unsafe_allow_html=True)
+h_cols[1].markdown('<div class="worker-header">Last run</div>', unsafe_allow_html=True)
+h_cols[2].markdown('<div class="worker-header">Start auto</div>', unsafe_allow_html=True)
+h_cols[3].markdown('<div class="worker-header">Stop</div>', unsafe_allow_html=True)
+
+# One row per worker defined in WORKERS
+for key, label_worker, service in WORKERS:
+    row = rows_by_key.get(key, {"Last run": "No data"})
+    last_run_text = row["Last run"]
+
+    # If a worker has a dedicated systemd service, show real status badge.
+    # Otherwise we show a neutral "Linked" badge (shared / logical worker).
+    if service:
+        state = get_service_state(service)
+        badge_html = render_service_state_badge(state)
+    else:
+        state = "linked"
+        badge_html = """
+<span style="
+  display:inline-flex;
+  align-items:center;
+  padding:2px 10px;
+  border-radius:999px;
+  background:#e5e7eb;
+  border:1px solid #d1d5db;
+  font-size:0.8rem;
+  color:#374151;
+">
+  <span style="width:8px;height:8px;border-radius:999px;background:#9ca3af;margin-right:6px;"></span>
+  Linked
+</span>
+"""
+
+    c0, c1, c3, c4 = st.columns([3, 2, 2, 2])
+
+    # Worker label + state badge
+    with c0:
+        st.markdown(
+            f'<div class="worker-row"><strong>{label_worker}</strong> &nbsp; {badge_html}</div>',
+            unsafe_allow_html=True,
+        )
+
+    # Last run time cell
+    with c1:
+        st.markdown(
+            f'<div class="worker-row">{last_run_text}</div>',
+            unsafe_allow_html=True,
+        )
+
+    # Start button column
+    with c3:
+        if service:
+            if st.button("Start", key=f"{service}_start_auto"):
+                ok, msg = run_systemctl("start", service)
+                if ok:
+                    st.success("Service started")
+                else:
+                    st.error(f"Failed: {msg}")
+                # Refresh caches so UI reflects new status
+                load_worker_last_runs.clear()
+                load_worker_health.clear()
+                st.experimental_rerun()
+        else:
+            # No dedicated service → nothing to start/stop
+            st.markdown(
+                '<div class="worker-row"><span style="font-size:0.8rem;color:#6b7280;">Uses yt-viral service</span></div>',
+                unsafe_allow_html=True,
+            )
+
+    # Stop button column
+    with c4:
+        if service:
+            if st.button("Stop", key=f"{service}_stop_auto"):
+                ok, msg = run_systemctl("stop", service)
+                if ok:
+                    st.warning("Service stopped")
+                else:
+                    st.error(f"Failed: {msg}")
+                load_worker_last_runs.clear()
+                load_worker_health.clear()
+                st.experimental_rerun()
+        else:
+            st.markdown(
+                '<div class="worker-row"><span style="font-size:0.8rem;color:#6b7280;">Uses yt-viral service</span></div>',
+                unsafe_allow_html=True,
+            )
 
 st.markdown("---")
 st.caption("YouTube AutoScanner — Overview Dashboard")
