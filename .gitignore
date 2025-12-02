@@ -79,3 +79,9 @@ config/*.secret
 # Cloudflare tunnel configs
 # =========================
 cloudflared/*.yaml
+
+# =========================
+# data export / parquet
+# =========================
+data_export/
+*.parquet

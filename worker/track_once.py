@@ -121,9 +121,15 @@ else:
 # If final.status belongs to this set, we consider the video "fully decided"
 # and move tracking.status → "complete".
 TERMINAL_FINAL_STATUSES = {
+    # Viral / trending outcomes (multi-class)
     "viral",
+    "weak_viral",
+    "super_viral",
+
+    # Non-viral outcomes
     "non_viral",
     "non_viral_lowq",
+
     # If new final types are added later, extend this set.
 }
 
@@ -534,39 +540,22 @@ def main() -> int:
                 "commentCount": int(st["commentCount"]) if "commentCount" in st else None,
             }
 
-            # NEW: if the viral pipeline has already produced a final decision,
-            #      we still add this last snapshot but then stop tracking.
+            # NEW: check final viral decision; we still keep tracking until 24h,
+            #  ut remember final_status to set a better stop_reason later.
             ml_flags = d.get("ml_flags") or {}
             viral_v2 = ml_flags.get("viral_v2") or {}
             final_info = viral_v2.get("final") or {}
             final_status = (final_info.get("status") or "unknown").lower()
 
-            if final_status in TERMINAL_FINAL_STATUSES:
-                ops.append(
-                    UpdateOne(
-                        {"_id": vid},
-                        {
-                            "$push": {"stats_snapshots": snap},
-                            "$set": {
-                                "tracking.status": "complete",
-                                "tracking.stop_reason": "viral_finalized",
-                                "tracking.last_polled_at": now_iso,
-                                "tracking.next_poll_after": None,
-                                # Store the latest stats timestamp as a BSON Date for downstream age calculations
-                                "latest_stats_ts": now,
-                            },
-                            "$inc": {"tracking.poll_count": 1},
-                        },
-                    )
-                )
-                completed += 1
-                # Skip milestone scheduling: this video is finalized
-                continue
-
             # Compute next milestone if not finalized by viral pipeline
             next_due = next_due_from_publish(pub, now)
             if next_due is None:
                 # Age >= 24h → mark as complete due to age
+                stop_reason = (
+                    "viral_finalized"
+                    if final_status in TERMINAL_FINAL_STATUSES
+                    else "age>=24h"
+                )
                 ops.append(
                     UpdateOne(
                         {"_id": vid},
@@ -574,7 +563,7 @@ def main() -> int:
                             "$push": {"stats_snapshots": snap},
                             "$set": {
                                 "tracking.status": "complete",
-                                "tracking.stop_reason": "age>=24h",
+                                "tracking.stop_reason": stop_reason,
                                 "tracking.last_polled_at": now_iso,
                                 "tracking.next_poll_after": None,
                                 # Store the latest stats timestamp as BSON Date

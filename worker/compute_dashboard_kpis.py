@@ -499,10 +499,31 @@ def build_kpi_pipeline() -> list:
                 },
 
                 # ---------- Final decision breakdown ----------
+                # Multi-class final statuses:
+                #   "weak_viral", "viral", "super_viral",
+                #   "non_viral", "non_viral_lowq"
+                "viral2_final_weak_viral": {
+                    "$sum": {
+                        "$cond": [
+                            {"$eq": ["$ml_flags.viral_v2.final.status", "weak_viral"]},
+                            1,
+                            0,
+                        ]
+                    }
+                },
                 "viral2_final_viral": {
                     "$sum": {
                         "$cond": [
                             {"$eq": ["$ml_flags.viral_v2.final.status", "viral"]},
+                            1,
+                            0,
+                        ]
+                    }
+                },
+                "viral2_final_super_viral": {
+                    "$sum": {
+                        "$cond": [
+                            {"$eq": ["$ml_flags.viral_v2.final.status", "super_viral"]},
                             1,
                             0,
                         ]
@@ -606,7 +627,9 @@ def build_kpi_pipeline() -> list:
                 "viral2_stage_12h_only": 1,
                 "viral2_stage_24h_only": 1,
 
+                "viral2_final_weak_viral": 1,
                 "viral2_final_viral": 1,
+                "viral2_final_super_viral": 1,
                 "viral2_final_nonviral": 1,
                 "viral2_final_nonviral_lowq": 1,
                 "viral2_final_unknown": 1,
@@ -654,7 +677,9 @@ def compute_kpis(videos_col: Collection) -> Dict[str, Any]:
             "viral2_stage_6h_only": 0,
             "viral2_stage_12h_only": 0,
             "viral2_stage_24h_only": 0,
+            "viral2_final_weak_viral": 0,
             "viral2_final_viral": 0,
+            "viral2_final_super_viral": 0,
             "viral2_final_nonviral": 0,
             "viral2_final_nonviral_lowq": 0,
             "viral2_final_unknown": 0,

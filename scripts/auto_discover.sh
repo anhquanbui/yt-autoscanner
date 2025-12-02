@@ -24,7 +24,7 @@ cd "$PROJECT_ROOT"
 # Random discover config (non-secret runtime flags)
 # ==========================
 export YT_RANDOM_PICK="1"
-export YT_RANDOM_REGION_POOL="US,GB,CA,AU,IN,JP,VN,KR,FR,DE,BR,MX,ID,TH,ES,IT,NL,SG,MY,PH,TW,HK,AR,CL,TR,PL,SA,AE,EG,NG,KE,RU,SE,NO,FI,DK,IE,PT,GR,IL,ZA"
+export YT_RANDOM_REGION_POOL="US,GB,CA,AU,SG,IE"
 
 # Safer multi-line assignment for YT_RANDOM_QUERY_POOL
 YT_RANDOM_QUERY_POOL=$(cat <<'EOF'
@@ -49,7 +49,7 @@ export YT_RANDOM_QUERY_POOL
 DURATIONS=("short" "medium" "long" "any")
 export YT_MAX_PAGES="5"
 
-SLEEP_SECONDS=300
+SLEEP_SECONDS=120
 
 # ==========================
 # Auto discover loop

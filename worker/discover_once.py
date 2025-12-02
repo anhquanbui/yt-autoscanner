@@ -333,12 +333,13 @@ def upsert_minimal(
             continue
 
         # ===== Default ML flags for viral_v2 + low_quality models =====
+                # ===== Default ML flags for viral_v2 + low_quality models =====
         ml_flags = {
             "viral_v2": {
                 "model_version": VIRAL_V2_MODEL_VERSION,
                 "label_rule_version": VIRAL_V2_LABEL_RULE_VERSION,
 
-                # 6h stage: candidate detection
+                # 6h stage: early candidate detection (multiclass)
                 "h6": {
                     "score_proba": None,
                     "score_100": None,
@@ -346,8 +347,17 @@ def upsert_minimal(
                     "threshold_proba": VIRAL_V2_THRESH_6H_PROBA,
                     "threshold_100": VIRAL_V2_THRESH_6H_100,
                     "evaluated_at": None,
+
+                    # Multiclass extras
+                    "top_class_idx": None,   # 0=non_viral, 1=weak_viral, 2=viral, 3=super_viral
+                    "top_class": None,       # "non_viral" | "weak_viral" | "viral" | "super_viral"
+                    "proba_non": None,
+                    "proba_weak": None,
+                    "proba_viral": None,
+                    "proba_super": None,
                 },
-                # 12h stage: viral confirmation
+
+                # 12h stage: viral confirmation (multiclass)
                 "h12": {
                     "score_proba": None,
                     "score_100": None,
@@ -355,23 +365,57 @@ def upsert_minimal(
                     "threshold_proba": VIRAL_V2_THRESH_12H_PROBA,
                     "threshold_100": VIRAL_V2_THRESH_12H_100,
                     "evaluated_at": None,
+
+                    # Multiclass extras
+                    "top_class_idx": None,
+                    "top_class": None,
+                    "proba_non": None,
+                    "proba_weak": None,
+                    "proba_viral": None,
+                    "proba_super": None,
                 },
-                # 24h stage: validation of previous decision
+
+                # 24h stage: validation of previous decision (multiclass)
                 "h24_validation": {
                     "score_proba": None,
                     "score_100": None,
+                    "threshold_proba": VIRAL_V2_THRESH_24H_PROBA,
+                    "threshold_100": VIRAL_V2_THRESH_24H_100,
                     "evaluated_at": None,
+
+                    # Multiclass extras
+                    "top_class_idx": None,
+                    "top_class": None,
+                    "proba_non": None,
+                    "proba_weak": None,
+                    "proba_viral": None,
+                    "proba_super": None,
                 },
-                # Final decision summary across stages
+
+                # Final decision summary across stages (used by viral_finalize)
                 "final": {
-                    "status": "unknown",       # "unknown" | "non_viral" | "candidate" | "viral" | "non_viral_lowq"
-                    "decided_stage": None,     # "6h" | "12h" | "24h"
+                    # Final label:
+                    #   "unknown" | "non_viral" | "weak_viral" | "viral" | "super_viral" | "non_viral_lowq"
+                    "status": "unknown",
+                    # Which stage decided:
+                    #   "6h" | "12h" | "24h" | "low_quality"
+                    "decided_stage": None,
+
+                    # Final “any viral” probability & score at decision stage
                     "score_proba": None,
                     "score_100": None,
-                    "threshold_proba": None,   # optional: record final decision threshold
+                    "threshold_proba": None,
                     "threshold_100": None,
                     "decided_at": None,
                     "reason": None,
+
+                    # Trajectory metadata (for dashboard / debug)
+                    "top_class_6h": None,
+                    "top_class_12h": None,
+                    "top_class_24h": None,
+                    "score_proba_6h": None,
+                    "score_proba_12h": None,
+                    "score_proba_24h": None,
                 },
             },
 
