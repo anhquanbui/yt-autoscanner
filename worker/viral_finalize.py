@@ -128,6 +128,8 @@ def log_worker_run(worker_name: str, extra: dict | None = None) -> None:
 # Values of ml_flags.viral_v2.final.status that mean "no more changes"
 TERMINAL_FINAL_STATUSES = {
     "viral",
+    "weak_viral",
+    "super_viral",
     "non_viral",
     "non_viral_lowq",
 }
@@ -142,9 +144,10 @@ def _get_stage_bool(
 ) -> Tuple[bool, float, int, float, int]:
     """
     Given a stage dict like ml_flags.viral_v2.h6 / h12 / h24_validation,
-    determine whether the stage considers the video "viral", and return:
+    determine whether the stage considers the video "viral" (i.e., above
+    its own threshold), and return:
 
-        (is_viral, threshold_proba, threshold_100, score_proba, score_100)
+        (is_over_threshold, threshold_proba, threshold_100, score_proba, score_100)
 
     Threshold resolution:
       1) Start from hard-coded defaults (e.g. 0.60 / 60 for 6h).
@@ -164,20 +167,61 @@ def _get_stage_bool(
     score_p = float(stage.get("score_proba") or 0.0)
     score_100 = int(stage.get("score_100") or 0)
 
-    is_viral = (score_p >= thr_p) or (score_100 >= thr_100)
-    return is_viral, thr_p, thr_100, score_p, score_100
+    is_over = (score_p >= thr_p) or (score_100 >= thr_100)
+    return is_over, thr_p, thr_100, score_p, score_100
+
+
+def _pick_label_from_top_class(
+    is_over_threshold: bool,
+    top_class: Optional[str],
+) -> Optional[str]:
+    """
+    Map the per-stage multiclass top_class into a final label for that
+    stage, if the stage is over its threshold.
+
+    - If not over threshold → return None (stage does not vote viral).
+    - If over threshold and top_class is one of:
+        * "super_viral" → "super_viral"
+        * "viral"       → "viral"
+        * "weak_viral"  → "weak_viral"
+        * "non_viral"   → "viral"  (rare, but treat as generic viral)
+    - If top_class is missing/unknown → "viral" (fallback to legacy behavior).
+    """
+    if not is_over_threshold:
+        return None
+
+    if not top_class:
+        return "viral"
+
+    top_class = top_class.lower()
+    if top_class == "super_viral":
+        return "super_viral"
+    if top_class == "viral":
+        return "viral"
+    if top_class == "weak_viral":
+        return "weak_viral"
+    if top_class == "non_viral":
+        # This situation is logically odd (non_viral label but viral probability
+        # above threshold). To avoid losing recall, treat as generic "viral".
+        return "viral"
+
+    # Unknown label → degrade gracefully to "viral"
+    return "viral"
 
 
 def build_final_from_ml(ml_v2: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Build the final decision document (fields under ml_flags.viral_v2.final.*)
-    based on h6 / h12 / h24_validation scores.
+    based on h6 / h12 / h24_validation scores + multiclass labels.
 
     Priority (if at least one stage passes its threshold):
 
-        1) 24h validator → "viral_by_24h_validator"
-        2) 12h confirmation → "viral_by_12h_confirmation"
-        3) 6h early signal → "viral_by_6h_early_signal"
+        1) 24h validator → label from its top_class (super_viral / viral / weak_viral / ...),
+                           reason="*_by_24h_validator"
+        2) 12h confirmation → label from its top_class,
+                              reason="*_by_12h_confirmation"
+        3) 6h early signal → label from its top_class,
+                             reason="*_by_6h_early_signal"
 
     If no stage passes its threshold:
         → status = "non_viral"
@@ -195,61 +239,87 @@ def build_final_from_ml(ml_v2: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not (h6 or h12 or h24):
         return None
 
-    viral6,  thr6_p,  thr6_100,  s6_p,  s6_100  = _get_stage_bool(
+    # --- Stage-level thresholds & scores ---
+    over6,  thr6_p,  thr6_100,  s6_p,  s6_100  = _get_stage_bool(
         h6, 0.60, 60,
         "VIRAL_V2_THRESH_6H_PROBA", "VIRAL_V2_THRESH_6H_100"
     )
-    viral12, thr12_p, thr12_100, s12_p, s12_100 = _get_stage_bool(
+    over12, thr12_p, thr12_100, s12_p, s12_100 = _get_stage_bool(
         h12, 0.70, 70,
         "VIRAL_V2_THRESH_12H_PROBA", "VIRAL_V2_THRESH_12H_100"
     )
-    viral24, thr24_p, thr24_100, s24_p, s24_100 = _get_stage_bool(
+    over24, thr24_p, thr24_100, s24_p, s24_100 = _get_stage_bool(
         h24, 0.80, 80,
         "VIRAL_V2_THRESH_24H_PROBA", "VIRAL_V2_THRESH_24H_100"
     )
 
-    ever = viral6 or viral12 or viral24
+    # --- Stage-level top_class (from multiclass) ---
+    top6 = (h6.get("top_class") or "").lower() or None
+    top12 = (h12.get("top_class") or "").lower() or None
+    top24 = (h24.get("top_class") or "").lower() or None
 
-    if ever:
-        # At least one stage says this is viral → pick highest-priority stage.
-        if viral24:
-            decided_stage = "24h"
-            status = "viral"
-            score_p, score_100 = s24_p, s24_100
-            thr_p, thr_100 = thr24_p, thr24_100
-            reason = "viral_by_24h_validator"
-        elif viral12:
-            decided_stage = "12h"
-            status = "viral"
-            score_p, score_100 = s12_p, s12_100
-            thr_p, thr_100 = thr12_p, thr12_100
-            reason = "viral_by_12h_confirmation"
-        else:
-            decided_stage = "6h"
-            status = "viral"
-            score_p, score_100 = s6_p, s6_100
-            thr_p, thr_100 = thr6_p, thr6_100
-            reason = "viral_by_6h_early_signal"
-    else:
-        # No stage over threshold → non-viral decision by default.
+    # Compute stage-specific candidate labels (or None if below threshold)
+    label_6 = _pick_label_from_top_class(over6, top6)
+    label_12 = _pick_label_from_top_class(over12, top12)
+    label_24 = _pick_label_from_top_class(over24, top24)
+
+    # ---- Final trajectory metadata (for debugging / dashboards) ----
+    # Even if below threshold, it's still useful to inspect top_class_* and scores.
+    now_iso = now_utc().isoformat()
+
+    base_meta: Dict[str, Any] = {
+        "ml_flags.viral_v2.final.top_class_6h": top6,
+        "ml_flags.viral_v2.final.top_class_12h": top12,
+        "ml_flags.viral_v2.final.top_class_24h": top24,
+        "ml_flags.viral_v2.final.score_proba_6h": s6_p,
+        "ml_flags.viral_v2.final.score_proba_12h": s12_p,
+        "ml_flags.viral_v2.final.score_proba_24h": s24_p,
+        "ml_flags.viral_v2.final.decided_at": now_iso,
+    }
+
+    # ---- Choose final status by stage priority ----
+    # Stage priority: 24h → 12h → 6h
+    if label_24 is not None:
+        status = label_24
         decided_stage = "24h"
+        score_p, score_100 = s24_p, s24_100
+        thr_p, thr_100 = thr24_p, thr24_100
+        reason = f"{status}_by_24h_validator"
+
+    elif label_12 is not None:
+        status = label_12
+        decided_stage = "12h"
+        score_p, score_100 = s12_p, s12_100
+        thr_p, thr_100 = thr12_p, thr12_100
+        reason = f"{status}_by_12h_confirmation"
+
+    elif label_6 is not None:
+        status = label_6
+        decided_stage = "6h"
+        score_p, score_100 = s6_p, s6_100
+        thr_p, thr_100 = thr6_p, thr6_100
+        reason = f"{status}_by_6h_early_signal"
+
+    else:
+        # No stage over threshold → final non_viral (with 24h metrics as baseline)
         status = "non_viral"
+        decided_stage = "24h"
         score_p, score_100 = s24_p, s24_100
         thr_p, thr_100 = thr24_p, thr24_100
         reason = "all_stages_below_threshold"
 
-    now_iso = now_utc().isoformat()
-
-    return {
+    final_fields: Dict[str, Any] = {
         "ml_flags.viral_v2.final.status": status,
         "ml_flags.viral_v2.final.decided_stage": decided_stage,
         "ml_flags.viral_v2.final.score_proba": score_p,
         "ml_flags.viral_v2.final.score_100": score_100,
         "ml_flags.viral_v2.final.threshold_proba": thr_p,
         "ml_flags.viral_v2.final.threshold_100": thr_100,
-        "ml_flags.viral_v2.final.decided_at": now_iso,
         "ml_flags.viral_v2.final.reason": reason,
     }
+    final_fields.update(base_meta)
+
+    return final_fields
 
 
 # =========================
@@ -274,7 +344,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     db_default = get_env("MONGO_DB")
 
     parser = argparse.ArgumentParser(
-        description="Finalize ml_flags.viral_v2.final.* based on h6/h12/h24 scores."
+        description="Finalize ml_flags.viral_v2.final.* based on h6/h12/h24 scores (multiclass-aware)."
     )
     parser.add_argument("--mongo-uri", default=mongo_uri_default)
     parser.add_argument("--db", default=db_default)
@@ -410,8 +480,8 @@ def main(argv=None) -> int:
             continue
 
         # B. Terminal skip:
-        #    If we're not in only-missing mode, and final.status is already terminal,
-        #    we skip to avoid flip-flopping final decisions.
+        #    Do not flip-flop once we have a terminal status, unless user
+        #    explicitly wants only-missing mode.
         if not args.only_missing and final_status in TERMINAL_FINAL_STATUSES:
             skipped_terminal += 1
             continue
@@ -432,7 +502,7 @@ def main(argv=None) -> int:
             skipped_age += 1
             continue
 
-        # D. Build final decision based on h6/h12/h24
+        # D. Build final decision based on h6/h12/h24 (multiclass-aware)
         update_fields = build_final_from_ml(ml_v2)
         if not update_fields:
             skipped_no_ml += 1

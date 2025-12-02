@@ -174,7 +174,16 @@ region_list = load_regions_all()
 region_options = ["(All)"] + region_list
 
 # Viral filter options mapped to ml_flags.* fields
-viral_options = ["(All)", "Viral likely", "Viral confirmed"]
+viral_options = [
+    "(All)",
+    "Stage: 6h candidate",
+    "Stage: 12h confirmed",
+    "Final: weak viral",
+    "Final: viral",
+    "Final: super viral",
+    "Final: non viral",
+    "Final: non viral (lowq)",
+]
 
 # Layout: keyword | region | viral | page size
 col_k, col_r, col_v, col_ps = st.columns([4, 3, 3, 2])
@@ -209,13 +218,28 @@ if has_rg:
 
 # Map viral filter UI -> Mongo filter on ml_flags fields
 if has_vl:
-    if selected_viral == "Viral likely":
-        # Candidate at 6h stage
-        # NOTE: update this field name if schema changes in the future.
+    if selected_viral == "Stage: 6h candidate":
+        # Candidate at 6h stage (early signal)
         filters["ml_flags.viral_v2.h6.is_candidate"] = True
-    elif selected_viral == "Viral confirmed":
+
+    elif selected_viral == "Stage: 12h confirmed":
         # Confirmed viral at 12h stage
         filters["ml_flags.viral_v2.h12.is_viral_12h"] = True
+
+    elif selected_viral == "Final: weak viral":
+        filters["ml_flags.viral_v2.final.status"] = "weak_viral"
+
+    elif selected_viral == "Final: viral":
+        filters["ml_flags.viral_v2.final.status"] = "viral"
+
+    elif selected_viral == "Final: super viral":
+        filters["ml_flags.viral_v2.final.status"] = "super_viral"
+
+    elif selected_viral == "Final: non viral":
+        filters["ml_flags.viral_v2.final.status"] = "non_viral"
+
+    elif selected_viral == "Final: non viral (lowq)":
+        filters["ml_flags.viral_v2.final.status"] = "non_viral_lowq"
 
 st.markdown("---")
 

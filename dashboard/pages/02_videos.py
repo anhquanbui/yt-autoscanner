@@ -456,6 +456,13 @@ with details_container:
             low3 = (ml_flags.get("low_quality_v1_3h") or {})
             low6 = (ml_flags.get("low_quality_v3_6h") or {})
             viral = (ml_flags.get("viral_v1") or {})
+            
+            # Viral v2 (multi-class) flags
+            viral_v2 = (ml_flags.get("viral_v2") or {})
+            v2_h6 = viral_v2.get("h6") or {}
+            v2_h12 = viral_v2.get("h12") or {}
+            v2_h24 = viral_v2.get("h24_validation") or {}
+            v2_final = viral_v2.get("final") or {}
 
             # ===== tracking duration =====
             now = datetime.datetime.utcnow()
@@ -666,6 +673,20 @@ with details_container:
                 f"- Score: `{fmt_score(viral.get('score'))}`\n"
                 f"- Likely: `{viral.get('likely', '—')}`\n"
                 f"- Confirmed: `{viral.get('confirmed', '—')}`"
+            )
+            
+            # Viral v2 (multi-class) flags
+            st.markdown("**Viral v2 (multi-class)**")
+            st.markdown(
+                f"- 6h: score_proba=`{fmt_score(v2_h6.get('score_proba'))}`, "
+                f"top_class=`{v2_h6.get('top_class', '—')}`\n"
+                f"- 12h: score_proba=`{fmt_score(v2_h12.get('score_proba'))}`, "
+                f"top_class=`{v2_h12.get('top_class', '—')}`\n"
+                f"- 24h: score_proba=`{fmt_score(v2_h24.get('score_proba'))}`, "
+                f"top_class=`{v2_h24.get('top_class', '—')}`\n"
+                f"- Final: status=`{v2_final.get('status', 'unknown')}`, "
+                f"stage=`{v2_final.get('decided_stage', '—')}`, "
+                f"reason=`{v2_final.get('reason', '—')}`"
             )
 
             # Engagement / growth metrics based on snapshots

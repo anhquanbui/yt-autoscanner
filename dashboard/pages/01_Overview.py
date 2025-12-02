@@ -403,9 +403,12 @@ def render_viral_metrics(kpis: dict):
     viral_confirmed = kpis.get("viral2_12h_viral", 0)
 
     final_decided = kpis.get("viral2_final_decided", 0)
-    final_viral = kpis.get("viral2_final_viral", 0)
+    final_weak = kpis.get("viral2_final_weak_viral", 0)
+    final_mid = kpis.get("viral2_final_viral", 0)
+    final_super = kpis.get("viral2_final_super_viral", 0)
+
     final_non = kpis.get("viral2_final_nonviral", 0) + kpis.get(
-        "viral2_final_nonviral_lowq", 0
+    "viral2_final_nonviral_lowq", 0
     )
     final_unknown = kpis.get("viral2_final_unknown", 0)
 
@@ -439,7 +442,10 @@ def render_viral_metrics(kpis: dict):
         unsafe_allow_html=True,
     )
 
-    breakdown = f"Viral {final_viral:,} • Non {final_non:,} • Unk {final_unknown:,}"
+    breakdown = (
+    f"Weak {final_weak:,} • Viral {final_mid:,} • Super {final_super:,} • "
+    f"Non {final_non:,} • Unk {final_unknown:,}"
+    )
 
     c3.markdown(
         f"""

@@ -79,7 +79,7 @@ python tools/make_indexes.py
 ### Launch the unified runner
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-./run_both_local.ps1
+./run_local_loop.ps1
 ```
 
 ---

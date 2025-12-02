@@ -122,7 +122,7 @@ if (-not $env:YT_MAX_PAGES)     { $env:YT_MAX_PAGES     = "5"  }
 
 # Random region + weighted keywords
 if (-not $env:YT_RANDOM_PICK)        { $env:YT_RANDOM_PICK        = "1" }
-if (-not $env:YT_RANDOM_REGION_POOL) { $env:YT_RANDOM_REGION_POOL = "US,GB,CA,AU,IN,JP,VN,KR,FR,DE,BR,MX,ID,TH,ES,IT,NL,SG,MY,PH,TW,HK,AR,CL,TR,PL,SA,AE,EG,NG,KE,RU,SE,NO,FI,DK,IE,PT,GR,IL,ZA" }
+if (-not $env:YT_RANDOM_REGION_POOL) { $env:YT_RANDOM_REGION_POOL = "US,GB,CA,AU,IN,SG,MY,PH,IE,ZA,KE,NG" }
 if (-not $env:YT_RANDOM_QUERY_POOL)  {
   # --- Expanded random QUERY pool (balanced across categories) ---
   $env:YT_RANDOM_QUERY_POOL  = "live:6, breaking news:5, world news:5, update:3, politics:3, president speech:2, economy:3, stock market:4, crypto:4, bitcoin:4, ethereum:3, finance:3, investing:3, business:3, startup:3, " +
