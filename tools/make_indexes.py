@@ -352,7 +352,7 @@ INDEX_MAP: Dict[str, List[dict]] = {
         {
             "keys": [
                 ("stats_snapshots.0", 1),
-                ("ml_flags.viral_v2.h24_validation.score_proba", 1),
+                ("ml_flags.viral_v2.h24.score_proba", 1),
             ],
             "name": "viral_h24_snap0_score",
         },

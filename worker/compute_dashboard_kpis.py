@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-worker/compute_dashboard_kpis.py (v7)
+worker/compute_dashboard_kpis.py (v8, schema-updated + filter support)
 
 Background worker that computes dashboard KPIs from `videos`
 and stores them into `dashboard_kpis` (materialized KPI snapshots).
@@ -12,7 +12,10 @@ High-level responsibilities:
 - Compute Viral v1 KPIs (likely / confirmed).
 - Compute Viral v2 KPIs:
     + Stage coverage per furthest stage (6h / 12h / 24h / Final, non-overlapping).
-    + Extra details (candidates, 12h viral, etc).
+    + Final multi-class label breakdown.
+- Precompute helper metadata for UI filters:
+    + filter_keywords: [{query, count}] from source.query
+    + filter_regions:  [{region, count}] from source.regionCode
 - Keep only the latest 100 KPI snapshots so the collection does not grow forever.
 - Update `worker_runs` as a lightweight heartbeat for the dashboard.
 """
@@ -61,10 +64,10 @@ def build_kpi_pipeline() -> list:
     Build the Mongo aggregation pipeline to compute global KPIs
     from the `videos` collection.
 
-    This is the *single source of truth* for all dashboard counters.
-    Any change here should be mirrored on the dashboard pages.
+    This is the *single source of truth* for all dashboard counters
+    that are computed via a single $group pass.
 
-    Output fields:
+    Output fields (per document):
       - total_videos
       - total_channels
 
@@ -86,20 +89,24 @@ def build_kpi_pipeline() -> list:
       - viral_confirmed         (viral_v1.confirmed == True / 1)
 
       - viral2_h6_scored
-      - viral2_h6_candidates
       - viral2_h12_scored
-      - viral2_12h_viral
       - viral2_h24_scored
 
       - viral2_stage_6h_only    (furthest stage = 6h, non-overlap)
       - viral2_stage_12h_only   (furthest stage = 12h, non-overlap)
       - viral2_stage_24h_only   (furthest stage = 24h, non-overlap)
 
+      - viral2_final_weak_viral
       - viral2_final_viral
+      - viral2_final_super_viral
       - viral2_final_nonviral
       - viral2_final_nonviral_lowq
       - viral2_final_unknown
       - viral2_final_decided
+
+    NOTE:
+      - filter_keywords / filter_regions are computed separately in compute_kpis(),
+        not in this pipeline, để tránh làm pipeline $group chính phức tạp.
     """
     return [
         {
@@ -113,16 +120,34 @@ def build_kpi_pipeline() -> list:
 
                 # ===== Tracking status counters =====
                 "tracking_active": {
-                    "$sum": {"$cond": [{"$eq": ["$tracking.status", "tracking"]}, 1, 0]}
+                    "$sum": {
+                        "$cond": [
+                            {"$eq": ["$tracking.status", "tracking"]},
+                            1,
+                            0,
+                        ]
+                    }
                 },
                 "completed_total": {
-                    "$sum": {"$cond": [{"$eq": ["$tracking.status", "complete"]}, 1, 0]}
+                    "$sum": {
+                        "$cond": [
+                            {"$eq": ["$tracking.status", "complete"]},
+                            1,
+                            0,
+                        ]
+                    }
                 },
                 "stopped_total": {
-                    "$sum": {"$cond": [{"$eq": ["$tracking.status", "stopped"]}, 1, 0]}
+                    "$sum": {
+                        "$cond": [
+                            {"$eq": ["$tracking.status", "stopped"]},
+                            1,
+                            0,
+                        ]
+                    }
                 },
 
-                # Completed because age >= 24h (normal finish)
+                # Completed because age >= 24h (legacy normal finish)
                 "completed_age24": {
                     "$sum": {
                         "$cond": [
@@ -320,37 +345,6 @@ def build_kpi_pipeline() -> list:
                     }
                 },
 
-                # 6h candidates, but excluding those already confirmed viral at 12h
-                "viral2_h6_candidates": {
-                    "$sum": {
-                        "$cond": [
-                            {
-                                "$and": [
-                                    {
-                                        "$or": [
-                                            {"$eq": ["$ml_flags.viral_v2.h6.is_candidate", True]},
-                                            {"$eq": ["$ml_flags.viral_v2.h6.is_candidate", 1]},
-                                        ]
-                                    },
-                                    {
-                                        # NOT (is_viral_12h == True/1)
-                                        "$not": [
-                                            {
-                                                "$or": [
-                                                    {"$eq": ["$ml_flags.viral_v2.h12.is_viral_12h", True]},
-                                                    {"$eq": ["$ml_flags.viral_v2.h12.is_viral_12h", 1]},
-                                                ]
-                                            }
-                                        ]
-                                    },
-                                ]
-                            },
-                            1,
-                            0,
-                        ]
-                    }
-                },
-
                 # Any score at 12h stage
                 "viral2_h12_scored": {
                     "$sum": {
@@ -367,29 +361,18 @@ def build_kpi_pipeline() -> list:
                     }
                 },
 
-                # Marked viral at 12h stage
-                "viral2_12h_viral": {
-                    "$sum": {
-                        "$cond": [
-                            {
-                                "$or": [
-                                    {"$eq": ["$ml_flags.viral_v2.h12.is_viral_12h", True]},
-                                    {"$eq": ["$ml_flags.viral_v2.h12.is_viral_12h", 1]},
-                                ]
-                            },
-                            1,
-                            0,
-                        ]
-                    }
-                },
-
-                # Any score at 24h validation stage
+                # Any score at 24h validation stage (h24 or legacy h24_validation)
                 "viral2_h24_scored": {
                     "$sum": {
                         "$cond": [
                             {
                                 "$ne": [
-                                    "$ml_flags.viral_v2.h24_validation.score_proba",
+                                    {
+                                        "$ifNull": [
+                                            "$ml_flags.viral_v2.h24.score_proba",
+                                            "$ml_flags.viral_v2.h24_validation.score_proba",
+                                        ]
+                                    },
                                     None,
                                 ]
                             },
@@ -403,7 +386,7 @@ def build_kpi_pipeline() -> list:
                 # We treat "furthest stage" as:
                 #   - 6h only   (has 6h score, no 12h / 24h score, final unknown/None)
                 #   - 12h only  (has 12h score, no 24h score, final unknown/None)
-                #   - 24h only  (has 24h validation score, final unknown/None)
+                #   - 24h only  (has 24h score, final unknown/None)
 
                 "viral2_stage_6h_only": {
                     "$sum": {
@@ -424,7 +407,12 @@ def build_kpi_pipeline() -> list:
                                     },
                                     {
                                         "$eq": [
-                                            "$ml_flags.viral_v2.h24_validation.score_proba",
+                                            {
+                                                "$ifNull": [
+                                                    "$ml_flags.viral_v2.h24.score_proba",
+                                                    "$ml_flags.viral_v2.h24_validation.score_proba",
+                                                ]
+                                            },
                                             None,
                                         ]
                                     },
@@ -455,7 +443,12 @@ def build_kpi_pipeline() -> list:
                                     },
                                     {
                                         "$eq": [
-                                            "$ml_flags.viral_v2.h24_validation.score_proba",
+                                            {
+                                                "$ifNull": [
+                                                    "$ml_flags.viral_v2.h24.score_proba",
+                                                    "$ml_flags.viral_v2.h24_validation.score_proba",
+                                                ]
+                                            },
                                             None,
                                         ]
                                     },
@@ -480,7 +473,12 @@ def build_kpi_pipeline() -> list:
                                 "$and": [
                                     {
                                         "$ne": [
-                                            "$ml_flags.viral_v2.h24_validation.score_proba",
+                                            {
+                                                "$ifNull": [
+                                                    "$ml_flags.viral_v2.h24.score_proba",
+                                                    "$ml_flags.viral_v2.h24_validation.score_proba",
+                                                ]
+                                            },
                                             None,
                                         ]
                                     },
@@ -618,9 +616,7 @@ def build_kpi_pipeline() -> list:
                 "viral_confirmed": 1,
 
                 "viral2_h6_scored": 1,
-                "viral2_h6_candidates": 1,
                 "viral2_h12_scored": 1,
-                "viral2_12h_viral": 1,
                 "viral2_h24_scored": 1,
 
                 "viral2_stage_6h_only": 1,
@@ -643,9 +639,12 @@ def compute_kpis(videos_col: Collection) -> Dict[str, Any]:
     """
     Run the KPI aggregation pipeline on the `videos` collection.
 
-    Returns a flat dict with all KPI fields. If the aggregation returns
-    no result (e.g., empty collection), we return a zero-filled struct
-    so the dashboard code does not crash on missing keys.
+    Returns a flat dict with all KPI fields plus:
+      - filter_keywords: [{query, count}]
+      - filter_regions:  [{region, count}]
+
+    If the aggregation returns no result (e.g., empty collection), we return
+    a zero-filled struct so the dashboard code does not crash on missing keys.
     """
     logger.info("Running KPI aggregation…")
     pipeline = build_kpi_pipeline()
@@ -670,9 +669,7 @@ def compute_kpis(videos_col: Collection) -> Dict[str, Any]:
             "viral_likely": 0,
             "viral_confirmed": 0,
             "viral2_h6_scored": 0,
-            "viral2_h6_candidates": 0,
             "viral2_h12_scored": 0,
-            "viral2_12h_viral": 0,
             "viral2_h24_scored": 0,
             "viral2_stage_6h_only": 0,
             "viral2_stage_12h_only": 0,
@@ -684,9 +681,69 @@ def compute_kpis(videos_col: Collection) -> Dict[str, Any]:
             "viral2_final_nonviral_lowq": 0,
             "viral2_final_unknown": 0,
             "viral2_final_decided": 0,
+            "filter_keywords": [],
+            "filter_regions": [],
         }
 
-    return result[0]
+    kpis: Dict[str, Any] = result[0]
+
+    # --------------------------------------------------
+    # Extra: precompute keyword list for Filter page
+    # --------------------------------------------------
+    try:
+        kw_pipeline = [
+            {"$match": {"source.query": {"$exists": True, "$ne": None}}},
+            {
+                "$group": {
+                    "_id": "$source.query",
+                    "video_count": {"$sum": 1},
+                }
+            },
+            {"$sort": {"video_count": -1}},
+            # Safety cap: we rarely need more than a few hundred entries
+            {"$limit": 500},
+        ]
+        kw_docs = list(videos_col.aggregate(kw_pipeline, allowDiskUse=True))
+        kpis["filter_keywords"] = [
+            {
+                "query": d.get("_id"),
+                "count": int(d.get("video_count", 0)),
+            }
+            for d in kw_docs
+            if d.get("_id") not in (None, "")
+        ]
+    except Exception as e:
+        logger.warning("Keyword aggregation for filter failed: %s", e)
+        kpis["filter_keywords"] = []
+
+    # --------------------------------------------------
+    # Extra: precompute region list for Filter page
+    # --------------------------------------------------
+    try:
+        rg_pipeline = [
+            {"$match": {"source.regionCode": {"$exists": True, "$ne": None}}},
+            {
+                "$group": {
+                    "_id": "$source.regionCode",
+                    "video_count": {"$sum": 1},
+                }
+            },
+            {"$sort": {"_id": 1}},
+        ]
+        rg_docs = list(videos_col.aggregate(rg_pipeline, allowDiskUse=True))
+        kpis["filter_regions"] = [
+            {
+                "region": d.get("_id"),
+                "count": int(d.get("video_count", 0)),
+            }
+            for d in rg_docs
+            if d.get("_id") not in (None, "")
+        ]
+    except Exception as e:
+        logger.warning("Region aggregation for filter failed: %s", e)
+        kpis["filter_regions"] = []
+
+    return kpis
 
 
 def save_snapshot(kpis_col: Collection, kpi_doc: Dict[str, Any]) -> None:
@@ -721,6 +778,30 @@ def save_snapshot(kpis_col: Collection, kpi_doc: Dict[str, Any]) -> None:
 
     except Exception as cleanup_err:
         logger.warning("KPI cleanup failed: %s", cleanup_err)
+
+
+def compute_and_save() -> Dict[str, Any]:
+    """
+    Helper for running the full KPI flow from other modules (if needed).
+    """
+    load_env()
+    db = get_db()
+    videos = db.videos
+    kpis_col = db.dashboard_kpis
+
+    kpis = compute_kpis(videos)
+    save_snapshot(kpis_col, kpis)
+
+    try:
+        db.worker_runs.update_one(
+            {"name": "compute_dashboard_kpis"},
+            {"$set": {"last_run": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning("Failed to update worker_runs: %s", e)
+
+    return kpis
 
 
 def main() -> int:

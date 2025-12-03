@@ -1,5 +1,20 @@
 #!/usr/bin/env python3
-# worker/viral_finalize.py — finalize ml_flags.viral_v2.final.* based on h6/h12/h24
+"""
+viral_finalize.py — finalize ml_flags.viral_v2.final.* based on h6/h12/h24 scores.
+
+This worker:
+- Reads ml_flags.viral_v2.h6 / h12 / h24 (fallback h24_validation for legacy docs).
+- Applies thresholds + multiclass top_class to decide final.status.
+- Handles low-quality blocked videos -> non_viral_lowq.
+- Handles removed videos with dedicated statuses:
+    * viral_after_removed  — video was viral (weak/viral/super) but later removed.
+    * removed              — video removed without strong viral evidence.
+- Attaches tracking metadata at finalize time:
+    * tracking_status_at_final
+    * tracking_stop_reason_at_final
+    * is_removed_at_final
+    * base_status          — original viral/non_viral label before "removed" wrapping.
+"""
 
 from __future__ import annotations
 
@@ -12,16 +27,15 @@ from typing import Any, Dict, Optional, Tuple
 
 from pymongo import MongoClient
 
-# --- Use project env & DB helpers ---
 from config.env import load_env, get_env
 from config.db import get_db as get_db_from_config
 
-# Ensure UTF-8 console logging (helps with unicode titles / logs on Windows, etc.)
+
+# Ensure UTF-8 console logging (helps with unicode titles / logs)
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
-    # Fallback for environments where reconfigure() is not available
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
@@ -52,7 +66,7 @@ def parse_iso8601(s: str | None) -> Optional[datetime]:
 
 
 # -------------------------
-# DB resolve (new version)
+# DB resolve
 # -------------------------
 
 def resolve_db(cli_uri: str | None, cli_db: str | None):
@@ -78,7 +92,6 @@ def resolve_db(cli_uri: str | None, cli_db: str | None):
         if cli_db:
             db_name = cli_db
         else:
-            # Parse DB name from URI tail (mongodb://.../<db_name>?...)
             tail = uri.rsplit("/", 1)[-1]
             db_name = tail.split("?", 1)[0] or get_env("MONGO_DB") or "ytscan"
 
@@ -132,6 +145,9 @@ TERMINAL_FINAL_STATUSES = {
     "super_viral",
     "non_viral",
     "non_viral_lowq",
+    # Removed-aware terminal types
+    "viral_after_removed",
+    "removed",
 }
 
 
@@ -143,7 +159,7 @@ def _get_stage_bool(
     env_thr_100_name: Optional[str] = None,
 ) -> Tuple[bool, float, int, float, int]:
     """
-    Given a stage dict like ml_flags.viral_v2.h6 / h12 / h24_validation,
+    Given a stage dict like ml_flags.viral_v2.h6 / h12 / h24,
     determine whether the stage considers the video "viral" (i.e., above
     its own threshold), and return:
 
@@ -212,7 +228,7 @@ def _pick_label_from_top_class(
 def build_final_from_ml(ml_v2: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Build the final decision document (fields under ml_flags.viral_v2.final.*)
-    based on h6 / h12 / h24_validation scores + multiclass labels.
+    based on h6 / h12 / h24 scores + multiclass labels.
 
     Priority (if at least one stage passes its threshold):
 
@@ -234,13 +250,13 @@ def build_final_from_ml(ml_v2: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     h6 = ml_v2.get("h6") or {}
     h12 = ml_v2.get("h12") or {}
-    h24 = ml_v2.get("h24_validation") or {}
+    h24 = ml_v2.get("h24") or ml_v2.get("h24_validation") or {}
 
     if not (h6 or h12 or h24):
         return None
 
     # --- Stage-level thresholds & scores ---
-    over6,  thr6_p,  thr6_100,  s6_p,  s6_100  = _get_stage_bool(
+    over6, thr6_p, thr6_100, s6_p, s6_100 = _get_stage_bool(
         h6, 0.60, 60,
         "VIRAL_V2_THRESH_6H_PROBA", "VIRAL_V2_THRESH_6H_100"
     )
@@ -264,7 +280,6 @@ def build_final_from_ml(ml_v2: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     label_24 = _pick_label_from_top_class(over24, top24)
 
     # ---- Final trajectory metadata (for debugging / dashboards) ----
-    # Even if below threshold, it's still useful to inspect top_class_* and scores.
     now_iso = now_utc().isoformat()
 
     base_meta: Dict[str, Any] = {
@@ -335,7 +350,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         --db               : override DB name
         --collection       : videos collection name (default: env MONGO_COL_VIDEOS or 'videos')
         --min-age-hours    : minimum video age before finalization (default: 24h)
-        --only-missing     : if set, only finalize when final.status is missing/unknown
+        --only-missing     : only finalize when final.status is missing/unknown
         --limit            : optional limit on number of documents to process
     """
     load_env()
@@ -389,9 +404,10 @@ def main(argv=None) -> int:
            - if --only-missing: skip docs that already have a terminal final.status
       3. For each candidate:
            a) If blocked by low-quality → mark as non_viral_lowq.
-           b) If final.status is already terminal and --only-missing is False → skip.
-           c) If video is too young (< min_age_hours) → skip.
-           d) Otherwise, derive final.* from h6/h12/h24 and write it back.
+           b) If video is too young (< min_age_hours) → skip,
+              EXCEPT when tracking.status=complete & stop_reason=removed.
+           c) Otherwise, derive final.* from h6/h12/h24 and write it back.
+              If video is removed, wrap status into viral_after_removed / removed.
       4. Record stats in worker_runs for monitoring.
     """
     args = parse_args(argv)
@@ -448,12 +464,11 @@ def main(argv=None) -> int:
         final_status = (final_info.get("status") or "unknown").lower()
 
         tracking = doc.get("tracking") or {}
-        stop_reason = (tracking.get("stop_reason") or "").lower()
+        tracking_status = (tracking.get("status") or "").lower() or None
+        stop_reason = (tracking.get("stop_reason") or "").lower() or None
+        is_removed = stop_reason == "removed"
 
         # A. LOW-QUALITY BLOCK:
-        #    Any video that has been stopped by a low-quality model should be
-        #    finalized as non_viral_lowq. We support both the legacy
-        #    "low_quality" reason and the new "ml.low_quality_v*_3h/6h" reasons.
         lq_flag = False
         if stop_reason in {"low_quality", "ml.low_quality_v1_3h", "ml.low_quality_v3_6h"}:
             lq_flag = True
@@ -474,14 +489,15 @@ def main(argv=None) -> int:
                 "ml_flags.viral_v2.final.threshold_100": None,
                 "ml_flags.viral_v2.final.decided_at": now.isoformat(),
                 "ml_flags.viral_v2.final.reason": "low_quality_block",
+                "ml_flags.viral_v2.final.tracking_status_at_final": tracking_status,
+                "ml_flags.viral_v2.final.tracking_stop_reason_at_final": stop_reason,
+                "ml_flags.viral_v2.final.is_removed_at_final": bool(is_removed),
             }
             coll.update_one({"_id": vid}, {"$set": update_fields})
             finalized += 1
             continue
 
         # B. Terminal skip:
-        #    Do not flip-flop once we have a terminal status, unless user
-        #    explicitly wants only-missing mode.
         if not args.only_missing and final_status in TERMINAL_FINAL_STATUSES:
             skipped_terminal += 1
             continue
@@ -489,24 +505,76 @@ def main(argv=None) -> int:
             skipped_terminal += 1
             continue
 
-        # C. Age check: ensure the video is old enough to be finalized
+        # C. Age check with exception for complete+removed
         pub_str = (doc.get("snippet") or {}).get("publishedAt") or doc.get("publishedAt")
         pub_dt = parse_iso8601(pub_str)
         if not pub_dt:
-            # Missing or invalid publishedAt → cannot safely compute age, skip
             skipped_no_ml += 1
             continue
 
-        age_hours = (now - pub_dt).total_seconds() / 3600
+        age_hours = (now - pub_dt).total_seconds() / 3600.0
         if age_hours < args.min_age_hours:
-            skipped_age += 1
-            continue
+            # Allow early finalization for removed videos
+            if not (tracking_status == "complete" and is_removed):
+                skipped_age += 1
+                continue
 
         # D. Build final decision based on h6/h12/h24 (multiclass-aware)
         update_fields = build_final_from_ml(ml_v2)
+
+        # If we have absolutely no ML info (no h6/h12/h24 at all)
         if not update_fields:
-            skipped_no_ml += 1
-            continue
+            if is_removed:
+                # Removed without ML evidence → mark as 'removed'
+                update_fields = {
+                    "ml_flags.viral_v2.final.status": "removed",
+                    "ml_flags.viral_v2.final.decided_stage": "removed",
+                    "ml_flags.viral_v2.final.score_proba": None,
+                    "ml_flags.viral_v2.final.score_100": None,
+                    "ml_flags.viral_v2.final.threshold_proba": None,
+                    "ml_flags.viral_v2.final.threshold_100": None,
+                    "ml_flags.viral_v2.final.decided_at": now.isoformat(),
+                    "ml_flags.viral_v2.final.reason": "removed_before_ml",
+                }
+            else:
+                # Fail-safe: video đủ tuổi nhưng không có bất kỳ score h6/h12/h24 nào
+                skipped_no_ml += 1
+                update_fields = {
+                    "ml_flags.viral_v2.final.status": "unknown",
+                    "ml_flags.viral_v2.final.decided_stage": "no_ml",
+                    "ml_flags.viral_v2.final.score_proba": None,
+                    "ml_flags.viral_v2.final.score_100": None,
+                    "ml_flags.viral_v2.final.threshold_proba": None,
+                    "ml_flags.viral_v2.final.threshold_100": None,
+                    "ml_flags.viral_v2.final.decided_at": now.isoformat(),
+                    "ml_flags.viral_v2.final.reason": "no_ml_scores",
+                }
+
+        # If video is removed and we do have an ML-based label:
+        # wrap the base label into viral_after_removed / removed
+        base_status = (update_fields.get("ml_flags.viral_v2.final.status") or "").lower()
+        if tracking_status == "complete" and is_removed:
+            # Preserve original status for training / analytics
+            update_fields["ml_flags.viral_v2.final.base_status"] = base_status
+
+            if base_status in {"viral", "weak_viral", "super_viral"}:
+                update_fields["ml_flags.viral_v2.final.status"] = "viral_after_removed"
+            else:
+                update_fields["ml_flags.viral_v2.final.status"] = "removed"
+
+            # Overwrite reason to make it explicit
+            update_fields["ml_flags.viral_v2.final.reason"] = "removed"
+
+        # Attach tracking-state metadata so we always know what happened
+        update_fields.setdefault(
+            "ml_flags.viral_v2.final.tracking_status_at_final", tracking_status
+        )
+        update_fields.setdefault(
+            "ml_flags.viral_v2.final.tracking_stop_reason_at_final", stop_reason
+        )
+        update_fields.setdefault(
+            "ml_flags.viral_v2.final.is_removed_at_final", bool(is_removed)
+        )
 
         res = coll.update_one({"_id": vid}, {"$set": update_fields})
         if res.modified_count:
@@ -525,7 +593,6 @@ def main(argv=None) -> int:
         f"skipped_terminal={skipped_terminal}"
     )
 
-    # Log aggregate stats for dashboards / monitoring
     log_worker_run(
         "viral_finalize",
         {

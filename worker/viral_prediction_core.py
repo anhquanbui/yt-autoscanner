@@ -15,7 +15,7 @@ New in this version
 - For each stage we store:
     * per-class probabilities
     * aggregated "any viral" probability (weak+viral+super)
-    * top_class / top_class_idx
+    * top_class
     * score_100 = round(100 * P(any viral))
 - Keeps the old fields so that `viral_finalize.py` and dashboards
   do not break (score_proba, score_100, is_candidate / is_viral_12h, ...).
@@ -23,7 +23,7 @@ New in this version
 Stages:
     - 6h  : early signal          → ml_flags.viral_v2.h6
     - 12h : confirmation          → ml_flags.viral_v2.h12
-    - 24h : late validator        → ml_flags.viral_v2.h24_validation
+    - 24h : late validator        → ml_flags.viral_v2.h24
 
 CLI examples:
 
@@ -665,11 +665,20 @@ def build_cursor(
 ) -> Any:
     """
     Common Mongo cursor for all stages.
+
+    We intentionally restrict scoring to videos that are still actively
+    being tracked to avoid wasting work on videos that have already been
+    stopped or removed.
+
+    - tracking.status must be "tracking"
+    - tracking.stop_reason must be null / missing
     """
     field_score = f"ml_flags.viral_v2.{stage_key}.score_proba"
 
     query: Dict[str, Any] = {
         "stats_snapshots.0": {"$exists": True},
+        "tracking.status": "tracking",
+        "tracking.stop_reason": None,
     }
     if only_missing:
         query[field_score] = None
@@ -683,6 +692,7 @@ def build_cursor(
         "lengthBucket": 1,
         "durationSec": 1,
         "publishedAt": 1,
+        "tracking": 1,
     }
 
     cursor = coll.find(query, projection=projection)
@@ -697,20 +707,32 @@ def ensure_viral_flags(rec: Dict[str, Any]) -> Dict[str, Any]:
     """
     ml = rec.setdefault("ml_flags", {})
     viral = ml.setdefault("viral_v2", {})
+
     viral.setdefault("model_version", MODEL_VERSION)
     viral.setdefault("label_rule_version", LABEL_RULE_VERSION)
+
+    # Meta block: store global thresholds / versions for debugging & training
+    viral.setdefault(
+        "meta",
+        {
+            "model_version": MODEL_VERSION,
+            "label_rule_version": LABEL_RULE_VERSION,
+            "thresholds": {
+                "h6": {"proba": 0.6, "score_100": 60},
+                "h12": {"proba": 0.7, "score_100": 70},
+                "h24": {"proba": 0.8, "score_100": 80},
+            },
+        },
+    )
 
     viral.setdefault(
         "h6",
         {
             "score_proba": None,
             "score_100": None,
-            "is_candidate": None,
             "threshold_proba": 0.6,
-            "threshold_100": 60,
             "evaluated_at": None,
             # multiclass extras
-            "top_class_idx": None,
             "top_class": None,
             "proba_non": None,
             "proba_weak": None,
@@ -723,12 +745,9 @@ def ensure_viral_flags(rec: Dict[str, Any]) -> Dict[str, Any]:
         {
             "score_proba": None,
             "score_100": None,
-            "is_viral_12h": None,
             "threshold_proba": 0.7,
-            "threshold_100": 70,
             "evaluated_at": None,
             # multiclass extras
-            "top_class_idx": None,
             "top_class": None,
             "proba_non": None,
             "proba_weak": None,
@@ -737,13 +756,13 @@ def ensure_viral_flags(rec: Dict[str, Any]) -> Dict[str, Any]:
         },
     )
     viral.setdefault(
-        "h24_validation",
+        "h24",
         {
             "score_proba": None,
             "score_100": None,
+            "threshold_proba": 0.8,
             "evaluated_at": None,
             # multiclass extras
-            "top_class_idx": None,
             "top_class": None,
             "proba_non": None,
             "proba_weak": None,
@@ -865,7 +884,7 @@ def run_stage(
     elif stage_cmd == "12h":
         stage_key = "h12"
     elif stage_cmd == "24h":
-        stage_key = "h24_validation"
+        stage_key = "h24"
     else:
         raise SystemExit(f"Unknown stage command: {stage_cmd}")
 
@@ -944,21 +963,12 @@ def run_stage(
         }
 
         if stage_cmd == "6h":
-            h6 = ml_viral.get("h6", {})
-            thr_p = float(h6.get("threshold_proba", 0.6))
-            thr_100 = int(h6.get("threshold_100", 60))
-            is_candidate = bool(
-                proba_info["p_any"] >= thr_p or proba_info["score_100"] >= thr_100
-            )
-
             set_fields.update(
                 {
                     "ml_flags.viral_v2.h6.score_proba": proba_info["p_any"],
                     "ml_flags.viral_v2.h6.score_100": proba_info["score_100"],
-                    "ml_flags.viral_v2.h6.is_candidate": is_candidate,
                     "ml_flags.viral_v2.h6.evaluated_at": now_iso,
                     # multiclass extras
-                    "ml_flags.viral_v2.h6.top_class_idx": proba_info["top_idx"],
                     "ml_flags.viral_v2.h6.top_class": proba_info["top_label"],
                     "ml_flags.viral_v2.h6.proba_non": proba_info["p_non"],
                     "ml_flags.viral_v2.h6.proba_weak": proba_info["p_weak"],
@@ -968,21 +978,12 @@ def run_stage(
             )
 
         elif stage_cmd == "12h":
-            h12 = ml_viral.get("h12", {})
-            thr_p = float(h12.get("threshold_proba", 0.7))
-            thr_100 = int(h12.get("threshold_100", 70))
-            is_viral_12h = bool(
-                proba_info["p_any"] >= thr_p or proba_info["score_100"] >= thr_100
-            )
-
             set_fields.update(
                 {
                     "ml_flags.viral_v2.h12.score_proba": proba_info["p_any"],
                     "ml_flags.viral_v2.h12.score_100": proba_info["score_100"],
-                    "ml_flags.viral_v2.h12.is_viral_12h": is_viral_12h,
                     "ml_flags.viral_v2.h12.evaluated_at": now_iso,
                     # multiclass extras
-                    "ml_flags.viral_v2.h12.top_class_idx": proba_info["top_idx"],
                     "ml_flags.viral_v2.h12.top_class": proba_info["top_label"],
                     "ml_flags.viral_v2.h12.proba_non": proba_info["p_non"],
                     "ml_flags.viral_v2.h12.proba_weak": proba_info["p_weak"],
@@ -992,25 +993,17 @@ def run_stage(
             )
 
         else:  # 24h validation
-            h24 = ml_viral.get("h24_validation", {})
-            thr_p = float(h24.get("threshold_proba", 0.8))
-            thr_100 = int(h24.get("threshold_100", 80))
-
             set_fields.update(
                 {
-                    "ml_flags.viral_v2.h24_validation.score_proba": proba_info["p_any"],
-                    "ml_flags.viral_v2.h24_validation.score_100": proba_info["score_100"],
-                    "ml_flags.viral_v2.h24_validation.evaluated_at": now_iso,
-                    # store thresholds too (useful for finalization / debugging)
-                    "ml_flags.viral_v2.h24_validation.threshold_proba": thr_p,
-                    "ml_flags.viral_v2.h24_validation.threshold_100": thr_100,
+                    "ml_flags.viral_v2.h24.score_proba": proba_info["p_any"],
+                    "ml_flags.viral_v2.h24.score_100": proba_info["score_100"],
+                    "ml_flags.viral_v2.h24.evaluated_at": now_iso,
                     # multiclass extras
-                    "ml_flags.viral_v2.h24_validation.top_class_idx": proba_info["top_idx"],
-                    "ml_flags.viral_v2.h24_validation.top_class": proba_info["top_label"],
-                    "ml_flags.viral_v2.h24_validation.proba_non": proba_info["p_non"],
-                    "ml_flags.viral_v2.h24_validation.proba_weak": proba_info["p_weak"],
-                    "ml_flags.viral_v2.h24_validation.proba_viral": proba_info["p_viral"],
-                    "ml_flags.viral_v2.h24_validation.proba_super": proba_info["p_super"],
+                    "ml_flags.viral_v2.h24.top_class": proba_info["top_label"],
+                    "ml_flags.viral_v2.h24.proba_non": proba_info["p_non"],
+                    "ml_flags.viral_v2.h24.proba_weak": proba_info["p_weak"],
+                    "ml_flags.viral_v2.h24.proba_viral": proba_info["p_viral"],
+                    "ml_flags.viral_v2.h24.proba_super": proba_info["p_super"],
                 }
             )
 
