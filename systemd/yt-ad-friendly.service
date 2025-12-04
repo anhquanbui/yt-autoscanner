@@ -1,0 +1,16 @@
+[Unit]
+Description=YT Autoscan - Ad Friendly Scoring Worker
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ytscan/yt-autoscanner
+ExecStart=/home/ytscan/yt-autoscanner/scripts/auto_ad_friendly.sh
+Restart=always
+RestartSec=5
+
+# Environment
+Environment="PYTHONUNBUFFERED=1"
+
+[Install]
+WantedBy=multi-user.target

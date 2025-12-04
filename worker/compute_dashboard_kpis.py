@@ -13,6 +13,9 @@ High-level responsibilities:
 - Compute Viral v2 KPIs:
     + Stage coverage per furthest stage (6h / 12h / 24h / Final, non-overlapping).
     + Final multi-class label breakdown.
+- Compute Ad-Friendly KPIs from ml_flags.ad_friendly_v1:
+    + ad_friendly_total
+    + non_ad_friendly_total
 - Precompute helper metadata for UI filters:
     + filter_keywords: [{query, count}] from source.query
     + filter_regions:  [{region, count}] from source.regionCode
@@ -103,6 +106,9 @@ def build_kpi_pipeline() -> list:
       - viral2_final_nonviral_lowq
       - viral2_final_unknown
       - viral2_final_decided
+
+      - ad_friendly_total       (ml_flags.ad_friendly_v1.label == "AD_FRIENDLY")
+      - non_ad_friendly_total   (ml_flags.ad_friendly_v1.label == "NON_AD_FRIENDLY")
 
     NOTE:
       - filter_keywords / filter_regions are computed separately in compute_kpis(),
@@ -591,6 +597,26 @@ def build_kpi_pipeline() -> list:
                         ]
                     }
                 },
+
+                # ---------- Ad-Friendly aggregates ----------
+                "ad_friendly_total": {
+                    "$sum": {
+                        "$cond": [
+                            {"$eq": ["$ml_flags.ad_friendly_v1.label", "AD_FRIENDLY"]},
+                            1,
+                            0,
+                        ]
+                    }
+                },
+                "non_ad_friendly_total": {
+                    "$sum": {
+                        "$cond": [
+                            {"$eq": ["$ml_flags.ad_friendly_v1.label", "NON_AD_FRIENDLY"]},
+                            1,
+                            0,
+                        ]
+                    }
+                },
             }
         },
         {
@@ -630,6 +656,9 @@ def build_kpi_pipeline() -> list:
                 "viral2_final_nonviral_lowq": 1,
                 "viral2_final_unknown": 1,
                 "viral2_final_decided": 1,
+
+                "ad_friendly_total": 1,
+                "non_ad_friendly_total": 1,
             }
         },
     ]
@@ -681,6 +710,8 @@ def compute_kpis(videos_col: Collection) -> Dict[str, Any]:
             "viral2_final_nonviral_lowq": 0,
             "viral2_final_unknown": 0,
             "viral2_final_decided": 0,
+            "ad_friendly_total": 0,
+            "non_ad_friendly_total": 0,
             "filter_keywords": [],
             "filter_regions": [],
         }
@@ -832,7 +863,7 @@ def main() -> int:
         "ml3h_scored=%s | ml6h_scored=%s | low3h=%s | low6=%s | "
         "viral_v1_likely=%s | viral_v1_confirmed=%s | "
         "viral2_stage_6h_only=%s | viral2_stage_12h_only=%s | viral2_stage_24h_only=%s | "
-        "viral2_final_decided=%s",
+        "viral2_final_decided=%s | ad_friendly=%s | non_ad_friendly=%s",
         kpis["total_videos"],
         kpis["total_channels"],
         kpis["tracking_active"],
@@ -848,6 +879,8 @@ def main() -> int:
         kpis["viral2_stage_12h_only"],
         kpis["viral2_stage_24h_only"],
         kpis["viral2_final_decided"],
+        kpis.get("ad_friendly_total", 0),
+        kpis.get("non_ad_friendly_total", 0),
     )
 
     # Persist snapshot + enforce retention

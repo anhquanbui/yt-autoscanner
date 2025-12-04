@@ -126,7 +126,7 @@ def load_kpis() -> dict:
 st.title("⚙️ Settings & System Health")
 
 st.caption(
-    "Monitor the health of core workers (discover, track, low-quality, viral, finalize)."
+    "Monitor the health of core workers (discover, track, low-quality, ad-friendly, viral, finalize)."
 )
 
 st.markdown("---")
@@ -157,4 +157,4 @@ st.markdown("### 💡 System Status & Worker Activity")
 render_system_status(kpis)
 
 st.markdown("---")
-st.caption("YouTube AutoScanner — Settings & Worker Monitoring")
+st.caption("YouTube AutoScanner — Settings, Ad-Friendly Scoring & Worker Monitoring")

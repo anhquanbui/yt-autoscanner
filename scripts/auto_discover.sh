@@ -49,7 +49,7 @@ export YT_RANDOM_QUERY_POOL
 DURATIONS=("short" "medium" "long" "any")
 export YT_MAX_PAGES="5"
 
-SLEEP_SECONDS=120
+SLEEP_SECONDS=45
 
 # ==========================
 # Auto discover loop

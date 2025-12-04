@@ -141,6 +141,10 @@ def load_kpis() -> dict:
         "viral2_final_nonviral_lowq": 0,
         "viral2_final_unknown": 0,
         "viral2_final_decided": 0,
+
+        # Ad-friendly metrics (from ml_flags.ad_friendly_v1)
+        "ad_friendly_total": 0,
+        "non_ad_friendly_total": 0,
     }
 
     if not doc:
@@ -190,7 +194,7 @@ def render_simple_metrics(kpis: dict):
 
     cards = [
         ("Tracking active", kpis["tracking_active"]),
-        ("Tracking Completed", kpis["completed_age24"]),
+        ("Tracking Completed (≥24h)", kpis["completed_age24"]),
         ("Removed / Unavailable", kpis["completed_removed"]),
         ("Stopped (low quality)", kpis["stopped_low_quality"]),
     ]
@@ -262,6 +266,47 @@ def render_viral_summary(kpis: dict):
 
 
 # ============================================================
+# METRIC CARDS (AD-FRIENDLY SUMMARY)
+# ============================================================
+def render_ad_friendly_summary(kpis: dict):
+    """
+    Render 2 cards summarizing ad-friendly classification from ml_flags.ad_friendly_v1:
+      - AD_FRIENDLY
+      - NON_AD_FRIENDLY
+    """
+    total_videos = kpis.get("total_videos", 0)
+    ad_total = kpis.get("ad_friendly_total", 0)
+    non_ad_total = kpis.get("non_ad_friendly_total", 0)
+
+    def pct_value(v: int) -> float:
+        return (v / total_videos * 100.0) if total_videos else 0.0
+
+    def pct_str(v: int) -> str:
+        return f"{pct_value(v):.2f}%"
+
+    c1, c2 = st.columns(2)
+    cards = [
+        ("Ad-friendly videos", ad_total),
+        ("Non ad-friendly / risky", non_ad_total),
+    ]
+
+    for col, (title, value) in zip([c1, c2], cards):
+        col.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="metric-title">{title}</div>
+                <div class="metric-value">{value:,}</div>
+                <div class="metric-progress-outer">
+                    <div class="metric-progress-inner" style="width:{pct_value(value):.2f}%"></div>
+                </div>
+                <div class="metric-percentage">{pct_str(value)} of all videos</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+# ============================================================
 # PAGE BODY
 # ============================================================
 st.title("📊 YouTube AutoScanner — Overview (Local)")
@@ -286,7 +331,13 @@ st.markdown("---")
 st.markdown("### 🎯 Tracking & Completion Overview")
 render_simple_metrics(kpis)
 
-# spacer giữa 2 section
+# spacer giữa các section
+st.markdown("<div style='height: 1.5rem'></div>", unsafe_allow_html=True)
+
+st.markdown("### 🛡️ Ad-Friendly / Brand Safety Summary")
+render_ad_friendly_summary(kpis)
+
+# spacer giữa các section
 st.markdown("<div style='height: 1.5rem'></div>", unsafe_allow_html=True)
 
 st.markdown("### 🚀 Viral Prediction Summary")

@@ -337,8 +337,6 @@ def upsert_minimal(
             "viral_v2": {
                 "model_version": VIRAL_V2_MODEL_VERSION,
                 "label_rule_version": VIRAL_V2_LABEL_RULE_VERSION,
-
-                # Meta: lưu cấu hình threshold / version tại thời điểm discover
                 "meta": {
                     "model_version": VIRAL_V2_MODEL_VERSION,
                     "label_rule_version": VIRAL_V2_LABEL_RULE_VERSION,
@@ -420,7 +418,7 @@ def upsert_minimal(
                 },
             },
 
-            # Low-quality models (kept same as previous versions)
+            # Low-quality models
             "low_quality_v1_3h": {
                 "is_low": False,
                 "score": 0.0,
@@ -432,6 +430,13 @@ def upsert_minimal(
                 "score": 0.0,
                 "threshold": None,
                 "updated_at": None,
+            },
+            
+            # ad_friendly model
+            "ad_friendly_v1": {
+                "label": None,        # "AD_FRIENDLY" | "NON_AD_FRIENDLY"
+                "score": None,        # decision_function margin (float)
+                "updated_at": None,   # UTC timestamp
             },
         }
 
@@ -445,6 +450,8 @@ def upsert_minimal(
             },
             "snippet": {
                 "title": sn.get("title"),
+                "description": sn.get("description") or "",
+                "tags": sn.get("tags", []),
                 "publishedAt": sn.get("publishedAt"),
                 "thumbnails": sn.get("thumbnails", {}),
                 "channelId": sn.get("channelId"),
@@ -452,6 +459,8 @@ def upsert_minimal(
                 "durationISO": sn.get("durationISO"),
                 "durationSec": sn.get("durationSec"),
                 "lengthBucket": sn.get("lengthBucket"),
+                "defaultLanguage": sn.get("defaultLanguage"),
+                "defaultAudioLanguage": sn.get("defaultAudioLanguage"),
             },
             "tracking": {
                 "status": "tracking",
@@ -665,6 +674,20 @@ def run_discover(
                     if cate:
                         sn["categoryId"] = cate
                         enriched_cate += 1
+
+                    # 🔹 NEW: merge description / tags / languages nếu có từ Videos API
+                    # (Search API vốn đã có description, nhưng Videos API đôi khi đầy đủ hơn)
+                    if sn2.get("description") and not sn.get("description"):
+                        sn["description"] = sn2.get("description")
+
+                    if sn2.get("tags"):
+                        sn["tags"] = sn2.get("tags")
+
+                    if sn2.get("defaultLanguage"):
+                        sn["defaultLanguage"] = sn2.get("defaultLanguage")
+
+                    if sn2.get("defaultAudioLanguage"):
+                        sn["defaultAudioLanguage"] = sn2.get("defaultAudioLanguage")
 
                     # Merge duration & derived features
                     dur_iso = cd.get("duration")

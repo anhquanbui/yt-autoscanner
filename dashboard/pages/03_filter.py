@@ -123,6 +123,7 @@ def query_videos(filters: Dict[str, Any], page: int, page_size: int):
         "source.title": 1,
         "tracking.status": 1,
         "ml_flags.viral_v2.final.status": 1,
+        "ml_flags.ad_friendly_v1.label": 1,
     }
 
     cursor = (
@@ -135,13 +136,13 @@ def query_videos(filters: Dict[str, Any], page: int, page_size: int):
 
     rows: List[Dict[str, Any]] = []
     for doc in cursor:
-        # Chỉ còn lại các field cần thiết
         source = doc.get("source") or {}
         snippet = doc.get("snippet") or {}
         tracking = doc.get("tracking") or {}
         ml_flags = doc.get("ml_flags") or {}
         viral_v2 = ml_flags.get("viral_v2") or {}
         final_info = viral_v2.get("final") or {}
+        ad_info = ml_flags.get("ad_friendly_v1") or {}
 
         # Try different possible field names for the video id,
         # fall back to stringified _id as a last resort.
@@ -161,12 +162,21 @@ def query_videos(filters: Dict[str, Any], page: int, page_size: int):
         status = tracking.get("status")
         final_status = final_info.get("status") or "unknown"
 
+        raw_ad_label = ad_info.get("label")
+        if raw_ad_label == "AD_FRIENDLY":
+            ad_label = "Ad-friendly"
+        elif raw_ad_label == "NON_AD_FRIENDLY":
+            ad_label = "Non ad-friendly"
+        else:
+            ad_label = "Unknown"
+
         rows.append(
             {
                 "video_id": video_id,
                 "title": title,
                 "status": status,
                 "final_status": final_status,
+                "ad_friendly": ad_label,
                 "youtube_url": f"https://www.youtube.com/watch?v={video_id}",
             }
         )
@@ -186,7 +196,7 @@ st.title("🔍 Video Filter")
 
 st.markdown(
     """
-Filter your videos by **keyword**, **region code**, and **final viral status**,
+Filter your videos by **keyword**, **region code**, **final viral status** and **ad-friendly label**,  
 then browse matching results with pagination.
 """
 )
@@ -221,8 +231,16 @@ viral_options = [
     "Final: unknown / no decision",
 ]
 
-# Layout: keyword | region | viral | page size
-col_k, col_r, col_v, col_ps = st.columns([4, 3, 3, 2])
+# Ad-friendly filter options mapped to ml_flags.ad_friendly_v1.label
+ad_options = [
+    "(All)",
+    "Ad-friendly only",
+    "Non ad-friendly only",
+    "Unknown / not scored",
+]
+
+# Layout: keyword | region | viral | ad | page size
+col_k, col_r, col_v, col_ad, col_ps = st.columns([4, 3, 3, 3, 2])
 
 with col_k:
     # Filter by discovery keyword (source.query)
@@ -236,6 +254,10 @@ with col_v:
     # Filter by viral_v2.final.status
     selected_viral = st.selectbox("Final viral status", viral_options)
 
+with col_ad:
+    # Filter by ad-friendly label (ml_flags.ad_friendly_v1.label)
+    selected_ad = st.selectbox("Ad-friendly status", ad_options)
+
 with col_ps:
     # Control for rows per page (page size)
     page_size = st.selectbox("Rows per page", [25, 50, 100], index=1)
@@ -245,6 +267,7 @@ filters: Dict[str, Any] = {}
 has_kw = selected_keyword != "(All)"
 has_rg = selected_region != "(All)"
 has_vl = selected_viral != "(All)"
+has_ad = selected_ad != "(All)"
 
 if has_kw:
     filters["source.query"] = selected_keyword
@@ -283,6 +306,23 @@ if has_vl:
     elif selected_viral == "Final: unknown / no decision":
         filters[key] = "unknown"
 
+# Map ad-friendly filter UI -> Mongo filter on ml_flags.ad_friendly_v1.label
+if has_ad:
+    key = "ml_flags.ad_friendly_v1.label"
+
+    if selected_ad == "Ad-friendly only":
+        filters[key] = "AD_FRIENDLY"
+
+    elif selected_ad == "Non ad-friendly only":
+        filters[key] = "NON_AD_FRIENDLY"
+
+    elif selected_ad == "Unknown / not scored":
+        # Label chưa được set hoặc field chưa tồn tại
+        filters["$or"] = filters.get("$or", []) + [
+            {"ml_flags.ad_friendly_v1": {"$exists": False}},
+            {"ml_flags.ad_friendly_v1.label": None},
+        ]
+
 st.markdown("---")
 
 # ------------------------------------------------------------
@@ -292,8 +332,11 @@ st.markdown("---")
 st.subheader("📼 Video Results")
 
 # If there is absolutely no filter, avoid loading the whole DB.
-if not has_kw and not has_rg and not has_vl:
-    st.info("Please select at least a **keyword**, **region code**, or **final viral status** to view videos.")
+if not has_kw and not has_rg and not has_vl and not has_ad:
+    st.info(
+        "Please select at least a **keyword**, **region code**, **final viral status** "
+        "or **ad-friendly status** to view videos."
+    )
 else:
     # Pagination state kept in st.session_state["page"]
     if "page" not in st.session_state:
@@ -301,7 +344,7 @@ else:
 
     # filter_key tracks the current combination of filters + page_size.
     # Whenever it changes, we reset page to 1 and rerun.
-    filter_key = f"{selected_keyword}|{selected_region}|{selected_viral}|{page_size}"
+    filter_key = f"{selected_keyword}|{selected_region}|{selected_viral}|{selected_ad}|{page_size}"
     if st.session_state.get("filter_key") != filter_key:
         st.session_state.filter_key = filter_key
         st.session_state.page = 1
@@ -344,11 +387,12 @@ else:
             "title": "Title",
             "status": "Tracking status",
             "final_status": "Final status",
+            "ad_friendly": "Ad-friendly",
             "youtube_url": "Open",
         })
 
         # Keep only the columns we want to show
-        df = df[["Video ID", "Title", "Tracking status", "Final status", "Open"]]
+        df = df[["Video ID", "Title", "Tracking status", "Final status", "Ad-friendly", "Open"]]
 
         # Render the table with a clickable link column for YouTube URL
         st.dataframe(

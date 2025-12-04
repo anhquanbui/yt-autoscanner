@@ -12,6 +12,7 @@ WORKERS = [
     ("track_once", "Track stats & snapshots"),
     ("low_quality_autoflag_3h", "Low-quality scoring (3h)"),
     ("low_quality_autoflag_6h", "Low-quality scoring (6h)"),
+    ("ad_friendly_v1", "Ad-friendly scoring"),
     ("compute_dashboard_kpis", "Dashboard KPI snapshot"),
     ("viral_scoring_h6", "Viral scoring 6h"),
     ("viral_scoring_h12", "Viral scoring 12h"),
