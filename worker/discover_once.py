@@ -415,6 +415,7 @@ def upsert_minimal(
                     "threshold_100": None,
                     "decided_at": None,
                     "reason": None,
+                    "behavior": None,
                 },
             },
 

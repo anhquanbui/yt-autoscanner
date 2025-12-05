@@ -230,19 +230,25 @@ def build_final_from_ml(ml_v2: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     Build the final decision document (fields under ml_flags.viral_v2.final.*)
     based on h6 / h12 / h24 scores + multiclass labels.
 
-    Priority (if at least one stage passes its threshold):
+    Stage priority for FINAL STATUS (if at least one stage passes its threshold):
 
-        1) 24h validator → label from its top_class (super_viral / viral / weak_viral / ...),
-                           reason="*_by_24h_validator"
-        2) 12h confirmation → label from its top_class,
-                              reason="*_by_12h_confirmation"
-        3) 6h early signal → label from its top_class,
-                             reason="*_by_6h_early_signal"
+        1) 24h validator   → label from its top_class
+        2) 12h confirmation → label from its top_class
+        3) 6h early signal  → label from its top_class
 
     If no stage passes its threshold:
         → status = "non_viral"
         → decided_stage = "24h"
         → reason = "all_stages_below_threshold"
+
+    In addition, this function derives a simple "behavior" tag to describe
+    the temporal trajectory of the viral signal:
+
+        - "no_signal"   : no stage above threshold.
+        - "early_peak"  : 6h/12h show viral signal but 24h is non_viral.
+        - "late_growth" : 24h becomes viral while 6h and 12h are non_viral.
+        - "consistent"  : same viral label across 6h/12h/24h (stable growth).
+        - "volatile"    : mixed / changing labels across stages.
 
     Returns:
         A dict with keys suitable for use in a `$set` update, or None
@@ -292,29 +298,51 @@ def build_final_from_ml(ml_v2: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "ml_flags.viral_v2.final.decided_at": now_iso,
     }
 
-    # ---- Choose final status by stage priority ----
-    # Stage priority: 24h → 12h → 6h
+    # ---- Helper: map label to a numeric rank for behavior analysis ----
+    def _label_rank(lbl: Optional[str]) -> int:
+        """
+        Map label to a simple ordinal rank for trajectory analysis:
+
+            None / non_viral → 0
+            weak_viral       → 1
+            viral            → 2
+            super_viral      → 3
+        """
+        if not lbl:
+            return 0
+        x = lbl.lower()
+        if x == "weak_viral":
+            return 1
+        if x == "viral":
+            return 2
+        if x == "super_viral":
+            return 3
+        # Treat anything else (including "non_viral") as 0
+        return 0
+
+    r6 = _label_rank(label_6)
+    r12 = _label_rank(label_12)
+    r24 = _label_rank(label_24)
+
+    # ---- Choose final status by stage priority (24h → 12h → 6h) ----
     if label_24 is not None:
         status = label_24
         decided_stage = "24h"
         score_p, score_100 = s24_p, s24_100
         thr_p, thr_100 = thr24_p, thr24_100
         reason = f"{status}_by_24h_validator"
-
     elif label_12 is not None:
         status = label_12
         decided_stage = "12h"
         score_p, score_100 = s12_p, s12_100
         thr_p, thr_100 = thr12_p, thr12_100
         reason = f"{status}_by_12h_confirmation"
-
     elif label_6 is not None:
         status = label_6
         decided_stage = "6h"
         score_p, score_100 = s6_p, s6_100
         thr_p, thr_100 = thr6_p, thr6_100
         reason = f"{status}_by_6h_early_signal"
-
     else:
         # No stage over threshold → final non_viral (with 24h metrics as baseline)
         status = "non_viral"
@@ -322,6 +350,29 @@ def build_final_from_ml(ml_v2: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         score_p, score_100 = s24_p, s24_100
         thr_p, thr_100 = thr24_p, thr24_100
         reason = "all_stages_below_threshold"
+
+    # ---- Derive behavior tag (temporal pattern) ----
+    if (r6 == 0) and (r12 == 0) and (r24 == 0):
+        behavior = "no_signal"
+    else:
+        # Early viral then die: early stages vote viral but 24h says non_viral
+        if r24 == 0 and max(r6, r12) > 0:
+            behavior = "early_peak"
+        # Late viral: only 24h shows strong signal
+        elif r24 > 0 and max(r6, r12) == 0:
+            behavior = "late_growth"
+        # All stages viral with the same label → stable trajectory
+        elif r24 > 0 and r6 > 0 and r12 > 0 and (label_6 == label_12 == label_24):
+            behavior = "consistent"
+        # Mixed / changing labels → volatile trajectory
+        elif r24 > 0 and max(r6, r12) > 0 and (
+            (label_6 and label_6 != label_24)
+            or (label_12 and label_12 != label_24)
+        ):
+            behavior = "volatile"
+        else:
+            # Fallback when pattern does not clearly match any of the above
+            behavior = "neutral"
 
     final_fields: Dict[str, Any] = {
         "ml_flags.viral_v2.final.status": status,
@@ -331,10 +382,12 @@ def build_final_from_ml(ml_v2: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "ml_flags.viral_v2.final.threshold_proba": thr_p,
         "ml_flags.viral_v2.final.threshold_100": thr_100,
         "ml_flags.viral_v2.final.reason": reason,
+        "ml_flags.viral_v2.final.behavior": behavior,
     }
     final_fields.update(base_meta)
 
     return final_fields
+
 
 
 # =========================

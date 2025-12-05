@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 # We assume this file lives under:
-#   <project_root>/dashboard/00_Home.py  (for example)
+#   <project_root>/dashboard/app.py (or 00_Home.py)
 # so `parents[1]` should be the project root itself.
 ROOT = Path(__file__).resolve().parents[1]  # .../yt-autoscanner
 if str(ROOT) not in sys.path:
@@ -19,9 +19,6 @@ if str(ROOT) not in sys.path:
 import streamlit as st
 
 # Global page configuration for this app tab.
-# - page_title: title in browser tab
-# - page_icon : emoji/favicon
-# - layout    : "wide" to take advantage of horizontal space for dashboards
 st.set_page_config(
     page_title="YT AutoScanner Dashboard",
     page_icon="📊",
@@ -31,8 +28,7 @@ st.set_page_config(
 # ========== SIDEBAR ==========
 
 with st.sidebar:
-    # Brand / header block: small logo + product name + subtitle.
-    # Using raw HTML to get more control over layout & styling than Markdown alone.
+    # Brand / header block
     st.markdown(
         """
 <div style="
@@ -58,7 +54,9 @@ with st.sidebar:
   </div>
   <div>
     <div style="font-weight:700; font-size:0.95rem;">YT AutoScanner</div>
-    <div style="font-size:0.8rem; color:#6b7280;">Internal tracking & ML dashboard</div>
+    <div style="font-size:0.8rem; color:#6b7280;">
+      24h tracking · ML virality · Ad-friendly
+    </div>
   </div>
 </div>
         """,
@@ -67,35 +65,25 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Quick navigation hints for users landing on the dashboard for the first time.
-    st.markdown("#### 🧭 Navigation tips")
+    # Quick navigation hints tailored to your current pages
+    st.markdown("#### 🧭 Navigation map")
+
     st.markdown(
         """
-- **Overview** – high-level KPIs & trends  
-- **Videos** – per-video stats & timelines  
-- **Channels** – aggregated channel performance  
-- **ML Models** – low-quality / viral model insights  
-- **Logs & System** – workers & health signals  
+- **Overview** – high-level KPIs, tracking status, worker health  
+- **Viral Filter** – final viral decisions (weak / viral / super) + behavior tags  
+- **Low-Quality Filter** – 3h / 6h low-quality ML blocks for noisy videos  
+- **Ad-Friendly** – teacher-model labels & rule-based ad suitability  
+- **Videos / Channels** – drill-down for individual videos & channels  
+- **Settings / Workers** – worker status
 """
     )
 
     st.markdown("---")
 
-    # Short one-line explanation of what AutoScanner does, in smaller, muted text.
-    st.markdown(
-        """
-<small style="color:#9ca3af;">
-YouTube AutoScanner runs a 24h window to track early performance and keep your dataset clean with ML-based low-quality filters.
-</small>
-        """,
-        unsafe_allow_html=True,
-    )
-
 # ========== MAIN CONTENT (HOME) ==========
 
-# Hero banner:
-# - High-level explanation of what this dashboard is about.
-# - Visual emphasis via gradient background & drop shadow.
+# Hero banner: explain the full pipeline
 st.markdown(
     """
 <div style="
@@ -110,45 +98,95 @@ st.markdown(
     Internal dashboard • YouTube AutoScanner
   </div>
   <div style="font-size:1.7rem; font-weight:700; margin-bottom:0.35rem;">
-    Track fresh videos, clean your dataset, boost your models.
+    End-to-end 24h pipeline: discover, track, score, finalize.
   </div>
-  <div style="font-size:0.95rem; max-width:720px; line-height:1.5;">
-    This dashboard gives you a quick view of how the scanner is discovering and tracking videos
-    in their first 24 hours, how many are being completed naturally, and how many are stopped
-    early by the low-quality ML filter.
+  <div style="font-size:0.95rem; max-width:780px; line-height:1.5;">
+    The scanner discovers fresh YouTube videos, tracks their first 24 hours,
+    applies low-quality filters at 3h/6h, multi-stage virality models at 6h/12h/24h
+    (with <b>weak / viral / super</b> labels and behavior tags), and an ad-friendly
+    teacher model. Final decisions are saved back to Mongo so you can analyze,
+    explain, and iterate on your models.
+  </div>
+
+  <div style="
+      display:flex;
+      flex-wrap:wrap;
+      gap:0.4rem;
+      margin-top:0.9rem;
+      font-size:0.78rem;
+  ">
+    <span style="
+        padding:0.25rem 0.55rem;
+        border-radius:999px;
+        background:rgba(15,23,42,0.18);
+        border:1px solid rgba(209,250,229,0.5);
+    ">
+      Discover → Track → 24h lifecycle
+    </span>
+    <span style="
+        padding:0.25rem 0.55rem;
+        border-radius:999px;
+        background:rgba(15,23,42,0.18);
+        border:1px solid rgba(191,219,254,0.6);
+    ">
+      Low-quality ML (3h / 6h)
+    </span>
+    <span style="
+        padding:0.25rem 0.55rem;
+        border-radius:999px;
+        background:rgba(15,23,42,0.18);
+        border:1px solid rgba(254,215,170,0.7);
+    ">
+      Viral v2 (6h / 12h / 24h + behavior)
+    </span>
+    <span style="
+        padding:0.25rem 0.55rem;
+        border-radius:999px;
+        background:rgba(15,23,42,0.18);
+        border:1px solid rgba(252,231,243,0.6);
+    ">
+      Ad-friendly teacher + rules
+    </span>
+    <span style="
+        padding:0.25rem 0.55rem;
+        border-radius:999px;
+        background:rgba(15,23,42,0.18);
+        border:1px solid rgba(209,213,219,0.7);
+    ">
+      Final dataset for research & dashboards
+    </span>
   </div>
 </div>
     """,
     unsafe_allow_html=True,
 )
 
-# Section title for the three feature cards below.
-st.markdown("### 🧩 What you can do here")
+# Section title for feature cards
+st.markdown("### 🧩 How to use this dashboard")
 
-# We use three columns for three main "entry points" of the dashboard:
-#   - Overview
-#   - Videos & Channels
-#   - ML & System
+# Three main "entry points"
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    # Card 1: Overview page explanation.
+    # Card 1: Pipeline & health (Overview)
     st.markdown(
         """
 <div style="
     border-radius:14px;
     padding:1rem 1rem 0.9rem 1rem;
     border:1px solid #e5e7eb;
-    background: #ffffff;
-    box-shadow: 0 6px 18px rgba(15,23,42,0.06);
+    background:#ffffff;
+    box-shadow:0 6px 18px rgba(15,23,42,0.06);
 ">
-  <div style="font-size:1.2rem; margin-bottom:0.4rem;">📈 Overview</div>
+  <div style="font-size:1.2rem; margin-bottom:0.4rem;">📈 Overview & Health</div>
   <div style="font-size:0.9rem; color:#4b5563; margin-bottom:0.3rem;">
-    See total videos, channels, tracking vs. completed vs. low-quality stopped, and
-    how many new videos are discovered each day.
+    Check how many videos are being discovered and tracked in the last 24h,
+    how many complete naturally, and how many are blocked by low-quality rules.
+    See quick worker health and basic KPIs.
   </div>
   <div style="font-size:0.8rem; color:#6b7280;">
-    Start here to check if the pipeline is healthy and tracking as expected.
+    Start here when you want to know if the pipeline is running smoothly
+    or if something looks stuck.
   </div>
 </div>
         """,
@@ -156,23 +194,26 @@ with col1:
     )
 
 with col2:
-    # Card 2: Videos & Channels pages explanation.
+    # Card 2: Viral & behavior explanations
     st.markdown(
         """
 <div style="
     border-radius:14px;
     padding:1rem 1rem 0.9rem 1rem;
     border:1px solid #e5e7eb;
-    background: #ffffff;
-    box-shadow: 0 6px 18px rgba(15,23,42,0.06);
+    background:#ffffff;
+    box-shadow:0 6px 18px rgba(15,23,42,0.06);
 ">
-  <div style="font-size:1.2rem; margin-bottom:0.4rem;">🎥 Videos & Channels</div>
+  <div style="font-size:1.2rem; margin-bottom:0.4rem;">🚀 Virality & Behavior</div>
   <div style="font-size:0.9rem; color:#4b5563; margin-bottom:0.3rem;">
-    Drill down into individual videos, timelines of views, and which channels are
-    contributing the most to your dataset.
+    Use the <b>Viral Filter</b> page to inspect final viral decisions from the
+    6h/12h/24h models. Filter by keyword, region, and final status
+    (weak / viral / super), and read the <b>Behavior</b> tag to see whether a video
+    is early-peak, late-growth, consistent, or volatile.
   </div>
   <div style="font-size:0.8rem; color:#6b7280;">
-    Useful when you want to inspect outliers or debug weird tracking behaviour.
+    Ideal for explaining why a low-view video is still flagged as viral,
+    or why some candidates are downgraded after 24h.
   </div>
 </div>
         """,
@@ -180,38 +221,43 @@ with col2:
     )
 
 with col3:
-    # Card 3: ML & System pages explanation.
+    # Card 3: Quality & ad-friendly + system controls
     st.markdown(
         """
 <div style="
     border-radius:14px;
     padding:1rem 1rem 0.9rem 1rem;
     border:1px solid #e5e7eb;
-    background: #ffffff;
-    box-shadow: 0 6px 18px rgba(15,23,42,0.06);
+    background:#ffffff;
+    box-shadow:0 6px 18px rgba(15,23,42,0.06);
 ">
-  <div style="font-size:1.2rem; margin-bottom:0.4rem;">🤖 ML & System</div>
+  <div style="font-size:1.2rem; margin-bottom:0.4rem;">🛡️ Quality & System</div>
   <div style="font-size:0.9rem; color:#4b5563; margin-bottom:0.3rem;">
-    Review low-quality filtering, model performance snapshots, and worker logs to
-    understand how the scanner behaves in production.
+    Review <b>low-quality</b> blocks and <b>ad-friendly</b> decisions, then jump to
+    <b>Settings / Workers</b> to see which workers are running and how often they
+    write to <code>worker_runs</code>. Use Logs/System pages when you need raw
+    error messages or more debugging detail.
   </div>
   <div style="font-size:0.8rem; color:#6b7280;">
-    Ideal for tuning thresholds and verifying that your models are doing the right thing.
+    Use this when tuning thresholds, changing model versions, or checking if the
+    teacher model and rules are behaving as expected.
   </div>
 </div>
         """,
         unsafe_allow_html=True,
     )
 
-# Horizontal separator before closing note.
+# Horizontal separator
 st.markdown("---")
 
-# Final hint about the recommended navigation flow.
+# Final hint about recommended flow
 st.markdown(
     """
 <small style="color:#9ca3af;">
-Tip: use the <b>Overview</b> page first to confirm the pipeline is running, then move to
-<b>Videos</b> or <b>ML Models</b> when you need more detail.
+Typical flow: start with <b>Overview</b> to confirm the pipeline and workers,
+then use <b>Viral Filter</b> and <b>Ad-Friendly</b> to inspect model decisions.
+Jump into <b>Videos / Channels</b> when you spot something that needs
+per-video investigation.
 </small>
 """,
     unsafe_allow_html=True,

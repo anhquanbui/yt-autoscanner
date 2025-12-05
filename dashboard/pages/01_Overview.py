@@ -91,6 +91,13 @@ h2, h3 {
     color: #6b7280;
     margin-top: 4px;
 }
+
+/* Extra subtext line under metric value (used for Viral breakdown) */
+.metric-subtext {
+    font-size: 0.85rem;
+    color: #6b7280;
+    margin-top: 4px;
+}
 </style>
     """,
     unsafe_allow_html=True,
@@ -180,7 +187,8 @@ def load_kpis() -> dict:
 # ============================================================
 def render_simple_metrics(kpis: dict):
     """
-    Render 4 basic tracking metrics as cards.
+    Render tracking metrics as cards.
+    (Đã bỏ card 'Tracking Completed (≥24h)', chỉ giữ 3 card.)
     """
     total_videos = kpis.get("total_videos", 0)
 
@@ -190,16 +198,16 @@ def render_simple_metrics(kpis: dict):
     def pct_str(v: int) -> str:
         return f"{pct_value(v):.2f}%"
 
-    c1, c2, c3, c4 = st.columns(4)
+    # Chỉ còn 3 card
+    c1, c2, c3 = st.columns(3)
 
     cards = [
         ("Tracking active", kpis["tracking_active"]),
-        ("Tracking Completed (≥24h)", kpis["completed_age24"]),
         ("Removed / Unavailable", kpis["completed_removed"]),
         ("Stopped (low quality)", kpis["stopped_low_quality"]),
     ]
 
-    for col, (title, value) in zip([c1, c2, c3, c4], cards):
+    for col, (title, value) in zip([c1, c2, c3], cards):
         col.markdown(
             f"""
             <div class="metric-card">
@@ -221,7 +229,7 @@ def render_simple_metrics(kpis: dict):
 def render_viral_summary(kpis: dict):
     """
     Render 3 cards summarizing final viral_v2 decisions:
-      - Viral (weak → super)
+      - Viral (weak → super) + breakdown (weak / viral / super)
       - Non-viral
       - Unknown / No decision
     """
@@ -233,36 +241,45 @@ def render_viral_summary(kpis: dict):
     def pct_str(v: int) -> str:
         return f"{pct_value(v):.2f}%"
 
-    viral_total = (
-        kpis.get("viral2_final_weak_viral", 0)
-        + kpis.get("viral2_final_viral", 0)
-        + kpis.get("viral2_final_super_viral", 0)
-    )
-    # Non-viral: chỉ lấy non_viral, KHÔNG cộng non_viral_lowq nữa
+    weak_viral = kpis.get("viral2_final_weak_viral", 0)
+    mid_viral = kpis.get("viral2_final_viral", 0)
+    super_viral = kpis.get("viral2_final_super_viral", 0)
+
+    viral_total = weak_viral + mid_viral + super_viral
     non_total = kpis.get("viral2_final_nonviral", 0)
     unknown_total = kpis.get("viral2_final_unknown", 0)
 
     c1, c2, c3 = st.columns(3)
-    cards = [
-        ("Viral (weak → super)", viral_total),
-        ("Non-viral", non_total),
-        ("Unknown / No decision", unknown_total),
-    ]
+    cols = [c1, c2, c3]
+    titles = ["Viral", "Non-viral", "Unknown / No decision"]
+    values = [viral_total, non_total, unknown_total]
 
-    for col, (title, value) in zip([c1, c2, c3], cards):
-        col.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="metric-title">{title}</div>
-                <div class="metric-value">{value:,}</div>
-                <div class="metric-progress-outer">
-                    <div class="metric-progress-inner" style="width:{pct_value(value):.2f}%"></div>
-                </div>
-                <div class="metric-percentage">{pct_str(value)} of all videos</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    for idx, col in enumerate(cols):
+        title = titles[idx]
+        value = values[idx]
+
+        if idx == 0:
+            breakdown_html = (
+                f'<div class="metric-subtext">'
+                f'Weak: {weak_viral:,} • Viral: {mid_viral:,} • Super: {super_viral:,}'
+                f"</div>"
+            )
+        else:
+            breakdown_html = ""
+
+        html = f"""
+<div class="metric-card">
+  <div class="metric-title">{title}</div>
+  <div class="metric-value">{value:,}</div>
+  {breakdown_html}
+  <div class="metric-progress-outer">
+    <div class="metric-progress-inner" style="width:{pct_value(value):.2f}%"></div>
+  </div>
+  <div class="metric-percentage">{pct_str(value)} of all videos</div>
+</div>
+"""
+        col.markdown(html, unsafe_allow_html=True)
+
 
 
 # ============================================================
