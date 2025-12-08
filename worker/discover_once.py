@@ -333,23 +333,36 @@ def upsert_minimal(
             continue
 
         # ===== Default ML flags for viral_v2 + low_quality models =====
-                # ===== Default ML flags for viral_v2 + low_quality models =====
         ml_flags = {
             "viral_v2": {
                 "model_version": VIRAL_V2_MODEL_VERSION,
                 "label_rule_version": VIRAL_V2_LABEL_RULE_VERSION,
+                "meta": {
+                    "model_version": VIRAL_V2_MODEL_VERSION,
+                    "label_rule_version": VIRAL_V2_LABEL_RULE_VERSION,
+                    "thresholds": {
+                        "h6": {
+                            "proba": VIRAL_V2_THRESH_6H_PROBA,
+                            "score_100": VIRAL_V2_THRESH_6H_100,
+                        },
+                        "h12": {
+                            "proba": VIRAL_V2_THRESH_12H_PROBA,
+                            "score_100": VIRAL_V2_THRESH_12H_100,
+                        },
+                        "h24": {
+                            "proba": VIRAL_V2_THRESH_24H_PROBA,
+                            "score_100": VIRAL_V2_THRESH_24H_100,
+                        },
+                    },
+                },
 
-                # 6h stage: early candidate detection (multiclass)
+                # 6h stage: early multiclass signal
                 "h6": {
                     "score_proba": None,
                     "score_100": None,
-                    "is_candidate": None,
                     "threshold_proba": VIRAL_V2_THRESH_6H_PROBA,
-                    "threshold_100": VIRAL_V2_THRESH_6H_100,
                     "evaluated_at": None,
-
                     # Multiclass extras
-                    "top_class_idx": None,   # 0=non_viral, 1=weak_viral, 2=viral, 3=super_viral
                     "top_class": None,       # "non_viral" | "weak_viral" | "viral" | "super_viral"
                     "proba_non": None,
                     "proba_weak": None,
@@ -361,13 +374,9 @@ def upsert_minimal(
                 "h12": {
                     "score_proba": None,
                     "score_100": None,
-                    "is_viral_12h": None,
                     "threshold_proba": VIRAL_V2_THRESH_12H_PROBA,
-                    "threshold_100": VIRAL_V2_THRESH_12H_100,
                     "evaluated_at": None,
-
                     # Multiclass extras
-                    "top_class_idx": None,
                     "top_class": None,
                     "proba_non": None,
                     "proba_weak": None,
@@ -375,16 +384,13 @@ def upsert_minimal(
                     "proba_super": None,
                 },
 
-                # 24h stage: validation of previous decision (multiclass)
-                "h24_validation": {
+                # 24h stage: late validator (multiclass)
+                "h24": {
                     "score_proba": None,
                     "score_100": None,
                     "threshold_proba": VIRAL_V2_THRESH_24H_PROBA,
-                    "threshold_100": VIRAL_V2_THRESH_24H_100,
                     "evaluated_at": None,
-
                     # Multiclass extras
-                    "top_class_idx": None,
                     "top_class": None,
                     "proba_non": None,
                     "proba_weak": None,
@@ -395,31 +401,25 @@ def upsert_minimal(
                 # Final decision summary across stages (used by viral_finalize)
                 "final": {
                     # Final label:
-                    #   "unknown" | "non_viral" | "weak_viral" | "viral" | "super_viral" | "non_viral_lowq"
-                    "status": "unknown",
+                    #   None | "non_viral" | "weak_viral" | "viral" | "super_viral"
+                    #        | "non_viral_lowq" | "removed" | "viral_after_removed"
+                    "status": None,
                     # Which stage decided:
-                    #   "6h" | "12h" | "24h" | "low_quality"
+                    #   "6h" | "12h" | "24h" | "low_quality" | "removed"
                     "decided_stage": None,
 
-                    # Final “any viral” probability & score at decision stage
+                    # Final probability & score at decision stage
                     "score_proba": None,
                     "score_100": None,
                     "threshold_proba": None,
                     "threshold_100": None,
                     "decided_at": None,
                     "reason": None,
-
-                    # Trajectory metadata (for dashboard / debug)
-                    "top_class_6h": None,
-                    "top_class_12h": None,
-                    "top_class_24h": None,
-                    "score_proba_6h": None,
-                    "score_proba_12h": None,
-                    "score_proba_24h": None,
+                    "behavior": None,
                 },
             },
 
-            # Low-quality models (kept same as previous versions)
+            # Low-quality models
             "low_quality_v1_3h": {
                 "is_low": False,
                 "score": 0.0,
@@ -431,6 +431,13 @@ def upsert_minimal(
                 "score": 0.0,
                 "threshold": None,
                 "updated_at": None,
+            },
+            
+            # ad_friendly model
+            "ad_friendly_v1": {
+                "label": None,        # "AD_FRIENDLY" | "NON_AD_FRIENDLY"
+                "score": None,        # decision_function margin (float)
+                "updated_at": None,   # UTC timestamp
             },
         }
 
@@ -444,6 +451,8 @@ def upsert_minimal(
             },
             "snippet": {
                 "title": sn.get("title"),
+                "description": sn.get("description") or "",
+                "tags": sn.get("tags", []),
                 "publishedAt": sn.get("publishedAt"),
                 "thumbnails": sn.get("thumbnails", {}),
                 "channelId": sn.get("channelId"),
@@ -451,6 +460,8 @@ def upsert_minimal(
                 "durationISO": sn.get("durationISO"),
                 "durationSec": sn.get("durationSec"),
                 "lengthBucket": sn.get("lengthBucket"),
+                "defaultLanguage": sn.get("defaultLanguage"),
+                "defaultAudioLanguage": sn.get("defaultAudioLanguage"),
             },
             "tracking": {
                 "status": "tracking",
@@ -664,6 +675,20 @@ def run_discover(
                     if cate:
                         sn["categoryId"] = cate
                         enriched_cate += 1
+
+                    # 🔹 NEW: merge description / tags / languages nếu có từ Videos API
+                    # (Search API vốn đã có description, nhưng Videos API đôi khi đầy đủ hơn)
+                    if sn2.get("description") and not sn.get("description"):
+                        sn["description"] = sn2.get("description")
+
+                    if sn2.get("tags"):
+                        sn["tags"] = sn2.get("tags")
+
+                    if sn2.get("defaultLanguage"):
+                        sn["defaultLanguage"] = sn2.get("defaultLanguage")
+
+                    if sn2.get("defaultAudioLanguage"):
+                        sn["defaultAudioLanguage"] = sn2.get("defaultAudioLanguage")
 
                     # Merge duration & derived features
                     dur_iso = cd.get("duration")

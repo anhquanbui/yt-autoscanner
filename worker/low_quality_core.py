@@ -1116,7 +1116,7 @@ def run_low_quality(
             # 6h model: only for age >= 6h if mode allows
             # ======================
             if mode in ("both", "6h-only"):
-                if age_h < 6.0 - 1e-6:
+                if age_h < 5.0 - 1e-6:
                     # Too young for 6h window.
                     skipped_age_lt_6h += 1
                 else:

@@ -130,7 +130,27 @@ TERMINAL_FINAL_STATUSES = {
     "non_viral",
     "non_viral_lowq",
 
+    # Removed-aware variants (vẫn coi là terminal)
+    "viral_after_removed",
+    "removed",
+
     # If new final types are added later, extend this set.
+}
+
+# Map final.status -> tracking.stop_reason when we stop due to final decision.
+FINAL_STATUS_TO_STOP_REASON = {
+    # Viral / trending
+    "viral": "viral_confirmed",
+    "weak_viral": "weak_viral_confirmed",
+    "super_viral": "super_viral_confirmed",
+
+    # Non-viral
+    "non_viral": "non_viral_confirmed",
+    "non_viral_lowq": "non_viral_lowq_confirmed",
+
+    # Removed-aware variants
+    "viral_after_removed": "viral_after_removed",
+    "removed": "removed",
 }
 
 # YouTube Data API endpoints
@@ -512,9 +532,14 @@ def main() -> int:
                 completed += 1
                 continue
 
+            # Compute age in hours for fallback logic
+            age_hours = (now - pub).total_seconds() / 3600.0
+
             st = stats_map.get(vid)
             if not st:
                 # Treat as removed/unavailable (e.g., deleted/private/no longer accessible)
+                # We keep status="complete" and stop_reason="removed" so viral_finalize
+                # can later wrap into final.status removed / viral_after_removed as needed.
                 ops.append(
                     UpdateOne(
                         {"_id": vid},
@@ -540,21 +565,16 @@ def main() -> int:
                 "commentCount": int(st["commentCount"]) if "commentCount" in st else None,
             }
 
-            # NEW: check final viral decision; we still keep tracking until 24h,
-            #  ut remember final_status to set a better stop_reason later.
+            # Check viral final decision, if any
             ml_flags = d.get("ml_flags") or {}
             viral_v2 = ml_flags.get("viral_v2") or {}
             final_info = viral_v2.get("final") or {}
             final_status = (final_info.get("status") or "unknown").lower()
 
-            # Compute next milestone if not finalized by viral pipeline
-            next_due = next_due_from_publish(pub, now)
-            if next_due is None:
-                # Age >= 24h → mark as complete due to age
-                stop_reason = (
-                    "viral_finalized"
-                    if final_status in TERMINAL_FINAL_STATUSES
-                    else "age>=24h"
+            # Case A: final decision already exists and is terminal → stop by final.
+            if final_status in TERMINAL_FINAL_STATUSES:
+                stop_reason = FINAL_STATUS_TO_STOP_REASON.get(
+                    final_status, "viral_finalized"
                 )
                 ops.append(
                     UpdateOne(
@@ -574,23 +594,55 @@ def main() -> int:
                     )
                 )
                 completed += 1
-            else:
-                # Still within 24h window → update next_poll_after for future tracking.
+                continue
+
+            # Case B: no final yet → either continue tracking or fallback by age.
+            if age_hours >= 26.0:
+                # Fallback: video never got a terminal final status and is older than 26h.
+                # We mark it as complete to avoid tracking forever.
                 ops.append(
                     UpdateOne(
                         {"_id": vid},
                         {
                             "$push": {"stats_snapshots": snap},
                             "$set": {
+                                "tracking.status": "complete",
+                                "tracking.stop_reason": "age>=26h_no_final",
                                 "tracking.last_polled_at": now_iso,
-                                "tracking.next_poll_after": next_due.isoformat(),
-                                # Store the latest stats timestamp as BSON Date
+                                "tracking.next_poll_after": None,
                                 "latest_stats_ts": now,
                             },
                             "$inc": {"tracking.poll_count": 1},
                         },
                     )
                 )
+                completed += 1
+                continue
+
+            # Case C: still waiting for final, age < 26h → compute next_poll_after
+            next_due = next_due_from_publish(pub, now)
+            if next_due is None:
+                # Already beyond the 24h milestone plan, but still < 26h.
+                # We poll more sparsely (e.g., ~1h) but clamp so we don't go far beyond 26h.
+                remaining_h = max(0.0, 26.0 - age_hours)
+                step_h = min(1.0, remaining_h)  # 0 < step <= 1h
+                next_due = now + timedelta(hours=step_h)
+
+            ops.append(
+                UpdateOne(
+                    {"_id": vid},
+                    {
+                        "$push": {"stats_snapshots": snap},
+                        "$set": {
+                            "tracking.last_polled_at": now_iso,
+                            "tracking.next_poll_after": next_due.isoformat(),
+                            # Store the latest stats timestamp as BSON Date
+                            "latest_stats_ts": now,
+                        },
+                        "$inc": {"tracking.poll_count": 1},
+                    },
+                )
+            )
 
         if ops:
             db.videos.bulk_write(ops, ordered=False)

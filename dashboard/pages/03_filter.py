@@ -1,4 +1,3 @@
-# 03_filter.py
 import math
 from typing import Dict, Any, List
 
@@ -8,10 +7,91 @@ import streamlit as st
 from config.db import get_db
 from config.env import load_env
 
-# Ensure .env is loaded exactly once for the whole app.
-# This makes Mongo credentials / other env vars available.
+# Ensure .env is loaded exactly once
 load_env()
 
+# ============================================================
+# 0. Simple styling for this page
+# ============================================================
+st.markdown(
+    """
+<style>
+[data-testid="stAppViewContainer"] {
+    background-color: #f9fafb;
+}
+.main .block-container {
+    max-width: 1200px;
+    padding-top: 2rem;
+}
+
+/* Small pill chips used in legend */
+.viral-pill {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    margin-right: 6px;
+    margin-bottom: 4px;
+}
+.viral-pill-weak {
+    background: #fef3c7;  /* amber-100 */
+    color: #92400e;       /* amber-800 */
+}
+.viral-pill-viral {
+    background: #dbeafe;  /* blue-100 */
+    color: #1d4ed8;       /* blue-700 */
+}
+.viral-pill-super {
+    background: #fee2e2;  /* red-100 */
+    color: #b91c1c;       /* red-700 */
+}
+.behavior-box {
+    background: #ffffff;
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+    padding: 14px 16px;
+    margin-top: 0.75rem;
+    box-shadow: 0 2px 6px rgba(15,23,42,0.04);
+}
+.behavior-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #4b5563;
+    margin-bottom: 4px;
+}
+.behavior-text {
+    font-size: 0.86rem;
+    color: #4b5563;
+    line-height: 1.5;
+}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+# Mapping for nicer labels
+STATUS_LABELS = {
+    "weak_viral": "🟡 Weak viral",
+    "viral": "🔵 Viral",
+    "super_viral": "🔴 Super viral",
+    "non_viral": "⚪ Non-viral",
+    "non_viral_lowq": "⚪ Non-viral (low quality block)",
+    "viral_after_removed": "🟣 Viral after removed",
+    "removed": "⚫ Removed",
+    "unknown": "⚪ Unknown / no decision",
+    None: "⚪ Unknown / no decision",
+}
+
+BEHAVIOR_LABELS = {
+    "no_signal": "⚪ No signal",
+    "early_peak": "🕒 Early peak",
+    "late_growth": "🌱 Late growth",
+    "consistent": "📈 Consistent",
+    "volatile": "🌪️ Volatile",
+    "neutral": "〰️ Neutral / unclear",
+    None: "⚪ Unknown",
+}
 
 # ============================================================
 # 1. Mongo helpers (cached)
@@ -21,9 +101,6 @@ load_env()
 def get_coll():
     """
     Return the Mongo collection object for `videos`.
-
-    We cache this as a resource so the Mongo client / collection
-    are reused between reruns, instead of reconnecting each time.
     """
     db = get_db()
     return db["videos"]
@@ -32,23 +109,22 @@ def get_coll():
 @st.cache_data(show_spinner=False)
 def load_keywords() -> List[str]:
     """
-    Return list of distinct keywords from source.query, sorted
-    by video_count descending.
+    Return list of distinct keywords for the Keyword filter.
 
-    This powers the "Keyword" dropdown, with most-used queries first.
+    Prefer dashboard_kpis.filter_keywords snapshot (lighter),
+    fallback to aggregate directly from videos if missing.
     """
+    db = get_db()
+    kpis = db.dashboard_kpis.find_one(sort=[("ts", -1)])
+
+    if kpis and "filter_keywords" in kpis:
+        kws = kpis.get("filter_keywords") or []
+        return [d.get("query") for d in kws if d.get("query")]
+
     coll = get_coll()
     pipeline = [
-        # Only consider documents where source.query exists and is not null
         {"$match": {"source.query": {"$exists": True, "$ne": None}}},
-        {
-            # Group by keyword and count how many videos use it
-            "$group": {
-                "_id": "$source.query",
-                "video_count": {"$sum": 1},
-            }
-        },
-        # Sort by count (desc) so most common keywords appear first
+        {"$group": {"_id": "$source.query", "video_count": {"$sum": 1}}},
         {"$sort": {"video_count": -1}},
     ]
     return [doc["_id"] for doc in coll.aggregate(pipeline)]
@@ -57,48 +133,50 @@ def load_keywords() -> List[str]:
 @st.cache_data(show_spinner=False)
 def load_regions_all() -> List[str]:
     """
-    Return ALL distinct region codes (source.regionCode) present
-    in the entire dataset, sorted alphabetically.
+    Return ALL distinct region codes for the Region filter.
 
-    This is global, not filtered by keyword – it scans all videos.
+    Prefer dashboard_kpis.filter_regions snapshot (lighter),
+    fallback to aggregate directly from videos if missing.
     """
+    db = get_db()
+    kpis = db.dashboard_kpis.find_one(sort=[("ts", -1)])
+
+    if kpis and "filter_regions" in kpis:
+        regs = kpis.get("filter_regions") or []
+        return [d.get("region") for d in regs if d.get("region")]
+
     coll = get_coll()
     pipeline = [
         {"$match": {"source.regionCode": {"$exists": True, "$ne": None}}},
         {"$group": {"_id": "$source.regionCode"}},
         {"$sort": {"_id": 1}},
     ]
-    # Filter out empty codes just in case
     return [doc["_id"] for doc in coll.aggregate(pipeline) if doc["_id"]]
 
 
 def query_videos(filters: Dict[str, Any], page: int, page_size: int):
     """
     Query videos with the given Mongo filters and pagination.
-
-    Parameters
-    ----------
-    filters : dict
-        MongoDB filter dict, built from the UI selections.
-    page : int
-        1-based page number.
-    page_size : int
-        Rows per page.
-
-    Returns
-    -------
-    (rows, total) : (List[dict], int)
-        rows  = list of simplified video records for the current page
-        total = total number of matching documents (for pagination)
     """
     coll = get_coll()
 
     total = coll.count_documents(filters)
     skip = (page - 1) * page_size
 
+    projection = {
+        "_id": 1,
+        "video_id": 1,
+        "videoId": 1,
+        "title": 1,
+        "snippet.title": 1,
+        "source.title": 1,
+        "tracking.status": 1,
+        "ml_flags.viral_v2.final.status": 1,
+        "ml_flags.viral_v2.final.behavior": 1,
+    }
+
     cursor = (
-        coll.find(filters)
-        # Sort by latest_stats_ts desc, then by _id desc for tie-breaking
+        coll.find(filters, projection=projection)
         .sort([("latest_stats_ts", -1), ("_id", -1)])
         .skip(skip)
         .limit(page_size)
@@ -109,29 +187,35 @@ def query_videos(filters: Dict[str, Any], page: int, page_size: int):
         source = doc.get("source") or {}
         snippet = doc.get("snippet") or {}
         tracking = doc.get("tracking") or {}
+        ml_flags = doc.get("ml_flags") or {}
+        viral_v2 = ml_flags.get("viral_v2") or {}
+        final_info = viral_v2.get("final") or {}
 
-        # Try different possible field names for the video id,
-        # fall back to stringified _id as a last resort.
         video_id = (
             doc.get("video_id")
             or doc.get("videoId")
             or str(doc.get("_id"))
         )
 
-        # Title may be stored in different places depending on schema version.
         title = (
             doc.get("title")
             or snippet.get("title")
             or source.get("title")
         )
 
-        status = tracking.get("status")
+        raw_status = final_info.get("status")
+        raw_behavior = final_info.get("behavior")
+
+        status = STATUS_LABELS.get(raw_status, raw_status or "Unknown / no decision")
+        behavior = BEHAVIOR_LABELS.get(raw_behavior, raw_behavior or "Unknown")
 
         rows.append(
             {
                 "video_id": video_id,
                 "title": title,
-                "status": status,
+                "status": tracking.get("status"),
+                "final_status": status,
+                "behavior": behavior,
                 "youtube_url": f"https://www.youtube.com/watch?v={video_id}",
             }
         )
@@ -142,19 +226,34 @@ def query_videos(filters: Dict[str, Any], page: int, page_size: int):
 # ============================================================
 # 2. Page layout
 # ============================================================
-
-st.set_page_config(
-    page_title="Filter Videos",
-    layout="wide",
-)
-
-st.title("🔍 Video Filter")
+st.title("🚀 Viral Filter")
 
 st.markdown(
     """
-Filter your videos by **keyword**, **region code**, and **viral flags**,
-then browse matching results with pagination.
+Use this page to explore **final viral decisions**:
+
+- Filter videos by discovery **keyword**, **region code**, and **final viral status**.
+- Inspect the **Behavior** tag to understand the temporal pattern of virality
+  (early peak, late growth, consistent, volatile, …).
 """
+)
+
+# Legend: statuses + behavior explanation
+st.markdown(
+    """
+<div class="behavior-box">
+  <div class="behavior-title">Behavior (temporal pattern from 6h → 12h → 24h)</div>
+  <div class="behavior-text">
+    <b>No signal</b> – all stages look non-viral.<br/>
+    <b>Early peak</b> – strong viral signal at 6–12h but weak/non-viral by 24h.<br/>
+    <b>Late growth</b> – quiet at 6–12h, becomes viral at 24h.<br/>
+    <b>Consistent</b> – same viral label across 6h/12h/24h (stable trajectory).<br/>
+    <b>Volatile</b> – labels change between stages (unstable / noisy pattern).<br/>
+    <b>Neutral</b> – pattern doesn’t clearly match the above cases.
+  </div>
+</div>
+""",
+    unsafe_allow_html=True,
 )
 
 st.markdown("---")
@@ -162,53 +261,55 @@ st.markdown("---")
 # ------------------------------------------------------------
 # 2.1 Filters
 # ------------------------------------------------------------
-
 st.subheader("🎛 Filters")
 
-# Keyword dropdown (sorted by video_count desc)
 keyword_list = load_keywords()
 keyword_options = ["(All)"] + keyword_list
 
-# Region dropdown (all distinct source.regionCode in dataset)
 region_list = load_regions_all()
 region_options = ["(All)"] + region_list
 
-# Viral filter options mapped to ml_flags.* fields
 viral_options = [
     "(All)",
-    "Stage: 6h candidate",
-    "Stage: 12h confirmed",
+    "Final: any viral (weak→super)",
     "Final: weak viral",
     "Final: viral",
     "Final: super viral",
-    "Final: non viral",
-    "Final: non viral (lowq)",
+]
+
+behavior_options = [
+    "(All)",
+    "No signal",
+    "Early peak",
+    "Late growth",
+    "Consistent",
+    "Volatile",
+    "Neutral / unclear",
 ]
 
 # Layout: keyword | region | viral | page size
-col_k, col_r, col_v, col_ps = st.columns([4, 3, 3, 2])
+col_k, col_r, col_v, col_bh, col_ps = st.columns([4, 3, 3, 3, 2])
 
 with col_k:
-    # Filter by discovery keyword (source.query)
-    selected_keyword = st.selectbox("Keyword (source.query)", keyword_options)
+    selected_keyword = st.selectbox("Keyword", keyword_options)
 
 with col_r:
-    # Filter by source.regionCode
-    selected_region = st.selectbox("Region Code (source.regionCode)", region_options)
+    selected_region = st.selectbox("Region Code", region_options)
 
 with col_v:
-    # Filter by viral flags stored in ml_flags
-    selected_viral = st.selectbox("Viral flag (ml_flags)", viral_options)
+    selected_viral = st.selectbox("Final viral status", viral_options)
 
 with col_ps:
-    # Control for rows per page (page size)
     page_size = st.selectbox("Rows per page", [25, 50, 100], index=1)
+    
+with col_bh:
+    selected_behavior = st.selectbox("Behavior pattern", behavior_options)
 
-# Build filters for Mongo query based on UI selections
 filters: Dict[str, Any] = {}
 has_kw = selected_keyword != "(All)"
 has_rg = selected_region != "(All)"
 has_vl = selected_viral != "(All)"
+has_bh = selected_behavior != "(All)"
 
 if has_kw:
     filters["source.query"] = selected_keyword
@@ -216,49 +317,48 @@ if has_kw:
 if has_rg:
     filters["source.regionCode"] = selected_region
 
-# Map viral filter UI -> Mongo filter on ml_flags fields
 if has_vl:
-    if selected_viral == "Stage: 6h candidate":
-        # Candidate at 6h stage (early signal)
-        filters["ml_flags.viral_v2.h6.is_candidate"] = True
+    key = "ml_flags.viral_v2.final.status"
 
-    elif selected_viral == "Stage: 12h confirmed":
-        # Confirmed viral at 12h stage
-        filters["ml_flags.viral_v2.h12.is_viral_12h"] = True
-
+    if selected_viral == "Final: any viral (weak→super)":
+        filters[key] = {"$in": ["weak_viral", "viral", "super_viral"]}
     elif selected_viral == "Final: weak viral":
-        filters["ml_flags.viral_v2.final.status"] = "weak_viral"
-
+        filters[key] = "weak_viral"
     elif selected_viral == "Final: viral":
-        filters["ml_flags.viral_v2.final.status"] = "viral"
-
+        filters[key] = "viral"
     elif selected_viral == "Final: super viral":
-        filters["ml_flags.viral_v2.final.status"] = "super_viral"
+        filters[key] = "super_viral"
 
-    elif selected_viral == "Final: non viral":
-        filters["ml_flags.viral_v2.final.status"] = "non_viral"
+if has_bh:
+    key = "ml_flags.viral_v2.final.behavior"
+    # Map UI text → stored label
+    map_behavior = {
+        "No signal": "no_signal",
+        "Early peak": "early_peak",
+        "Late growth": "late_growth",
+        "Consistent": "consistent",
+        "Volatile": "volatile",
+        "Neutral / unclear": "neutral",
+    }
+    filters[key] = map_behavior.get(selected_behavior)
 
-    elif selected_viral == "Final: non viral (lowq)":
-        filters["ml_flags.viral_v2.final.status"] = "non_viral_lowq"
 
 st.markdown("---")
 
 # ------------------------------------------------------------
 # 2.2 Video results
 # ------------------------------------------------------------
-
 st.subheader("📼 Video Results")
 
-# If there is absolutely no filter, avoid loading the whole DB.
 if not has_kw and not has_rg and not has_vl:
-    st.info("Please select at least a **keyword**, **region code**, or **viral flag** to view videos.")
+    st.info(
+        "Please select at least a **keyword**, **region code** or "
+        "**final viral status** to view videos."
+    )
 else:
-    # Pagination state kept in st.session_state["page"]
     if "page" not in st.session_state:
         st.session_state.page = 1
 
-    # filter_key tracks the current combination of filters + page_size.
-    # Whenever it changes, we reset page to 1 and rerun.
     filter_key = f"{selected_keyword}|{selected_region}|{selected_viral}|{page_size}"
     if st.session_state.get("filter_key") != filter_key:
         st.session_state.filter_key = filter_key
@@ -274,14 +374,12 @@ else:
 
         col_info, col_page = st.columns([3, 2])
         with col_info:
-            # Display total matches + current page / max page
             st.write(
                 f"Found **{total:,}** videos · "
                 f"Page {st.session_state.page}/{max_page}"
             )
 
         with col_page:
-            # Number input to jump directly to a specific page
             new_page = st.number_input(
                 "Page",
                 min_value=1,
@@ -293,21 +391,23 @@ else:
                 st.session_state.page = new_page
                 st.experimental_rerun()
 
-        # Convert result rows to DataFrame for Streamlit's dataframe widget
         df = pd.DataFrame(rows)
 
-        # Rename columns for UI
-        df = df.rename(columns={
-            "video_id": "Video ID",
-            "title": "Title",
-            "status": "Status",
-            "youtube_url": "Open",
-        })
+        df = df.rename(
+            columns={
+                "video_id": "Video ID",
+                "title": "Title",
+                "status": "Tracking status",
+                "final_status": "Final status",
+                "behavior": "Behavior",
+                "youtube_url": "Open",
+            }
+        )
 
-        # Keep only the columns we want to show
-        df = df[["Video ID", "Title", "Status", "Open"]]
+        df = df[
+            ["Video ID", "Title", "Tracking status", "Final status", "Behavior", "Open"]
+        ]
 
-        # Render the table with a clickable link column for YouTube URL
         st.dataframe(
             df,
             hide_index=True,
