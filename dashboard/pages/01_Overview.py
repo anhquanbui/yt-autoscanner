@@ -64,6 +64,11 @@ h2, h3 {
     box-shadow: 0 6px 16px rgba(15,23,42,0.12);
     transform: translateY(-1px);
 }
+.metric-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
 .metric-title {
     font-size: 0.86rem;
     font-weight: 600;
@@ -98,6 +103,11 @@ h2, h3 {
     color: #6b7280;
     margin-top: 4px;
 }
+
+/* Make the tiny archive buttons look more like icon buttons */
+button[kind="secondary"] {
+    padding: 0.25rem 0.5rem;
+}
 </style>
     """,
     unsafe_allow_html=True,
@@ -111,12 +121,6 @@ h2, h3 {
 def load_kpis() -> dict:
     """
     Load the latest dashboard KPIs from Mongo.
-
-    - Reads the most recent document from `dashboard_kpis`.
-    - Fills any missing fields with defaults from `base`.
-    - Normalizes numbers to int and formats snapshot timestamp.
-
-    Cache TTL = 10 seconds to avoid hammering Mongo on every rerender.
     """
     db = get_db()
     doc = db.dashboard_kpis.find_one(sort=[("ts", -1)])
@@ -130,11 +134,8 @@ def load_kpis() -> dict:
         "completed_age24": 0,
         "completed_removed": 0,
         "stopped_low_quality": 0,
-        # Legacy alias; will be mapped from low_quality_flagged_any if present
         "low_quality_flagged": 0,
         "snapshot_ts": None,
-
-        # Viral v2 metrics (6h / 12h / 24h + final)
         "viral2_h6_scored": 0,
         "viral2_h12_scored": 0,
         "viral2_h24_scored": 0,
@@ -148,8 +149,6 @@ def load_kpis() -> dict:
         "viral2_final_nonviral_lowq": 0,
         "viral2_final_unknown": 0,
         "viral2_final_decided": 0,
-
-        # Ad-friendly metrics (from ml_flags.ad_friendly_v1)
         "ad_friendly_total": 0,
         "non_ad_friendly_total": 0,
     }
@@ -165,7 +164,6 @@ def load_kpis() -> dict:
         except Exception:
             base[key] = 0
 
-    # Map new KPI name back to legacy alias for convenience
     if "low_quality_flagged_any" in doc:
         try:
             base["low_quality_flagged"] = int(doc.get("low_quality_flagged_any", 0))
@@ -183,13 +181,69 @@ def load_kpis() -> dict:
 
 
 # ============================================================
-# METRIC CARDS (TRACKING OVERVIEW)
+# ARCHIVE HELPERS
+# ============================================================
+def _archive_by_query(label: str, query: dict) -> int:
+    """
+    Copy matching docs from `videos` -> `videos_archived` using $merge,
+    then delete them from `videos`. Returns deleted_count.
+    """
+    db = get_db()
+    videos = db.videos
+    archived = db.videos_archived
+
+    to_archive = videos.count_documents(query)
+    if to_archive == 0:
+        return 0
+
+    pipeline = [
+        {"$match": query},
+        {
+            "$merge": {
+                "into": archived.name,
+                "on": "_id",
+                "whenMatched": "keepExisting",
+                "whenNotMatched": "insert",
+            }
+        },
+    ]
+    list(videos.aggregate(pipeline, allowDiskUse=True))
+    delete_result = videos.delete_many(query)
+    return delete_result.deleted_count
+
+
+def archive_removed_videos() -> int:
+    """
+    Archive videos counted in 'Removed / Unavailable'.
+    """
+    query = {
+        "tracking.status": {"$in": ["complete", "completed"]},
+        "tracking.stop_reason": {
+            "$regex": "(removed|unavailable)",
+            "$options": "i",
+        },
+    }
+    return _archive_by_query("removed/unavailable", query)
+
+
+def archive_stopped_lowq_videos() -> int:
+    """
+    Archive videos counted in 'Stopped (low quality)'.
+    """
+    query = {
+        "tracking.status": "stopped",
+        "tracking.stop_reason": {
+            "$regex": "^ml\\.low_quality",
+            "$options": "i",
+        },
+    }
+    return _archive_by_query("stopped_low_quality", query)
+
+
+# ============================================================
+# METRIC CARDS (TRACKING OVERVIEW) + INLINE ARCHIVE BUTTONS
 # ============================================================
 def render_simple_metrics(kpis: dict):
-    """
-    Render tracking metrics as cards.
-    (Đã bỏ card 'Tracking Completed (≥24h)', chỉ giữ 3 card.)
-    """
     total_videos = kpis.get("total_videos", 0)
 
     def pct_value(v: int) -> float:
@@ -198,48 +252,82 @@ def render_simple_metrics(kpis: dict):
     def pct_str(v: int) -> str:
         return f"{pct_value(v):.2f}%"
 
-    # Chỉ còn 3 card
-    c1, c2, c3 = st.columns(3)
-
     cards = [
-        ("Tracking active", kpis["tracking_active"]),
-        ("Removed / Unavailable", kpis["completed_removed"]),
-        ("Stopped (low quality)", kpis["stopped_low_quality"]),
+        ("Tracking active", kpis["tracking_active"], None),
+        ("Removed / Unavailable", kpis["completed_removed"], "removed"),
+        ("Stopped (low quality)", kpis["stopped_low_quality"], "lowq"),
     ]
 
-    for col, (title, value) in zip([c1, c2, c3], cards):
-        col.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="metric-title">{title}</div>
-                <div class="metric-value">{value:,}</div>
-                <div class="metric-progress-outer">
-                    <div class="metric-progress-inner" style="width:{pct_value(value):.2f}%"></div>
+    c1, c2, c3 = st.columns(3)
+
+    # style nút Archived thành chữ đỏ nhỏ, giống action
+    st.markdown(
+        """
+        <style>
+        .archived-btn-wrapper button {
+            background-color: transparent !important;
+            color: #dc2626 !important;
+            border: none !important;
+            padding: 0 0 !important;
+            font-size: 0.8rem !important;
+            font-weight: 600 !important;
+        }
+        .archived-btn-wrapper button:hover {
+            text-decoration: underline;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    for col, (title, value, archive_type) in zip([c1, c2, c3], cards):
+        with col:
+            # card chính
+            st.markdown(
+                f"""
+                <div class="metric-card">
+                    <div class="metric-title">{title}</div>
+                    <div class="metric-value">{value:,}</div>
+                    <div class="metric-progress-outer">
+                        <div class="metric-progress-inner" style="width:{pct_value(value):.2f}%"></div>
+                    </div>
+                    <div class="metric-percentage">{pct_str(value)} of all videos</div>
                 </div>
-                <div class="metric-percentage">{pct_str(value)} of all videos</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+                """,
+                unsafe_allow_html=True,
+            )
+
+            # action Archived gắn ngay dưới, căn phải
+            if archive_type is not None:
+                st.markdown(
+                    "<div class='archived-btn-wrapper' "
+                    "style='text-align:right; margin-top:4px; margin-bottom:4px;'>",
+                    unsafe_allow_html=True,
+                )
+                btn_key = f"archive_{archive_type}"
+                if st.button("Archived", key=btn_key, help="Move videos to videos_archived"):
+                    if archive_type == "removed":
+                        deleted = archive_removed_videos()
+                        msg = f"Archived & deleted {deleted:,} removed/unavailable videos."
+                    else:
+                        deleted = archive_stopped_lowq_videos()
+                        msg = f"Archived & deleted {deleted:,} low-quality videos."
+                    load_kpis.clear()
+                    st.success(msg)
+                    st.experimental_rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<div style='height: 8px'></div>", unsafe_allow_html=True)
 
 
 # ============================================================
 # METRIC CARDS (VIRAL SUMMARY)
 # ============================================================
 def render_viral_summary(kpis: dict):
-    """
-    Render 3 cards summarizing final viral_v2 decisions:
-      - Viral (weak → super) + breakdown (weak / viral / super)
-      - Non-viral
-      - Unknown / No decision
-    """
     total_videos = kpis.get("total_videos", 0)
 
-    def pct_value(v: int) -> float:
-        return (v / total_videos * 100.0) if total_videos else 0.0
-
-    def pct_str(v: int) -> str:
-        return f"{pct_value(v):.2f}%"
+    def pct(v): return (v / total_videos * 100.0) if total_videos else 0.0
+    def pct_str(v): return f"{pct(v):.2f}%"
 
     weak_viral = kpis.get("viral2_final_weak_viral", 0)
     mid_viral = kpis.get("viral2_final_viral", 0)
@@ -273,7 +361,7 @@ def render_viral_summary(kpis: dict):
   <div class="metric-value">{value:,}</div>
   {breakdown_html}
   <div class="metric-progress-outer">
-    <div class="metric-progress-inner" style="width:{pct_value(value):.2f}%"></div>
+    <div class="metric-progress-inner" style="width:{pct(value):.2f}%"></div>
   </div>
   <div class="metric-percentage">{pct_str(value)} of all videos</div>
 </div>
@@ -281,25 +369,16 @@ def render_viral_summary(kpis: dict):
         col.markdown(html, unsafe_allow_html=True)
 
 
-
 # ============================================================
 # METRIC CARDS (AD-FRIENDLY SUMMARY)
 # ============================================================
 def render_ad_friendly_summary(kpis: dict):
-    """
-    Render 2 cards summarizing ad-friendly classification from ml_flags.ad_friendly_v1:
-      - AD_FRIENDLY
-      - NON_AD_FRIENDLY
-    """
     total_videos = kpis.get("total_videos", 0)
     ad_total = kpis.get("ad_friendly_total", 0)
     non_ad_total = kpis.get("non_ad_friendly_total", 0)
 
-    def pct_value(v: int) -> float:
-        return (v / total_videos * 100.0) if total_videos else 0.0
-
-    def pct_str(v: int) -> str:
-        return f"{pct_value(v):.2f}%"
+    def pct(v): return (v / total_videos * 100.0) if total_videos else 0.0
+    def pct_str(v): return f"{pct(v):.2f}%"
 
     c1, c2 = st.columns(2)
     cards = [
@@ -314,7 +393,7 @@ def render_ad_friendly_summary(kpis: dict):
                 <div class="metric-title">{title}</div>
                 <div class="metric-value">{value:,}</div>
                 <div class="metric-progress-outer">
-                    <div class="metric-progress-inner" style="width:{pct_value(value):.2f}%"></div>
+                    <div class="metric-progress-inner" style="width:{pct(value):.2f}%"></div>
                 </div>
                 <div class="metric-percentage">{pct_str(value)} of all videos</div>
             </div>
@@ -329,7 +408,6 @@ def render_ad_friendly_summary(kpis: dict):
 st.title("📊 YouTube AutoScanner — Overview (Local)")
 st.subheader("📌 System KPIs")
 
-# Refresh button: only KPI cache is needed here
 if st.button("🔄 Refresh now"):
     load_kpis.clear()
     st.experimental_rerun()
@@ -348,13 +426,11 @@ st.markdown("---")
 st.markdown("### 🎯 Tracking & Completion Overview")
 render_simple_metrics(kpis)
 
-# spacer giữa các section
 st.markdown("<div style='height: 1.5rem'></div>", unsafe_allow_html=True)
 
 st.markdown("### 🛡️ Ad-Friendly / Brand Safety Summary")
 render_ad_friendly_summary(kpis)
 
-# spacer giữa các section
 st.markdown("<div style='height: 1.5rem'></div>", unsafe_allow_html=True)
 
 st.markdown("### 🚀 Viral Prediction Summary")

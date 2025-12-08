@@ -304,6 +304,31 @@ INDEX_MAP: Dict[str, List[dict]] = {
             "name": "viral_finalStatus_publishedAt_desc",
         },
 
+        # 🔹 NEW: Viral final status + behavior + publish time
+        # Dùng cho trang Viral Filter:
+        #   - Filter theo final.status (non_viral / weak_viral / viral / super_viral / non_viral_lowq)
+        #   - Optional filter theo final.behavior (no_signal / fast_growth / etc.)
+        #   - Sort theo snippet.publishedAt desc
+        {
+            "keys": [
+                ("ml_flags.viral_v2.final.status", 1),
+                ("ml_flags.viral_v2.final.behavior", 1),
+                ("snippet.publishedAt", -1),
+            ],
+            "name": "viral_finalStatus_behavior_publishedAt_desc",
+        },
+
+        # 🔹 NEW: Viral final decided_stage + publish time
+        # Hỗ trợ case phân tích video được quyết định ở stage nào
+        # (low_quality / 6h / 12h / 24h) + sort theo publishAt.
+        {
+            "keys": [
+                ("ml_flags.viral_v2.final.decided_stage", 1),
+                ("snippet.publishedAt", -1),
+            ],
+            "name": "viral_finalDecidedStage_publishedAt_desc",
+        },
+
         # Quick sort by latest_stats_ts (finalize / age filters).
         {
             "keys": [
