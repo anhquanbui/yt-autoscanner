@@ -1,10 +1,6 @@
 # ==========================================================
 #  YouTube AutoScanner — Development Environment
-#  (Installs ALL modules: worker + api + ML)
 # ==========================================================
-# Use this for full local development and testing.
-# For production or deployment, use the smaller
-# module-specific requirements.txt files.
 
 # --- Core runtime ---
 python-dotenv>=1.0.1
@@ -12,32 +8,29 @@ requests>=2.31.0
 typing-extensions>=4.14.1
 colorama>=0.4.6
 
-# --- Database layer ---
+# --- Database ---
 pymongo==4.8.0
-# dnspython>=2.6.1           # Only if using mongodb+srv://
 
-# --- Worker utilities ---
+# --- Worker Scheduling ---
 schedule>=1.2.0
 
 # --- Web API (FastAPI backend) ---
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
+jinja2>=3.1.4     # << REQUIRED for templates
 
 # --- Data processing ---
 pandas>=2.2.2
 numpy>=1.26.4
-pyarrow>=16.1.0             # Required for Parquet exports
-python-dateutil>=2.9.0      # (Optional but commonly required)
+pyarrow>=16.1.0
+python-dateutil>=2.9.0
 
 # --- Machine Learning ---
 scikit-learn>=1.5.0
 xgboost>=2.1.0
-joblib>=1.4.0               # Load/save ML models
-tqdm>=4.66.1                # Progress bars for long tasks
+joblib>=1.4.0
+tqdm>=4.66.1
 
-# --- Dashboard (Streamlit + Plotly) ---
+# --- Dashboard (Internal Streamlit) ---
 streamlit>=1.38.0
 plotly>=5.22.0
-
-# (Dashboard packages intentionally excluded)
-# Install Streamlit/Plotly in a separate environment if needed.

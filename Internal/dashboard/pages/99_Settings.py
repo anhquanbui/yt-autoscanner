@@ -3,11 +3,7 @@ from datetime import datetime, timezone
 import sys
 from pathlib import Path
 
-# --------------------------------------------------
-# Ensure project root is on sys.path so we can import
-# local modules such as config.db and dashboard components.
-# --------------------------------------------------
-ROOT = Path(__file__).resolve().parents[2]  # .../yt-autoscanner
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -17,7 +13,10 @@ from dashboard.components.system_status import (
     load_worker_last_runs,
     load_worker_health,
 )
+from dashboard.components.sidebar_nav import render_sidebar_nav
 
+# vẽ sidebar dùng chung
+render_sidebar_nav()
 
 # ============================================================
 # GLOBAL PAGE THEME / CSS

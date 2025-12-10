@@ -3,12 +3,30 @@ from typing import Dict, Any, List
 
 import pandas as pd
 import streamlit as st
+import sys
+from pathlib import Path
+
+# đảm bảo import được config, dashboard...
+ROOT = Path(__file__).resolve().parents[2]  # .../yt-autoscanner
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from config.db import get_db
+from dashboard.components.system_status import (
+    render_system_status,
+    load_worker_last_runs,
+    load_worker_health,
+)
 from config.env import load_env
 
 # Ensure .env is loaded exactly once
 load_env()
+
+from dashboard.components.sidebar_nav import render_sidebar_nav
+
+# Load sidebar
+render_sidebar_nav()
+
 
 # ============================================================
 # 0. Simple styling for this page

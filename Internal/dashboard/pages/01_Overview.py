@@ -3,16 +3,21 @@ from datetime import datetime, timezone
 import sys
 from pathlib import Path
 
-# --------------------------------------------------
-# Ensure project root is on sys.path so we can import
-# local modules such as config.db when running via Streamlit.
-# --------------------------------------------------
+# đảm bảo import được config, dashboard...
 ROOT = Path(__file__).resolve().parents[2]  # .../yt-autoscanner
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from config.db import get_db
+from dashboard.components.system_status import (
+    render_system_status,
+    load_worker_last_runs,
+    load_worker_health,
+)
+from dashboard.components.sidebar_nav import render_sidebar_nav
 
+# Load sidebar
+render_sidebar_nav()
 
 # ============================================================
 # GLOBAL LAYOUT & THEME
