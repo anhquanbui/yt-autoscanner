@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>{% block title %}YouTube AutoScanner{% endblock %}</title>
+
+  <!-- Tailwind CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Chart.js CDN (dùng cho các page có chart) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <!-- Custom CSS -->
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+
+  <!-- Global JS (loading, etc.) -->
+  <script src="/static/js/base.js" defer></script>
+
+  {% block head_extra %}{% endblock %}
+</head>
+<body class="bg-slate-950 text-slate-50 min-h-screen">
+
+  <!-- Global loading overlay -->
+  <div id="page-loading"
+       class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm opacity-100 transition-opacity duration-300">
+    <div class="flex flex-col items-center gap-3">
+      <div class="h-10 w-10 rounded-full border-2 border-slate-600 border-t-fuchsia-400 animate-spin"></div>
+      <div class="text-xs font-medium text-slate-300 tracking-wide">
+        Loading dashboard…
+      </div>
+    </div>
+  </div>
+
+  <div class="flex min-h-screen">
+    <!-- SIDEBAR DÙNG CHUNG -->
+    <aside class="w-60 bg-slate-900/90 border-r border-slate-800 flex flex-col">
+      <div class="px-4 py-4 border-b border-slate-800">
+        <div class="text-xs font-semibold tracking-[0.2em] text-slate-500 uppercase">
+          AUTOSCANNER
+        </div>
+        <div class="mt-1 text-sm font-semibold">
+          YouTube Engine
+        </div>
+      </div>
+
+      <nav class="flex-1 px-3 py-3 space-y-1 text-sm">
+        <!-- Overview Dashboard -->
+        <a href="/"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-800/80 text-slate-200 {% block nav_dashboard_active %}{% endblock %}">
+          <span class="text-xs">📊</span>
+          <span>Overview Dashboard</span>
+        </a>
+
+        <!-- Viral Filter -->
+        <a href="/viral-filter"
+           class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-800/80 text-slate-300 {% block nav_viral_active %}{% endblock %}">
+          <span class="text-xs">🔥</span>
+          <span>Viral Filter</span>
+        </a>
+
+        <!-- Worker Tracking -->
+        <a href="/worker-tracking"
+   class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-800/80 text-slate-300 {% block nav_worker_tracking %}{% endblock %}">
+  <span class="text-xs">🛠</span>
+  <span>Worker Tracking</span>
+</a>
+      </nav>
+
+      <div class="px-4 py-3 border-t border-slate-800 text-[0.7rem] text-slate-500">
+        v0.1 · Public Dashboard
+      </div>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main class="flex-1 relative">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>
