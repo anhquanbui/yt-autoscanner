@@ -313,6 +313,126 @@ def _ensure_utc(dt: datetime | None) -> datetime | None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
 
+# -----------------------------
+# Worker tracking helpers
+# -----------------------------
+
+DEFAULT_WORKER_INTERVAL_MIN: Dict[str, int] = {
+    # Bạn chỉnh lại cho khớp tên worker thực tế nếu khác
+    "discover_once": 10,
+    "track_once": 10,
+    "lowq_3h": 20,
+    "lowq_6h": 20,
+    "viral_6h": 30,
+    "viral_12h": 30,
+    "viral_24h": 30,
+    "viral_finalize": 30,
+    "ad_safety": 30,
+    "_default": 30,
+}
+
+
+def load_worker_status() -> List[Dict[str, Any]]:
+    """
+    Load worker heartbeat docs from MongoDB and classify status.
+
+    Expect collection `worker_heartbeats` với schema gợi ý:
+    {
+        "_id": "discover_once",
+        "worker": "discover_once",
+        "host": "vps-01",
+        "last_heartbeat": <datetime hoặc {$date: "..."} hoặc string ISO>,
+        "expected_interval_min": 10,
+        "last_error": "optional..."
+    }
+    """
+    db = get_db()
+    coll = db["worker_heartbeats"]
+    now = datetime.now(timezone.utc)
+
+    items: List[Dict[str, Any]] = []
+
+    for doc in coll.find({}):
+        name = doc.get("worker") or doc.get("name") or str(doc.get("_id") or "unknown")
+        host = doc.get("host") or "-"
+
+        raw_ts = (
+            doc.get("last_heartbeat")
+            or doc.get("last_seen")
+            or doc.get("last_run")
+        )
+
+        # Dùng _parse_iso_ts + _ensure_utc đã có sẵn trong file
+        if isinstance(raw_ts, datetime):
+            last_dt = _ensure_utc(raw_ts)
+        else:
+            last_dt = _ensure_utc(_parse_iso_ts(raw_ts)) if raw_ts else None
+
+        minutes_ago = None
+        if last_dt is not None:
+            minutes_ago = (now - last_dt).total_seconds() / 60.0
+
+        expected = doc.get("expected_interval_min") or DEFAULT_WORKER_INTERVAL_MIN.get(
+            name, DEFAULT_WORKER_INTERVAL_MIN["_default"]
+        )
+
+        # Phân loại trạng thái
+        if minutes_ago is None:
+            status_level = "unknown"
+            status_label = "Unknown"
+        elif minutes_ago <= expected * 2:
+            status_level = "ok"
+            status_label = "Healthy"
+        elif minutes_ago <= expected * 5:
+            status_level = "warning"
+            status_label = "Delayed"
+        else:
+            status_level = "error"
+            status_label = "Offline"
+
+        # Map sang icon + Tailwind class để Jinja render đẹp
+        if status_level == "ok":
+            status_icon = "✅"
+            status_class = "bg-emerald-500/15 border border-emerald-400/60 text-emerald-200"
+        elif status_level == "warning":
+            status_icon = "⚠️"
+            status_class = "bg-amber-500/15 border border-amber-400/60 text-amber-200"
+        elif status_level == "error":
+            status_icon = "⛔"
+            status_class = "bg-rose-500/15 border border-rose-400/60 text-rose-200"
+        else:
+            status_icon = "❔"
+            status_class = "bg-slate-500/15 border border-slate-400/60 text-slate-200"
+
+        if last_dt is not None:
+            last_str = last_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        else:
+            last_str = "-"
+
+        if minutes_ago is not None:
+            lag_str = f"{minutes_ago:.1f} min ago"
+        else:
+            lag_str = "-"
+
+        items.append(
+            {
+                "name": name,
+                "host": host,
+                "status_level": status_level,
+                "status_label": status_label,
+                "status_icon": status_icon,
+                "status_class": status_class,
+                "last_heartbeat_str": last_str,
+                "lag_str": lag_str,
+                "expected_interval_min": expected,
+                "last_error": doc.get("last_error") or "",
+            }
+        )
+
+    # Sort theo tên để bảng gọn
+    items.sort(key=lambda x: x["name"])
+    return items
+
 
 def get_video_analytics(video_id: str) -> Dict[str, Any] | None:
     """
@@ -636,3 +756,286 @@ async def video_analytics_page(request: Request, video_id: str):
             "data": data,
         },
     )
+
+# -------------------------------------------------
+# Worker tracking (using worker_runs collection)
+# -------------------------------------------------
+from datetime import datetime, timezone
+from typing import List, Dict, Any
+from collections import defaultdict
+
+from config.db import get_db  # dùng DB chung
+
+# Expected interval (minutes) cho từng worker
+WORKER_INTERVAL_MIN: Dict[str, int] = {
+    "discover_once": 15,
+    "track_once": 15,
+    "low_quality_autoflag_3h": 30,
+    "low_quality_autoflag_6h": 30,
+    "viral_scoring_h6": 60,
+    "viral_scoring_h12": 90,
+    "viral_scoring_h24": 180,
+    "viral_finalize": 60,
+    "ad_friendly_v1": 60,
+    "compute_dashboard_kpis": 60,
+    "_default": 60,
+}
+
+# Tên hiển thị đẹp hơn
+WORKER_DISPLAY_NAME: Dict[str, str] = {
+    "discover_once": "Discovery queue",
+    "track_once": "Tracking queue",
+    "low_quality_autoflag_3h": "Low-quality filter · 3h model",
+    "low_quality_autoflag_6h": "Low-quality filter · 6h model",
+    "viral_scoring_h6": "Viral scoring · 6h model",
+    "viral_scoring_h12": "Viral scoring · 12h model",
+    "viral_scoring_h24": "Viral scoring · 24h model",
+    "viral_finalize": "Viral finalize & label writer",
+    "ad_friendly_v1": "Ad-safety scoring · v1",
+    "compute_dashboard_kpis": "Dashboard KPIs refresher",
+}
+
+# Description ngắn cho từng worker
+WORKER_DESCRIPTION: Dict[str, str] = {
+    "discover_once": "Discover new videos from search queries and seed channels.",
+    "track_once": "Refresh statistics for active videos that are still being tracked.",
+    "low_quality_autoflag_3h": "Run the 3-hour model to auto-flag very low-potential videos.",
+    "low_quality_autoflag_6h": "Run the 6-hour model to prune low-potential videos from tracking.",
+    "viral_scoring_h6": "Score early virality using the 6-hour model.",
+    "viral_scoring_h12": "Score virality using the 12-hour model (mid-stage).",
+    "viral_scoring_h24": "Score virality using the 24-hour model (late-stage).",
+    "viral_finalize": "Combine model outputs and write the final viral label for videos.",
+    "ad_friendly_v1": "Evaluate videos for ad-friendliness using the ad-safety model.",
+    "compute_dashboard_kpis": "Aggregate KPIs for the internal dashboard.",
+}
+
+# Metric nào nên show cho từng worker (những cái nhỏ lẻ khác sẽ ẩn)
+METRIC_WHITELIST: Dict[str, List[str]] = {
+    "discover_once": ["pages", "total_found", "total_upserted", "reason", "error"],
+    "track_once": ["completed", "processed"],
+    "low_quality_autoflag_3h": ["low_3h", "total_candidates", "total_docs", "total_updated"],
+    "low_quality_autoflag_6h": ["low_6h", "total_candidates", "total_docs", "total_updated"],
+    "viral_scoring_h6": ["docs_scanned", "docs_updated"],
+    "viral_scoring_h12": ["docs_scanned", "docs_updated"],
+    "viral_scoring_h24": ["docs_scanned", "docs_updated"],
+    "viral_finalize": ["finalized", "processed"],
+    "ad_friendly_v1": ["docs_scanned", "docs_updated"],
+    "compute_dashboard_kpis": [],
+}
+
+# Đổi tên metric cho dễ đọc
+METRIC_LABEL_OVERRIDES: Dict[str, str] = {
+    "docs_scanned": "docs scanned",
+    "docs_updated": "docs updated",
+    "total_found": "found",
+    "total_upserted": "upserted",
+    "total_candidates": "candidates",
+    "total_docs": "docs",
+    "total_updated": "updated",
+    "low_3h": "low @3h",
+    "low_6h": "low @6h",
+    "completed": "completed batches",
+}
+
+
+def _group_for_worker(name: str) -> str:
+    """Human friendly group name for each worker."""
+    if name in ("discover_once", "track_once"):
+        return "Ingestion & tracking"
+    if name.startswith("low_quality_autoflag"):
+        return "Low-quality filters"
+    if name.startswith("viral_scoring"):
+        return "Viral scoring models"
+    if name == "viral_finalize":
+        return "Viral finalize"
+    if name == "ad_friendly_v1":
+        return "Ad-safety model"
+    if name == "compute_dashboard_kpis":
+        return "Dashboard KPIs"
+    return "Other workers"
+
+
+def _parse_worker_last_run(raw: Any) -> datetime | None:
+    """Handle datetime from Mongo (datetime) hoặc string ISO."""
+    if raw is None:
+        return None
+
+    if isinstance(raw, datetime):
+        dt = raw
+    elif isinstance(raw, str):
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    else:
+        return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt
+
+
+def _classify_worker_status(
+    status: str | None, minutes_ago: float | None, expected_min: int
+) -> tuple[str, str, str, str, str]:
+    """
+    Map to (level, label, icon, badge_class, card_border_class).
+
+    level ∈ {"ok","warning","error","unknown"}
+    """
+    base = (status or "").lower()
+
+    if minutes_ago is None:
+        level = "unknown"
+        label = "Unknown"
+    else:
+        # Staleness based on expected interval
+        if minutes_ago > expected_min * 4:
+            level = "error"
+            label = "Offline"
+        elif minutes_ago > expected_min * 2:
+            level = "warning"
+            label = "Delayed"
+        else:
+            # Fresh enough -> dùng status của worker
+            if "err" in base or "fail" in base:
+                level = "error"
+                label = "Error"
+            elif "run" in base and "ok" not in base:
+                level = "ok"
+                label = "Running"
+            elif "ok" in base or "success" in base or "done" in base or base == "":
+                level = "ok"
+                label = "Healthy"
+            else:
+                level = "unknown"
+                label = status or "Unknown"
+
+    if level == "ok":
+        icon = "✅"
+        badge = "bg-emerald-500/15 border border-emerald-400/60 text-emerald-100"
+        card = "border border-emerald-500/40"
+    elif level == "warning":
+        icon = "⚠️"
+        badge = "bg-amber-500/15 border border-amber-400/60 text-amber-100"
+        card = "border border-amber-500/40"
+    elif level == "error":
+        icon = "⛔"
+        badge = "bg-rose-500/15 border border-rose-400/60 text-rose-100"
+        card = "border border-rose-500/40"
+    else:
+        icon = "❔"
+        badge = "bg-slate-500/15 border border-slate-400/60 text-slate-100"
+        card = "border border-slate-700"
+
+    return level, label, icon, badge, card
+
+
+def load_worker_tracking_data() -> Dict[str, Any]:
+    """
+    Read worker_runs collection and build:
+    - workers: list of normalized worker dicts
+    - groups: list[{name, workers}]
+    - summary counts
+    """
+    db = get_db()
+    coll = db["worker_runs"]
+
+    docs = list(coll.find({}).sort("last_run", -1).limit(500))
+
+    now = datetime.now(timezone.utc)
+    seen_names: set[str] = set()
+    workers: List[Dict[str, Any]] = []
+
+    for doc in docs:
+        name = doc.get("name") or "unknown"
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+
+        last_dt = _parse_worker_last_run(doc.get("last_run"))
+        if last_dt is not None:
+            minutes_ago = (now - last_dt).total_seconds() / 60.0
+            last_run_str = last_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+            lag_str = f"{minutes_ago:.1f} min ago"
+        else:
+            minutes_ago = None
+            last_run_str = "-"
+            lag_str = "-"
+
+        expected_min = WORKER_INTERVAL_MIN.get(name, WORKER_INTERVAL_MIN["_default"])
+        level, label, icon, badge, card_border = _classify_worker_status(
+            doc.get("status"), minutes_ago, expected_min
+        )
+
+        display_name = WORKER_DISPLAY_NAME.get(name, name)
+        description = WORKER_DESCRIPTION.get(name, "")
+
+        # Lọc metrics
+        allowed_keys = METRIC_WHITELIST.get(name)
+        metrics: List[Dict[str, Any]] = []
+        for key, value in doc.items():
+            if key in ("_id", "name", "last_run", "status"):
+                continue
+            if allowed_keys is not None and key not in allowed_keys:
+                continue
+
+            label_text = METRIC_LABEL_OVERRIDES.get(key, key.replace("_", " "))
+            metrics.append(
+                {
+                    "label": label_text,
+                    "value": value,
+                }
+            )
+
+        workers.append(
+            {
+                "name": name,
+                "display_name": display_name,
+                "description": description,
+                "group": _group_for_worker(name),
+                "status_level": level,
+                "status_label": label,
+                "status_icon": icon,
+                "status_badge_class": badge,
+                "card_border_class": card_border,
+                "last_run_str": last_run_str,
+                "lag_str": lag_str,
+                "expected_interval_min": expected_min,
+                "metrics": metrics,
+            }
+        )
+
+    total = len(workers)
+    healthy = sum(1 for w in workers if w["status_level"] == "ok")
+    delayed = sum(1 for w in workers if w["status_level"] == "warning")
+    offline = sum(1 for w in workers if w["status_level"] == "error")
+    unknown = sum(1 for w in workers if w["status_level"] == "unknown")
+
+    groups_map: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for w in workers:
+        groups_map[w["group"]].append(w)
+
+    groups = []
+    for group_name in sorted(groups_map.keys()):
+        group_workers = sorted(groups_map[group_name], key=lambda x: x["display_name"])
+        groups.append({"name": group_name, "workers": group_workers})
+
+    return {
+        "workers": workers,
+        "groups": groups,
+        "total": total,
+        "healthy_count": healthy,
+        "delayed_count": delayed,
+        "offline_count": offline,
+        "unknown_count": unknown,
+    }
+
+
+@app.get("/worker-tracking", response_class=HTMLResponse)
+async def worker_tracking_page(request: Request):
+    data = load_worker_tracking_data()
+    data["request"] = request
+    return templates.TemplateResponse("worker_tracking.html", data)

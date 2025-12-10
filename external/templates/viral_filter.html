@@ -12,6 +12,17 @@
     <div class="absolute bottom-[-10rem] left-1/3 w-[32rem] h-[32rem] bg-emerald-400/25 rounded-full blur-3xl"></div>
   </div>
 
+  <!-- Loading overlay when applying filters -->
+  <div id="loading-overlay"
+       class="fixed inset-0 z-50 hidden flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+    <div class="flex flex-col items-center gap-3">
+      <div class="h-10 w-10 rounded-full border-2 border-fuchsia-400/40 border-t-fuchsia-300 animate-spin"></div>
+      <p class="text-xs text-slate-200 tracking-wide uppercase">
+        Applying filters…
+      </p>
+    </div>
+  </div>
+
   <div class="max-w-6xl mx-auto px-4 py-8 lg:py-10">
     <!-- HEADER -->
     <header class="mb-6 lg:mb-8">
@@ -36,34 +47,33 @@
 
     <!-- Behavior explanation -->
     <section class="mb-6">
-  <div class="rounded-2xl border border-slate-800 bg-slate-900/80 px-4 py-4 shadow-lg shadow-slate-900/60">
-    <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">
-      How to interpret the results
-    </h2>
-    <div class="text-[0.8rem] text-slate-300 leading-relaxed space-y-2">
-      <p>
-        <span class="font-semibold text-fuchsia-300">Final viral status</span>
-        represents the <span class="font-semibold">final decision</span> of our multi-stage prediction models
-        after evaluating early performance signals at <strong>6h</strong>, <strong>12h</strong>, and <strong>24h</strong>.
-        This helps estimate whether a video is <em>likely to take off, plateau, or decline</em>.
-      </p>
-      <p>
-        <span class="font-semibold text-sky-300">Behavior pattern</span>
-        explains <strong>how the viral signals changed over time</strong>.
-        Two videos may have the same final label, but their <em>growth pattern</em> can be dramatically different.
-      </p>
-      <p>
-        Use these two signals together:
-        <span class="font-semibold text-fuchsia-300">status = “Explosive Growth”</span> but
-        <span class="font-semibold text-sky-300">behavior = “Volatile”</span>
-        means it may go viral — or collapse.
-        Meanwhile, <span class="font-semibold text-sky-300">“Consistent”</span> indicates
-        <em>more predictable and reliable growth</em>.
-      </p>
-    </div>
-  </div>
-</section>
-
+      <div class="rounded-2xl border border-slate-800 bg-slate-900/80 px-4 py-4 shadow-lg shadow-slate-900/60">
+        <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">
+          How to interpret the results
+        </h2>
+        <div class="text-[0.8rem] text-slate-300 leading-relaxed space-y-2">
+          <p>
+            <span class="font-semibold text-fuchsia-300">Final viral status</span>
+            represents the <span class="font-semibold">final decision</span> of our multi-stage prediction models
+            after evaluating early performance signals at <strong>6h</strong>, <strong>12h</strong>, and <strong>24h</strong>.
+            This helps estimate whether a video is <em>likely to take off, plateau, or decline</em>.
+          </p>
+          <p>
+            <span class="font-semibold text-sky-300">Behavior pattern</span>
+            explains <strong>how the viral signals changed over time</strong>.
+            Two videos may have the same final label, but their <em>growth pattern</em> can be dramatically different.
+          </p>
+          <p>
+            Use these two signals together:
+            <span class="font-semibold text-fuchsia-300">status = “Explosive Growth”</span> but
+            <span class="font-semibold text-sky-300">behavior = “Volatile”</span>
+            means it may go viral — or collapse.
+            Meanwhile, <span class="font-semibold text-sky-300">“Consistent”</span> indicates
+            <em>more predictable and reliable growth</em>.
+          </p>
+        </div>
+      </div>
+    </section>
 
     <!-- Filters -->
     <section class="mb-6">
@@ -78,7 +88,8 @@
         </div>
       </div>
 
-      <form method="get" class="space-y-3">
+      <!-- added id so JS can hook into the form -->
+      <form method="get" id="filters-form" class="space-y-3">
         <div class="grid grid-cols-1 md:grid-cols-5 gap-3">
           <!-- Keyword -->
           <div class="flex flex-col gap-1">
@@ -163,6 +174,7 @@
 
         <div class="flex items-center justify-between mt-2">
           <button type="submit"
+                  id="apply-filters-btn"
                   class="inline-flex items-center gap-2 rounded-lg bg-fuchsia-500/90 px-3 py-1.5 text-xs font-semibold text-white shadow-sm shadow-fuchsia-500/40 hover:bg-fuchsia-400 transition">
             <span>Apply filters</span>
           </button>
@@ -223,73 +235,72 @@
           <div class="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/80 shadow-lg shadow-slate-900/60">
             <div class="overflow-x-auto">
               <table class="min-w-full text-xs">
-  <thead class="bg-slate-900/90 border-b border-slate-800">
-    <tr class="text-[0.7rem] text-slate-300 uppercase tracking-wide">
-      <th class="px-3 py-2 text-left">Video</th>
-      <th class="px-3 py-2 text-left">Tracking</th>
-      <th class="px-3 py-2 text-left">Final status</th>
-      <th class="px-3 py-2 text-left">Behavior</th>
-      <th class="px-3 py-2 text-left">Open</th>
-      <th class="px-3 py-2 text-left">Analytics</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for row in rows %}
-      <tr class="border-b border-slate-800/70 hover:bg-slate-900/70">
-        <!-- Video -->
-        <td class="px-3 py-2 align-top max-w-[260px]">
-          <div class="flex flex-col gap-0.5">
-            <div class="font-medium text-[0.8rem] text-slate-50 leading-tight break-words">
-              {{ row.title }}
-            </div>
-            <div class="text-[0.7rem] text-slate-400 font-mono">
-              {{ row.video_id }}
-            </div>
-          </div>
-        </td>
+                <thead class="bg-slate-900/90 border-b border-slate-800">
+                  <tr class="text-[0.7rem] text-slate-300 uppercase tracking-wide">
+                    <th class="px-3 py-2 text-left">Video</th>
+                    <th class="px-3 py-2 text-left">Tracking</th>
+                    <th class="px-3 py-2 text-left">Final status</th>
+                    <th class="px-3 py-2 text-left">Behavior</th>
+                    <th class="px-3 py-2 text-left">Open</th>
+                    <th class="px-3 py-2 text-left">Analytics</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for row in rows %}
+                    <tr class="border-b border-slate-800/70 hover:bg-slate-900/70">
+                      <!-- Video -->
+                      <td class="px-3 py-2 align-top max-w-[260px]">
+                        <div class="flex flex-col gap-0.5">
+                          <div class="font-medium text-[0.8rem] text-slate-50 leading-tight break-words">
+                            {{ row.title }}
+                          </div>
+                          <div class="text-[0.7rem] text-slate-400 font-mono">
+                            {{ row.video_id }}
+                          </div>
+                        </div>
+                      </td>
 
-        <!-- Tracking status -->
-        <td class="px-3 py-2 align-top">
-          <span class="inline-flex items-center rounded-full bg-slate-900/80 border border-slate-700 px-2 py-0.5 text-[0.7rem] text-slate-200">
-            {{ row.tracking_status }}
-          </span>
-        </td>
+                      <!-- Tracking status -->
+                      <td class="px-3 py-2 align-top">
+                        <span class="inline-flex items-center rounded-full bg-slate-900/80 border border-slate-700 px-2 py-0.5 text-[0.7rem] text-slate-200">
+                          {{ row.tracking_status }}
+                        </span>
+                      </td>
 
-        <!-- Final status -->
-        <td class="px-3 py-2 align-top whitespace-nowrap">
-          <span class="inline-flex items-center rounded-full bg-fuchsia-500/10 border border-fuchsia-500/40 px-2 py-0.5 text-[0.7rem] whitespace-nowrap">
-            {{ row.final_status }}
-          </span>
-        </td>
+                      <!-- Final status -->
+                      <td class="px-3 py-2 align-top whitespace-nowrap">
+                        <span class="inline-flex items-center rounded-full bg-fuchsia-500/10 border border-fuchsia-500/40 px-2 py-0.5 text-[0.7rem] whitespace-nowrap">
+                          {{ row.final_status }}
+                        </span>
+                      </td>
 
-        <!-- Behavior -->
-        <td class="px-3 py-2 align-top whitespace-nowrap">
-          <span class="inline-flex items-center rounded-full bg-sky-500/10 border border-sky-500/40 px-2 py-0.5 text-[0.7rem] whitespace-nowrap">
-            {{ row.behavior }}
-          </span>
-        </td>
+                      <!-- Behavior -->
+                      <td class="px-3 py-2 align-top whitespace-nowrap">
+                        <span class="inline-flex items-center rounded-full bg-sky-500/10 border border-sky-500/40 px-2 py-0.5 text-[0.7rem] whitespace-nowrap">
+                          {{ row.behavior }}
+                        </span>
+                      </td>
 
+                      <!-- Open on YouTube -->
+                      <td class="px-3 py-2 align-top">
+                        <a href="{{ row.youtube_url }}"
+                           target="_blank"
+                           class="inline-flex items-center rounded-full bg-emerald-500/15 border border-emerald-400/60 px-2 py-0.5 text-[0.7rem] text-emerald-200 hover:bg-emerald-500/25">
+                          Open
+                        </a>
+                      </td>
 
-        <!-- Open on YouTube -->
-        <td class="px-3 py-2 align-top">
-          <a href="{{ row.youtube_url }}"
-             target="_blank"
-             class="inline-flex items-center rounded-full bg-emerald-500/15 border border-emerald-400/60 px-2 py-0.5 text-[0.7rem] text-emerald-200 hover:bg-emerald-500/25">
-            Open
-          </a>
-        </td>
-
-        <!-- Analytics -->
-        <td class="px-3 py-2 align-top">
-          <a href="{{ row.analytics_url }}"
-             class="inline-flex items-center rounded-full bg-indigo-500/15 border border-indigo-400/60 px-2 py-0.5 text-[0.7rem] text-indigo-200 hover:bg-indigo-500/25">
-            Analytics
-          </a>
-        </td>
-      </tr>
-    {% endfor %}
-  </tbody>
-</table>
+                      <!-- Analytics -->
+                      <td class="px-3 py-2 align-top">
+                        <a href="{{ row.analytics_url }}"
+                           class="inline-flex items-center rounded-full bg-indigo-500/15 border border-indigo-400/60 px-2 py-0.5 text-[0.7rem] text-indigo-200 hover:bg-indigo-500/25">
+                          Analytics
+                        </a>
+                      </td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
 
             </div>
           </div>
@@ -297,5 +308,8 @@
       {% endif %}
     </section>
   </div>
+
+  <!-- Tiny script to toggle loading overlay on submit -->
+  <script src="/static/js/filter-loading.js"></script>
 
 {% endblock %}

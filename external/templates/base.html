@@ -20,7 +20,7 @@
 </head>
 <body class="bg-slate-950 text-slate-50 min-h-screen">
 
-    <!-- Global loading overlay -->
+  <!-- Global loading overlay -->
   <div id="page-loading"
        class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm opacity-100 transition-opacity duration-300">
     <div class="flex flex-col items-center gap-3">
@@ -44,19 +44,27 @@
       </div>
 
       <nav class="flex-1 px-3 py-3 space-y-1 text-sm">
-        <!-- Dashboard -->
+        <!-- Overview Dashboard -->
         <a href="/"
            class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-800/80 text-slate-200 {% block nav_dashboard_active %}{% endblock %}">
           <span class="text-xs">📊</span>
           <span>Overview Dashboard</span>
         </a>
 
-        <!-- Viral Filter (để dành cho page sau) -->
+        <!-- Viral Filter -->
         <a href="/viral-filter"
            class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-800/80 text-slate-300 {% block nav_viral_active %}{% endblock %}">
           <span class="text-xs">🔥</span>
           <span>Viral Filter</span>
         </a>
+
+        <!-- Worker Tracking -->
+        <a href="/worker-tracking"
+   class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-800/80 text-slate-300 {% block nav_worker_tracking %}{% endblock %}">
+  <span class="text-xs">🛠</span>
+  <span>Worker Tracking</span>
+</a>
+      </nav>
 
       <div class="px-4 py-3 border-t border-slate-800 text-[0.7rem] text-slate-500">
         v0.1 · Public Dashboard
