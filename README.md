@@ -331,6 +331,9 @@ sudo ln -s /home/ytscan/yt-autoscanner/systemd/yt-viral-finalize.service \
 
 sudo ln -s /home/ytscan/yt-autoscanner/systemd/yt-ad-friendly.service \
     /etc/systemd/system/yt-ad-friendly.service
+
+sudo ln -s /home/ytscan/yt-autoscanner/systemd/yt-kw-stats.service \
+    /etc/systemd/system/yt-kw-stats.service
 ```
 
 Or just one link

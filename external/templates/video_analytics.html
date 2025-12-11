@@ -4,13 +4,14 @@
 {% block nav_viral_active %}bg-slate-800/80 text-fuchsia-300{% endblock %}
 
 {% block head_extra %}
-  <!-- Chart.js + datalabels -->
+  <!-- Extra head assets for this page only: Chart.js datalabels plugin -->
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
 {% endblock %}
 
 {% block content %}
 <div class="max-w-6xl mx-auto px-4 py-8 lg:py-10">
-  <!-- Header -->
+  <!-- ========== HEADER ========== -->
+  <!-- High-level context: video title, query, region, channel, and YouTube link -->
   <header class="mb-6 lg:mb-8">
     <div class="inline-flex items-center gap-2 rounded-full border border-fuchsia-500/50 bg-slate-900/70 px-3 py-1 text-xs text-slate-200 shadow-sm shadow-fuchsia-500/30">
       <span class="text-sm">📈</span>
@@ -41,6 +42,7 @@
         </div>
       </div>
       <div class="flex gap-2">
+        <!-- External link to YouTube video -->
         <a href="{{ data.youtube_url }}"
            target="_blank"
            class="inline-flex items-center gap-2 rounded-lg bg-rose-500/90 px-3 py-1.5 text-xs font-semibold text-white shadow-sm shadow-rose-500/40 hover:bg-rose-400 transition">
@@ -50,9 +52,10 @@
     </div>
   </header>
 
-  <!-- Summary cards -->
+  <!-- ========== SUMMARY CARDS (TOP STRIP) ========== -->
+  <!-- Quick, at-a-glance metadata: age, viral/final label, ad-friendliness, tracking status -->
   <section class="mb-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-    <!-- Age -->
+    <!-- Age card -->
     <div class="rounded-2xl border border-slate-800 bg-slate-900/80 px-3 py-3">
       <div class="text-[0.7rem] uppercase tracking-wide text-slate-400 mb-1.5">Video age</div>
       <div class="text-sm font-semibold text-slate-50">
@@ -65,7 +68,7 @@
       {% endif %}
     </div>
 
-    <!-- Viral status -->
+    <!-- Final viral status card -->
     <div class="rounded-2xl border border-fuchsia-500/40 bg-fuchsia-900/20 px-3 py-3">
       <div class="text-[0.7rem] uppercase tracking-wide text-fuchsia-200 mb-1.5">Final viral status</div>
       <div class="text-sm font-semibold">
@@ -76,20 +79,20 @@
       </div>
     </div>
 
-    <!-- Ad-friendly -->
+    <!-- Ad-friendly card -->
     <div class="rounded-2xl border border-emerald-500/40 bg-emerald-900/20 px-3 py-3">
       <div class="text-[0.7rem] uppercase tracking-wide text-emerald-200 mb-1.5">Ad-friendly</div>
       <div class="text-sm font-semibold">
         {{ data.ad_label or "Unknown" }}
       </div>
-    {% if data.ad_score is not none %}
+      {% if data.ad_score is not none %}
         <div class="mt-1 text-[0.7rem] text-emerald-100/80">
-            Score: {{ '%.4f' % data.ad_score }}
+          Score: {{ '%.4f' % data.ad_score }}
         </div>
-    {% endif %}
+      {% endif %}
     </div>
 
-    <!-- Tracking -->
+    <!-- Tracking status card -->
     <div class="rounded-2xl border border-sky-500/40 bg-sky-900/20 px-3 py-3">
       <div class="text-[0.7rem] uppercase tracking-wide text-sky-200 mb-1.5">Tracking</div>
       <div class="text-sm font-semibold">
@@ -103,7 +106,8 @@
     </div>
   </section>
 
-  <!-- Totals -->
+  <!-- ========== TOTALS STRIP ========== -->
+  <!-- Final counters at the last snapshot we have -->
   <section class="mb-6">
     <div class="rounded-2xl border border-slate-800 bg-slate-900/80 px-4 py-3 flex flex-wrap gap-4 text-[0.8rem] text-slate-200">
       <div>
@@ -121,19 +125,21 @@
     </div>
   </section>
 
-  <!-- Charts -->
+  <!-- ========== CHARTS & ANALYTICS ========== -->
   <section class="mb-10">
     <h2 class="text-sm font-semibold text-slate-100 mb-2">
       📊 Time curves (views, likes, comments vs. hours since publish)
     </h2>
 
     {% if data.timeline.labels|length == 0 %}
+      <!-- Empty state when we have no stats_snapshots for this video -->
       <div class="rounded-2xl border border-dashed border-slate-700 bg-slate-900/70 px-4 py-5 text-sm text-slate-300">
         No stats_snapshots available for this video.
       </div>
     {% else %}
 
-      <!-- Views chart -->
+      <!-- Views chart card -->
+      <!-- Line chart: views vs hours since publish -->
       <div class="rounded-2xl border border-slate-800 bg-slate-950/80 shadow-lg shadow-slate-900/60 px-3 py-3 mb-6">
         <div class="flex items-center justify-between mb-1.5">
           <h3 class="text-xs font-semibold text-slate-100">Views timeline</h3>
@@ -142,10 +148,12 @@
         <div class="w-full h-64">
           <canvas id="timeChartViews"></canvas>
         </div>
+        <!-- Container for JS-generated checkpoint labels (1h/3h/6h/12h/24h, etc.) -->
         <div id="views-checkpoints" class="mt-2 text-[0.7rem]"></div>
       </div>
 
-      <!-- Likes chart -->
+      <!-- Likes chart card -->
+      <!-- Line chart: likes vs hours since publish -->
       <div class="rounded-2xl border border-slate-800 bg-slate-950/80 shadow-lg shadow-slate-900/60 px-3 py-3 mb-6">
         <div class="flex items-center justify-between mb-1.5">
           <h3 class="text-xs font-semibold text-sky-100">Likes timeline</h3>
@@ -154,10 +162,12 @@
         <div class="w-full h-64">
           <canvas id="timeChartLikes"></canvas>
         </div>
+        <!-- JS will inject human-readable checkpoint stats here -->
         <div id="likes-checkpoints" class="mt-2 text-[0.7rem]"></div>
       </div>
 
-            <!-- Comments chart -->
+      <!-- Comments chart card -->
+      <!-- Line chart: comments vs hours since publish -->
       <div class="rounded-2xl border border-slate-800 bg-slate-950/80 shadow-lg shadow-slate-900/60 px-3 py-3 mb-4">
         <div class="flex items-center justify-between mb-1.5">
           <h3 class="text-xs font-semibold text-fuchsia-100">Comments timeline</h3>
@@ -166,62 +176,82 @@
         <div class="w-full h-64">
           <canvas id="timeChartComments"></canvas>
         </div>
+        <!-- JS will inject checkpoint stats for comments here -->
         <div id="comments-checkpoints" class="mt-2 text-[0.7rem]"></div>
       </div>
 
-      <!-- Shape / model / actions analysis -->
+      <!-- Explanatory cards: shape analysis / model explanation / action suggestions -->
       <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
-        <!-- Shape analysis -->
+        <!-- Shape analysis: what kind of growth curve this video has -->
         <div class="rounded-2xl border border-slate-800 bg-slate-900/80 px-3 py-3" id="shape-analysis-card">
           <div class="text-[0.7rem] uppercase tracking-wide text-slate-400 mb-1.5">
             Shape analysis
           </div>
           <div id="shape-analysis-body" class="text-[0.8rem] text-slate-200 leading-relaxed">
-            <!-- Filled by JS -->
+            <!-- Filled by JS, based on timeline shape (spikes, slow burn, etc.) -->
           </div>
-          <div id="shape-analysis-tags" class="mt-2 flex flex-wrap gap-1 text-[0.7rem]"></div>
+          <div id="shape-analysis-tags" class="mt-2 flex flex-wrap gap-1 text-[0.7rem]">
+            <!-- JS adds tag-style chips summarizing the curve type -->
+          </div>
         </div>
 
-        <!-- Model view -->
+        <!-- Model view: explanation of why the model gave this viral/behavior label -->
         <div class="rounded-2xl border border-slate-800 bg-slate-900/80 px-3 py-3" id="model-view-card">
           <div class="text-[0.7rem] uppercase tracking-wide text-slate-400 mb-1.5">
             Why this label
           </div>
           <div id="model-view-body" class="text-[0.8rem] text-slate-200 leading-relaxed">
-            <!-- Filled by JS -->
+            <!-- Filled by JS using viralStatusLabel + behaviorLabel + checkpoints -->
           </div>
         </div>
 
-        <!-- Action suggestions -->
+        <!-- Action suggestions: what to do next with this video -->
         <div class="rounded-2xl border border-slate-800 bg-slate-900/80 px-3 py-3" id="action-suggestions-card">
           <div class="text-[0.7rem] uppercase tracking-wide text-slate-400 mb-1.5">
             Suggested actions
           </div>
           <div id="action-suggestions-body" class="text-[0.8rem] text-slate-200 leading-relaxed">
-            <!-- Filled by JS -->
+            <!-- Filled by JS: promote more, test new thumbnails, etc. -->
           </div>
         </div>
       </div>
 
-
-      <!-- Đẩy data sang JS (global object) -->
-        <script>
-        window.videoAnalyticsData = {
-          labels: {{ data.timeline.labels | tojson }},
-          views: {{ data.timeline.views | tojson }},
-          likes: {{ data.timeline.likes | tojson }},
-          comments: {{ data.timeline.comments | tojson }},
-          highlightHours: [1, 3, 6, 12, 24],
-          viralStatusLabel: {{ data.viral_status_label | tojson }},
-          behaviorLabel: {{ data.behavior_label | tojson }}
-        };
-      </script>
-
-
-      <!-- File JS xử lý vẽ chart + highlight -->
-      <script src="/static/js/video_analytics_charts.js"></script>
     {% endif %}
   </section>
 
 </div>
+{% endblock %}
+
+{% block scripts %}
+  {{ super() }}
+  {% if data.timeline.labels|length > 0 %}
+    <script>
+      // ==========================
+      // Expose analytics data to JS
+      // ==========================
+      // This global object is consumed by /static/js/video_analytics_charts.js
+      // so that the same data can be used for:
+      // - time series charts (views/likes/comments)
+      // - shape analysis / model explanation / suggested actions
+      window.videoAnalyticsData = {
+        // X-axis labels: hours since publish (as strings or numbers)
+        labels: {{ data.timeline.labels | tojson }},
+
+        // Time series values for each metric
+        views: {{ data.timeline.views | tojson }},
+        likes: {{ data.timeline.likes | tojson }},
+        comments: {{ data.timeline.comments | tojson }},
+
+        // Checkpoints (in hours) that we want to highlight in the UI
+        highlightHours: [1, 3, 6, 12, 24],
+
+        // Final classification labels from the backend
+        viralStatusLabel: {{ data.viral_status_label | tojson }},
+        behaviorLabel: {{ data.behavior_label | tojson }}
+      };
+    </script>
+
+    <!-- Main JS file that builds charts and fills analysis cards -->
+    <script src="/static/js/video_analytics_charts.js"></script>
+  {% endif %}
 {% endblock %}

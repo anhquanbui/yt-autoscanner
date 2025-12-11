@@ -3,9 +3,11 @@
 {% block title %}Keyword Analytics{% endblock %}
 {% block nav_keywords_active %}bg-slate-800/80 text-fuchsia-300{% endblock %}
 
+{# ========== MAIN CONTENT BLOCK ========== #}
 {% block content %}
 <div class="max-w-6xl mx-auto px-4 py-8 lg:py-10">
   <!-- Header -->
+  <!-- High-level description of what this page does -->
   <header class="mb-6 lg:mb-8">
     <div class="inline-flex items-center gap-2 rounded-full border border-fuchsia-500/50 bg-slate-900/70 px-3 py-1 text-xs text-slate-200 shadow-sm shadow-fuchsia-500/30">
       <span class="text-sm">🔎</span>
@@ -27,6 +29,7 @@
   </header>
 
   <!-- Filters -->
+  <!-- Top filter bar: region, minimum videos, row limit, sort by -->
   <section class="mb-6 rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-4">
     <form method="get" class="flex flex-col lg:flex-row gap-3 lg:items-end">
       <!-- Region -->
@@ -97,6 +100,7 @@
   </section>
 
   <!-- Summary cards -->
+  <!-- Quick high-level stats for current view -->
   <section class="mb-6 grid grid-cols-1 sm:grid-cols-3 gap-3">
     <div class="rounded-2xl border border-slate-800 bg-slate-900/80 px-3 py-3">
       <div class="text-[0.7rem] uppercase tracking-wide text-slate-400 mb-1.5">
@@ -149,9 +153,10 @@
     </div>
   </section>
 
-  <!-- Charts 1 & 2 -->
+  <!-- Charts 1 & 2: bar + stacked bar -->
   <section class="mb-6 space-y-4">
     {% if rows|length > 0 %}
+      <!-- Chart 1: Viral density vs Super-viral percentage -->
       <div class="rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-4">
         <div class="flex items-center justify-between mb-2">
           <h2 class="text-xs font-semibold text-slate-100">
@@ -166,12 +171,13 @@
         </div>
       </div>
 
+      <!-- Chart 2: Viral mix stacked bar (weak / viral / super) -->
       <div class="rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-4">
         <div class="flex items-center justify-between mb-2">
           <h2 class="text-xs font-semibold text-slate-100">
             Viral mix (weak / viral / super)
           </h2>
-        <span class="text-[0.65rem] text-slate-400">
+          <span class="text-[0.65rem] text-slate-400">
             Same top keywords as above
           </span>
         </div>
@@ -183,198 +189,250 @@
   </section>
 
   {# ==== TABLE + REGION PIE MODAL TOGGLE ==== #}
-<section class="mb-6">
-  {% if rows|length == 0 %}
-    <div class="rounded-2xl border border-dashed border-slate-700 bg-slate-900/70 px-4 py-5 text-sm text-slate-300">
-      No keywords found for the current filters.
-      Try lowering <span class="font-semibold">Min videos</span> or switching region.
-    </div>
-  {% else %}
-    <!-- Bảng keyword full width -->
-    <div class="rounded-2xl border border-slate-800 bg-slate-950/80 overflow-hidden">
-      <div class="overflow-x-auto">
-        <table class="min-w-full text-xs text-left text-slate-200">
-          {# THEAD giữ nguyên như file hiện tại của bạn #}
-          <thead class="bg-slate-900/90 text-[0.7rem] uppercase tracking-wide text-slate-400">
-            <!-- ... copy y nguyên phần <tr> ... trong file của bạn vào đây ... -->
-          </thead>
-
-          <tbody>
-            {% for row in rows %}
-              {% set viral_pct = (row.viral_ratio * 100) %}
-              {% set super_pct = (row.super_viral_ratio * 100) %}
-              {% set ad_safe_pct = (row.ad_safe_ratio * 100) %}
-
-              {# Heatmap class cho viral density #}
-              {% if viral_pct >= 50 %}
-                {% set viral_class = "bg-fuchsia-900/40 text-fuchsia-50" %}
-              {% elif viral_pct >= 25 %}
-                {% set viral_class = "bg-fuchsia-900/20 text-fuchsia-50" %}
-              {% elif viral_pct >= 10 %}
-                {% set viral_class = "bg-slate-900/60 text-slate-100" %}
-              {% else %}
-                {% set viral_class = "text-slate-300" %}
-              {% endif %}
-
-              {# Heatmap class cho ad-safe #}
-              {% if ad_safe_pct >= 90 %}
-                {% set ad_class = "bg-emerald-900/40 text-emerald-50" %}
-              {% elif ad_safe_pct >= 70 %}
-                {% set ad_class = "bg-emerald-900/20 text-emerald-50" %}
-              {% elif ad_safe_pct <= 40 %}
-                {% set ad_class = "bg-rose-900/30 text-rose-50" %}
-              {% else %}
-                {% set ad_class = "text-slate-200" %}
-              {% endif %}
-
-              <tr class="hover:bg-slate-900/70 js-kw-row" data-keyword="{{ row.keyword }}">
-                <td class="px-3 py-2 border-b border-slate-900 text-slate-400">
-                  {{ loop.index }}
-                </td>
-
-                <td class="px-3 py-2 border-b border-slate-900">
-                  <div class="max-w-[220px] truncate" title="{{ row.keyword }}">
-                    {{ row.keyword }}
-                  </div>
-                </td>
-
-                <td class="px-3 py-2 border-b border-slate-900 text-slate-300">
-                  {% if row.region == "ALL" %}
-                    ALL
-                  {% else %}
-                    {{ row.region }}
-                  {% endif %}
-                </td>
-
-                <td class="px-3 py-2 border-b border-slate-900 text-right">
-                  {{ row.videos_count }}
-                </td>
-
-                <td class="px-3 py-2 border-b border-slate-900 text-right">
-                  <div class="flex flex-col items-end gap-1">
-                    <span class="text-slate-300">
-                      {{ row.weak_viral }}/{{ row.viral }}/{{ row.super_viral }}
-                    </span>
-
-                    {# Sparkline mini chart: W/V/S stacked bar #}
-                    {% set total_viral = row.viral_total or 0 %}
-                    {% if total_viral > 0 %}
-                      <div class="flex w-16 h-1.5 rounded-full overflow-hidden bg-slate-800" title="Weak / Viral / Super mix">
-                        <div class="h-full bg-amber-400"
-                             style="width: {{ (row.weak_viral / total_viral * 100) | round(0) }}%;"></div>
-                        <div class="h-full bg-fuchsia-400"
-                             style="width: {{ (row.viral / total_viral * 100) | round(0) }}%;"></div>
-                        <div class="h-full bg-rose-400"
-                             style="width: {{ (row.super_viral / total_viral * 100) | round(0) }}%;"></div>
-                      </div>
-                    {% else %}
-                      <span class="text-[0.65rem] text-slate-500">No viral yet</span>
-                    {% endif %}
-                  </div>
-                </td>
-
-                <td class="px-3 py-2 border-b border-slate-900 text-right {{ viral_class }}">
-                  <span class="inline-flex items-center justify-end gap-1">
-                    <span class="font-semibold">
-                      {{ viral_pct | round(1) }}%
-                    </span>
-                    {% if viral_pct >= 50 %}
-                      <span class="text-xs">🚀</span>
-                    {% elif viral_pct >= 25 %}
-                      <span class="text-xs">📈</span>
-                    {% endif %}
-                  </span>
-                </td>
-
-                <td class="px-3 py-2 border-b border-slate-900 text-right">
-                  {{ super_pct | round(1) }}%
-                </td>
-
-                <td class="px-3 py-2 border-b border-slate-900 text-right">
-                  {{ row.avg_views | round(0) | int }}
-                </td>
-
-                <td class="px-3 py-2 border-b border-slate-900 text-right">
-                  {{ row.avg_likes | round(1) }}
-                </td>
-
-                <td class="px-3 py-2 border-b border-slate-900 text-right">
-                  {{ row.avg_comments | round(1) }}
-                </td>
-
-                <td class="px-3 py-2 border-b border-slate-900 text-right {{ ad_class }}">
-                  <span class="inline-flex items-center justify-end gap-1">
-                    <span class="font-semibold">
-                      {{ ad_safe_pct | round(1) }}%
-                    </span>
-                    {% if ad_safe_pct >= 90 %}
-                      <span class="text-xs">🟢</span>
-                    {% elif ad_safe_pct <= 40 %}
-                      <span class="text-xs">🔴</span>
-                    {% endif %}
-                  </span>
-                </td>
+  <section class="mb-6">
+    {% if rows|length == 0 %}
+      <!-- Empty state when there are no rows -->
+      <div class="rounded-2xl border border-dashed border-slate-700 bg-slate-900/70 px-4 py-5 text-sm text-slate-300">
+        No keywords found for the current filters.
+        Try lowering <span class="font-semibold">Min videos</span> or switching region.
+      </div>
+    {% else %}
+      <!-- Main keywords table (full width) -->
+      <div class="rounded-2xl border border-slate-800 bg-slate-950/80 overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="min-w-full text-xs text-left text-slate-200">
+            <!-- Table header: aligned with all metrics used in tbody -->
+            <thead class="bg-slate-900/90 text-[0.7rem] uppercase tracking-wide text-slate-400">
+              <tr>
+                <th scope="col" class="px-3 py-2 border-b border-slate-800 text-right w-10">
+                  #
+                </th>
+                <th scope="col" class="px-3 py-2 border-b border-slate-800">
+                  Keyword
+                </th>
+                <th scope="col" class="px-3 py-2 border-b border-slate-800">
+                  Region
+                </th>
+                <th scope="col" class="px-3 py-2 border-b border-slate-800 text-right">
+                  Videos
+                </th>
+                <th scope="col" class="px-3 py-2 border-b border-slate-800 text-right">
+                  Weak / Viral / Super
+                </th>
+                <th scope="col" class="px-3 py-2 border-b border-slate-800 text-right">
+                  Viral density
+                </th>
+                <th scope="col" class="px-3 py-2 border-b border-slate-800 text-right">
+                  Super-viral %
+                </th>
+                <th scope="col" class="px-3 py-2 border-b border-slate-800 text-right">
+                  Avg views (24h)
+                </th>
+                <th scope="col" class="px-3 py-2 border-b border-slate-800 text-right">
+                  Avg likes
+                </th>
+                <th scope="col" class="px-3 py-2 border-b border-slate-800 text-right">
+                  Avg comments
+                </th>
+                <th scope="col" class="px-3 py-2 border-b border-slate-800 text-right">
+                  Ad-safe ratio
+                </th>
               </tr>
-            {% endfor %}
-          </tbody>
+            </thead>
 
-        </table>
+            <tbody>
+              {% for row in rows %}
+                {% set viral_pct = (row.viral_ratio * 100) %}
+                {% set super_pct = (row.super_viral_ratio * 100) %}
+                {% set ad_safe_pct = (row.ad_safe_ratio * 100) %}
+
+                {# Heatmap class for viral density #}
+                {% if viral_pct >= 50 %}
+                  {% set viral_class = "bg-fuchsia-900/40 text-fuchsia-50" %}
+                {% elif viral_pct >= 25 %}
+                  {% set viral_class = "bg-fuchsia-900/20 text-fuchsia-50" %}
+                {% elif viral_pct >= 10 %}
+                  {% set viral_class = "bg-slate-900/60 text-slate-100" %}
+                {% else %}
+                  {% set viral_class = "text-slate-300" %}
+                {% endif %}
+
+                {# Heatmap class for ad-safe ratio #}
+                {% if ad_safe_pct >= 90 %}
+                  {% set ad_class = "bg-emerald-900/40 text-emerald-50" %}
+                {% elif ad_safe_pct >= 70 %}
+                  {% set ad_class = "bg-emerald-900/20 text-emerald-50" %}
+                {% elif ad_safe_pct <= 40 %}
+                  {% set ad_class = "bg-rose-900/30 text-rose-50" %}
+                {% else %}
+                  {% set ad_class = "text-slate-200" %}
+                {% endif %}
+
+                <!-- Clickable row: used to update region pie chart -->
+                <tr class="hover:bg-slate-900/70 js-kw-row" data-keyword="{{ row.keyword }}">
+                  <!-- Index column -->
+                  <td class="px-3 py-2 border-b border-slate-900 text-slate-400 text-right">
+                    {{ loop.index }}
+                  </td>
+
+                  <!-- Keyword text -->
+                  <td class="px-3 py-2 border-b border-slate-900">
+                    <div class="max-w-[220px] truncate" title="{{ row.keyword }}">
+                      {{ row.keyword }}
+                    </div>
+                  </td>
+
+                  <!-- Region (or ALL) -->
+                  <td class="px-3 py-2 border-b border-slate-900 text-slate-300">
+                    {% if row.region == "ALL" %}
+                      ALL
+                    {% else %}
+                      {{ row.region }}
+                    {% endif %}
+                  </td>
+
+                  <!-- Total videos -->
+                  <td class="px-3 py-2 border-b border-slate-900 text-right">
+                    {{ row.videos_count }}
+                  </td>
+
+                  <!-- Weak/Viral/Super + sparkline stacked bar -->
+                  <td class="px-3 py-2 border-b border-slate-900 text-right">
+                    <div class="flex flex-col items-end gap-1">
+                      <span class="text-slate-300">
+                        {{ row.weak_viral }}/{{ row.viral }}/{{ row.super_viral }}
+                      </span>
+
+                      {# Sparkline mini chart: W/V/S stacked bar #}
+                      {% set total_viral = row.viral_total or 0 %}
+                      {% if total_viral > 0 %}
+                        <div class="flex w-16 h-1.5 rounded-full overflow-hidden bg-slate-800" title="Weak / Viral / Super mix">
+                          <div class="h-full bg-amber-400"
+                               style="width: {{ (row.weak_viral / total_viral * 100) | round(0) }}%;"></div>
+                          <div class="h-full bg-fuchsia-400"
+                               style="width: {{ (row.viral / total_viral * 100) | round(0) }}%;"></div>
+                          <div class="h-full bg-rose-400"
+                               style="width: {{ (row.super_viral / total_viral * 100) | round(0) }}%;"></div>
+                        </div>
+                      {% else %}
+                        <span class="text-[0.65rem] text-slate-500">No viral yet</span>
+                      {% endif %}
+                    </div>
+                  </td>
+
+                  <!-- Viral density % with heatmap + icon -->
+                  <td class="px-3 py-2 border-b border-slate-900 text-right {{ viral_class }}">
+                    <span class="inline-flex items-center justify-end gap-1">
+                      <span class="font-semibold">
+                        {{ viral_pct | round(1) }}%
+                      </span>
+                      {% if viral_pct >= 50 %}
+                        <span class="text-xs">🚀</span>
+                      {% elif viral_pct >= 25 %}
+                        <span class="text-xs">📈</span>
+                      {% endif %}
+                    </span>
+                  </td>
+
+                  <!-- Super-viral ratio % -->
+                  <td class="px-3 py-2 border-b border-slate-900 text-right">
+                    {{ super_pct | round(1) }}%
+                  </td>
+
+                  <!-- Avg views -->
+                  <td class="px-3 py-2 border-b border-slate-900 text-right">
+                    {{ row.avg_views | round(0) | int }}
+                  </td>
+
+                  <!-- Avg likes -->
+                  <td class="px-3 py-2 border-b border-slate-900 text-right">
+                    {{ row.avg_likes | round(1) }}
+                  </td>
+
+                  <!-- Avg comments -->
+                  <td class="px-3 py-2 border-b border-slate-900 text-right">
+                    {{ row.avg_comments | round(1) }}
+                  </td>
+
+                  <!-- Ad-safe ratio % with heatmap + status icon -->
+                  <td class="px-3 py-2 border-b border-slate-900 text-right {{ ad_class }}">
+                    <span class="inline-flex items-center justify-end gap-1">
+                      <span class="font-semibold">
+                        {{ ad_safe_pct | round(1) }}%
+                      </span>
+                      {% if ad_safe_pct >= 90 %}
+                        <span class="text-xs">🟢</span>
+                      {% elif ad_safe_pct <= 40 %}
+                        <span class="text-xs">🔴</span>
+                      {% endif %}
+                    </span>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+
+          </table>
+        </div>
       </div>
-    </div>
 
-    <!-- Nút floating mở region pie -->
-    <button
-      id="openRegionPie"
-      type="button"
-      class="fixed bottom-4 right-4 z-40 inline-flex items-center gap-1 rounded-full bg-slate-800/90 px-3 py-2 text-[0.7rem] font-semibold text-slate-100 shadow-lg shadow-slate-900/80 hover:bg-slate-700/90"
-    >
-      <span>🍩 Region share</span>
-    </button>
+      <!-- Floating button to open region pie modal -->
+      <!-- This stays at bottom-right so user doesn't have to scroll back up -->
+      <button
+        id="openRegionPie"
+        type="button"
+        class="fixed bottom-4 right-4 z-40 inline-flex items-center gap-1 rounded-full bg-slate-800/90 px-3 py-2 text-[0.7rem] font-semibold text-slate-100 shadow-lg shadow-slate-900/80 hover:bg-slate-700/90"
+      >
+        <span>🍩 Region share</span>
+      </button>
 
-    <!-- Modal region pie -->
-    <div
-      id="regionPieModal"
-      class="fixed inset-0 z-40 hidden items-center justify-center bg-slate-950/80 backdrop-blur-sm"
-    >
-      <div class="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900/95 p-4 shadow-xl shadow-slate-950/80">
-        <div class="flex items-center justify-between mb-2">
-          <div>
-            <h2 class="text-xs font-semibold text-slate-100">
-              Region share for selected keyword
-            </h2>
-            <p class="mt-1 text-[0.7rem] text-slate-400">
-              Keyword:
-              <span id="region-pie-keyword-label" class="font-semibold text-slate-100">
-                {{ rows[0].keyword }}
-              </span>
-              — based on <span class="font-semibold">videos_count</span> in
-              <code class="text-[0.65rem] text-slate-500">keyword_stats</code>.
-            </p>
+      <!-- Modal: region pie for selected keyword -->
+      <!-- The pie content is updated when user clicks on table rows -->
+      <div
+        id="regionPieModal"
+        class="fixed inset-0 z-40 hidden items-center justify-center bg-slate-950/80 backdrop-blur-sm"
+      >
+        <div class="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900/95 p-4 shadow-xl shadow-slate-950/80">
+          <div class="flex items-center justify-between mb-2">
+            <div>
+              <h2 class="text-xs font-semibold text-slate-100">
+                Region share for selected keyword
+              </h2>
+              <p class="mt-1 text-[0.7rem] text-slate-400">
+                Keyword:
+                <span id="region-pie-keyword-label" class="font-semibold text-slate-100">
+                  {{ rows[0].keyword }}
+                </span>
+                — based on <span class="font-semibold">videos_count</span> in
+                <code class="text-[0.65rem] text-slate-500">keyword_stats</code>.
+              </p>
+            </div>
+            <button
+              id="closeRegionPie"
+              type="button"
+              class="text-slate-400 hover:text-slate-200 text-sm px-2 py-1"
+            >
+              ✕
+            </button>
           </div>
-          <button
-            id="closeRegionPie"
-            type="button"
-            class="text-slate-400 hover:text-slate-200 text-sm px-2 py-1"
-          >
-            ✕
-          </button>
-        </div>
-        <div class="mt-2 w-full h-56">
-          <canvas id="kwRegionPie"></canvas>
+          <div class="mt-2 w-full h-56">
+            <canvas id="kwRegionPie"></canvas>
+          </div>
         </div>
       </div>
-    </div>
-  {% endif %}
-</section>
+    {% endif %}
+  </section>
 
 </div>
+{% endblock %}
 
+{# ========== SCRIPTS BLOCK ========== #}
 {% block scripts %}
   {{ super() }}
   {% if rows|length > 0 %}
     <script>
       (function () {
-        // ======= DATA CHART 1 + 2 =======
+        // ======= DATA PREPARATION FOR CHART 1 & 2 =======
+        // We only visualize top 10 keywords to keep charts readable.
         const labels = [
           {% for r in rows[:10] %}
             {{ r.keyword | tojson }}{% if not loop.last %}, {% endif %}
@@ -411,7 +469,7 @@
           {% endfor %}
         ];
 
-        // ---- Chart 1: Viral density ----
+        // ---- Chart 1: Viral density vs Super-viral share ----
         const ctxDensity = document.getElementById("kwViralDensityChart");
         if (ctxDensity) {
           new Chart(ctxDensity.getContext("2d"), {
@@ -468,7 +526,7 @@
           });
         }
 
-        // ---- Chart 2: Viral mix stacked ----
+        // ---- Chart 2: Viral mix stacked bar (Weak / Viral / Super) ----
         const ctxMix = document.getElementById("kwViralMixChart");
         if (ctxMix) {
           new Chart(ctxMix.getContext("2d"), {
@@ -529,10 +587,16 @@
           });
         }
 
-        // ======= Chart 3: Region pie, clickable keyword =======
+        // ======= CHART 3: REGION PIE (Doughnut) =======
+        // This chart is updated based on the selected keyword (from table rows).
         const pieCanvas = document.getElementById("kwRegionPie");
         let regionPieChart = null;
 
+        /**
+         * Load region breakdown for a specific keyword and render/update doughnut chart.
+         * Data source: /api/keyword-region-breakdown?keyword=<keyword>
+         * Expected JSON: { regions: [...], videos: [...] }
+         */
         function loadRegionPie(keyword) {
           if (!pieCanvas || !keyword) return;
 
@@ -545,6 +609,7 @@
             .then((res) => res.json())
             .then((data) => {
               if (!data || !data.regions || data.regions.length === 0) {
+                // If no data, destroy existing chart if needed
                 if (regionPieChart) {
                   regionPieChart.destroy();
                   regionPieChart = null;
@@ -554,7 +619,8 @@
 
               const ctxPie = pieCanvas.getContext("2d");
               const pieLabels = data.regions;
-              const pieValues = data.videos; // đổi sang data.views nếu muốn theo views
+              // Use videos count as default metric; change to data.views if needed
+              const pieValues = data.videos;
 
               const dataset = {
                 label: "Videos share",
@@ -573,10 +639,12 @@
               };
 
               if (regionPieChart) {
+                // Update existing chart instance for better performance
                 regionPieChart.data.labels = pieLabels;
                 regionPieChart.data.datasets[0].data = pieValues;
                 regionPieChart.update();
               } else {
+                // Create new chart instance if it doesn't exist
                 regionPieChart = new Chart(ctxPie, {
                   type: "doughnut",
                   data: {
@@ -613,12 +681,12 @@
             });
         }
 
-        // Load lần đầu cho keyword đầu bảng
+        // Initial load: default to first keyword in table
         {% if rows|length > 0 %}
         loadRegionPie({{ rows[0].keyword | tojson }});
         {% endif %}
 
-        // Click vào row để đổi keyword cho donut
+        // Attach click handler on each table row to change active keyword for pie
         document.querySelectorAll(".js-kw-row").forEach((rowEl) => {
           rowEl.addEventListener("click", () => {
             const kw = rowEl.getAttribute("data-keyword");
@@ -627,26 +695,29 @@
             }
           });
         });
-              // ==== Toggle modal Region Pie ====
+
+        // ==== Toggle Region Pie modal (open/close) ====
         const modal = document.getElementById("regionPieModal");
         const btnOpen = document.getElementById("openRegionPie");
         const btnClose = document.getElementById("closeRegionPie");
 
+        // Open modal and center it using flex
         if (btnOpen && modal) {
           btnOpen.addEventListener("click", () => {
             modal.classList.remove("hidden");
-            modal.classList.add("flex"); // flex để center items-center justify-center
+            modal.classList.add("flex"); // flex makes items-center / justify-center work
           });
         }
 
+        // Close modal on close button or when clicking on the backdrop
         if (btnClose && modal) {
           btnClose.addEventListener("click", () => {
             modal.classList.add("hidden");
             modal.classList.remove("flex");
           });
 
-          // Click ra ngoài card thì đóng
           modal.addEventListener("click", (e) => {
+            // Clicking outside the card (on the overlay) closes the modal
             if (e.target === modal) {
               modal.classList.add("hidden");
               modal.classList.remove("flex");
@@ -656,6 +727,4 @@
       })();
     </script>
   {% endif %}
-{% endblock %}
-
 {% endblock %}
