@@ -348,13 +348,13 @@ ls -l /etc/systemd/system/yt-*.service
 ### Enable
 
 ```bash
-sudo systemctl enable yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-viral-6h yt-viral-12h yt-viral-24h yt-kpis yt-viral-finalize yt-ad-friendly
+sudo systemctl enable yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-viral-6h yt-viral-12h yt-viral-24h yt-kpis yt-viral-finalize yt-ad-friendly yt-kw-stats
 ```
 
 ### Start
 
 ```bash
-sudo systemctl start yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-viral-6h yt-viral-12h yt-viral-24h yt-kpis yt-viral-finalize yt-ad-friendly
+sudo systemctl start yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-viral-6h yt-viral-12h yt-viral-24h yt-kpis yt-viral-finalize yt-ad-friendly yt-kw-stats
 ```
 
 ### Checking status
@@ -370,18 +370,19 @@ systemctl status yt-viral-12h
 systemctl status yt-viral-24h
 systemctl status yt-viral-finalize
 systemctl status yt-ad-friendly
+systemctl status yt-kw-stats
 ```
 
 ### Stop
 
 ```bash
-sudo systemctl stop yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-viral-6h yt-viral-12h yt-viral-24h yt-kpis yt-viral-finalize yt-ad-friendly
+sudo systemctl stop yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-viral-6h yt-viral-12h yt-viral-24h yt-kpis yt-viral-finalize yt-ad-friendly yt-kw-stats
 ```
 
 ### Restart
 
 ```bash
-sudo systemctl restart yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-viral-6h yt-viral-12h yt-viral-24h yt-kpis yt-viral-finalize yt-ad-friendly
+sudo systemctl restart yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-viral-6h yt-viral-12h yt-viral-24h yt-kpis yt-viral-finalize yt-ad-friendly yt-kw-stats
 ```
 
 ### Logs
@@ -397,19 +398,20 @@ journalctl -u yt-viral-12h -f
 journalctl -u yt-viral-24h -f
 journalctl -u yt-viral-finalize -f
 journalctl -u yt-ad-friendly -f
+journalctl -u yt-kw-stats -f
 ```
 
 ### Disable
 
 ```bash
-sudo systemctl disable yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral-6h yt-viral-12h yt-viral-24h yt-viral-finalize yt-ad-friendly
+sudo systemctl disable yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral-6h yt-viral-12h yt-viral-24h yt-viral-finalize yt-ad-friendly yt-kw-stats
 ```
 
 ### Completely stop and remove
 
 ```bash
-sudo systemctl stop yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral-6h yt-viral-12h yt-viral-24h yt-viral-finalize yt-ad-friendly && \
-sudo systemctl disable yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral-6h yt-viral-12h yt-viral-24h yt-viral-finalize yt-ad-friendly
+sudo systemctl stop yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral-6h yt-viral-12h yt-viral-24h yt-viral-finalize yt-ad-friendly  && \
+sudo systemctl disable yt-auto-discover yt-auto-track yt-lowq-3h yt-lowq-6h yt-kpis yt-viral-6h yt-viral-12h yt-viral-24h yt-viral-finalize yt-ad-friendly yt-kw-stats
 ```
 
 ---

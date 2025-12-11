@@ -1,0 +1,15 @@
+[Unit]
+Description=YT Autoscanner - Keyword Stats Worker (incremental)
+After=network.target
+
+[Service]
+Type=simple
+User=ytscan
+WorkingDirectory=/home/ytscan/yt-autoscanner
+ExecStart=/bin/bash /home/ytscan/yt-autoscanner/scripts/auto_kw_stats.sh
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

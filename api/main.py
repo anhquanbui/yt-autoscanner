@@ -161,6 +161,179 @@ BEHAVIOR_OPTIONS: List[str] = [
     "Neutral / unclear",
 ]
 
+# -----------------------------
+# Keyword stats / analysis helpers
+# -----------------------------
+
+def _keyword_stats_coll():
+    db = get_db()
+    return db["keyword_stats"]
+
+
+def load_keyword_regions_for_stats() -> List[str]:
+    """
+    Lấy danh sách region từ keyword_stats (ví dụ: ALL, US, IE, JP...).
+    Đảm bảo 'ALL' nằm đầu danh sách nếu có.
+    """
+    coll = _keyword_stats_coll()
+    regions = coll.distinct("region")
+    regions = [r for r in regions if r]  # remove None / empty
+
+    # Đưa ALL lên đầu nếu có
+    regions_sorted = sorted([r for r in regions if r != "ALL"])
+    if "ALL" in regions:
+        return ["ALL"] + regions_sorted
+    return regions_sorted
+
+
+def load_keyword_stats_view(
+    region: str,
+    min_videos: int,
+    limit: int,
+    sort_by: str,
+) -> Dict[str, Any]:
+    """
+    Đọc keyword_stats và chuẩn hóa data cho trang Keywords Analysis.
+
+    - region:
+        - "ALL"  -> chỉ lấy các doc region == "ALL" (tổng hợp tất cả region)
+        - khác   -> chỉ lấy region đó
+    - min_videos: filter theo videos_count >= min_videos
+    - limit: số keyword tối đa hiển thị
+    - sort_by: tiêu chí sort ("viral_ratio", "avg_views", "videos", "super_viral_ratio", "ad_safe_ratio")
+    """
+    coll = _keyword_stats_coll()
+
+    filters: Dict[str, Any] = {}
+    if region:
+        filters["region"] = region
+
+    if min_videos > 0:
+        filters["videos_count"] = {"$gte": min_videos}
+
+    # Lấy tối đa 5000 doc rồi sort trong Python cho linh hoạt
+    max_docs = max(limit * 5, limit)
+    cursor = coll.find(filters).limit(max_docs)
+
+    rows_raw: List[Dict[str, Any]] = list(cursor)
+
+    prepared_rows: List[Dict[str, Any]] = []
+
+    total_videos_sum = 0
+    viral_ratio_sum = 0.0
+    ad_safe_ratio_sum = 0.0
+    total_ad_safe_sum = 0
+
+    for doc in rows_raw:
+        keyword = doc.get("keyword") or "(unknown)"
+        region_val = doc.get("region") or "ALL"
+
+        videos_count = int(doc.get("videos_count") or 0)
+        weak_viral = int(doc.get("weak_viral_count") or 0)
+        viral = int(doc.get("viral_count") or 0)
+        super_viral = int(doc.get("super_viral_count") or 0)
+
+        viral_total = weak_viral + viral + super_viral
+
+        views_sum = int(doc.get("views_sum_24h") or 0)
+        views_min = int(doc.get("views_min_24h") or 0)
+        views_max = int(doc.get("views_max_24h") or 0)
+
+        likes_sum = int(doc.get("likes_sum_24h") or 0)
+        likes_min = int(doc.get("likes_min_24h") or 0)
+        likes_max = int(doc.get("likes_max_24h") or 0)
+
+        comments_sum = int(doc.get("comments_sum_24h") or 0)
+        comments_min = int(doc.get("comments_min_24h") or 0)
+        comments_max = int(doc.get("comments_max_24h") or 0)
+
+        ad_safe_count = int(doc.get("ad_safe_count") or 0)
+        ad_risky_count = int(doc.get("ad_risky_count") or 0)
+
+        # Derived metrics
+        viral_ratio = (viral_total / videos_count) if videos_count > 0 else 0.0
+        super_viral_ratio = (super_viral / videos_count) if videos_count > 0 else 0.0
+        if videos_count > 0:
+            raw_ad_safe_ratio = ad_safe_count / videos_count
+            # clamp về [0, 1] để không bao giờ > 100%
+            ad_safe_ratio = min(max(raw_ad_safe_ratio, 0.0), 1.0)
+        else:
+            ad_safe_ratio = 0.0
+        ad_safe_ratio = (ad_safe_count / videos_count) if videos_count > 0 else 0.0
+
+        avg_views = (views_sum / videos_count) if videos_count > 0 else 0.0
+        avg_likes = (likes_sum / videos_count) if videos_count > 0 else 0.0
+        avg_comments = (comments_sum / videos_count) if videos_count > 0 else 0.0
+
+        total_videos_sum += videos_count
+        viral_ratio_sum += viral_ratio
+        ad_safe_ratio_sum += ad_safe_ratio
+        total_ad_safe_sum += ad_safe_count
+
+        prepared_rows.append(
+            {
+                "keyword": keyword,
+                "region": region_val,
+                "videos_count": videos_count,
+                "weak_viral": weak_viral,
+                "viral": viral,
+                "super_viral": super_viral,
+                "viral_total": viral_total,
+                "viral_ratio": viral_ratio,
+                "super_viral_ratio": super_viral_ratio,
+                "views_sum": views_sum,
+                "views_min": views_min,
+                "views_max": views_max,
+                "likes_sum": likes_sum,
+                "likes_min": likes_min,
+                "likes_max": likes_max,
+                "comments_sum": comments_sum,
+                "comments_min": comments_min,
+                "comments_max": comments_max,
+                "avg_views": avg_views,
+                "avg_likes": avg_likes,
+                "avg_comments": avg_comments,
+                "ad_safe_count": ad_safe_count,
+                "ad_risky_count": ad_risky_count,
+                "ad_safe_ratio": ad_safe_ratio,
+                "last_updated": doc.get("last_updated"),
+            }
+        )
+
+    # Sort trong Python theo metric mong muốn
+    if sort_by == "avg_views":
+        prepared_rows.sort(key=lambda r: r["avg_views"], reverse=True)
+    elif sort_by == "videos":
+        prepared_rows.sort(key=lambda r: r["videos_count"], reverse=True)
+    elif sort_by == "super_viral_ratio":
+        prepared_rows.sort(key=lambda r: r["super_viral_ratio"], reverse=True)
+    elif sort_by == "ad_safe_ratio":
+        prepared_rows.sort(key=lambda r: r["ad_safe_ratio"], reverse=True)
+    else:
+        # default: viral_ratio
+        prepared_rows.sort(key=lambda r: r["viral_ratio"], reverse=True)
+
+    # Apply limit
+    prepared_rows = prepared_rows[:limit]
+
+    total_keywords = len(prepared_rows)
+    avg_viral_ratio = (viral_ratio_sum / total_keywords) if total_keywords > 0 else 0.0
+    avg_ad_safe_ratio = (
+        (total_ad_safe_sum / total_videos_sum) if total_videos_sum > 0 else 0.0
+    )
+
+    summary = {
+        "total_keywords": total_keywords,
+        "total_videos": total_videos_sum,
+        "avg_viral_ratio": avg_viral_ratio,
+        "avg_ad_safe_ratio": avg_ad_safe_ratio,
+    }
+
+    return {
+        "rows": prepared_rows,
+        "summary": summary,
+    }
+
 
 def _videos_coll():
     db = get_db()
@@ -757,6 +930,44 @@ async def video_analytics_page(request: Request, video_id: str):
         },
     )
 
+@app.get("/keywords-analysis", response_class=HTMLResponse)
+async def keywords_analysis_page(
+    request: Request,
+    region: str = Query("ALL"),
+    min_videos: int = Query(10, ge=0),
+    sort_by: str = Query("viral_ratio"),
+    limit: int = Query(50, ge=10, le=200),
+):
+    """
+    Trang Keywords Analysis: phân tích keyword dựa trên collection keyword_stats
+    (all_time, per region).
+    """
+    regions = load_keyword_regions_for_stats()
+
+    # Nếu region user chọn không tồn tại (vd gõ tay), fallback về ALL nếu có
+    if region not in regions and regions:
+        region = "ALL" if "ALL" in regions else regions[0]
+
+    data = load_keyword_stats_view(
+        region=region,
+        min_videos=min_videos,
+        limit=limit,
+        sort_by=sort_by,
+    )
+
+    context = {
+        "request": request,
+        "regions": regions,
+        "selected_region": region,
+        "min_videos": min_videos,
+        "sort_by": sort_by,
+        "limit": limit,
+        "rows": data["rows"],
+        "summary": data["summary"],
+    }
+
+    return templates.TemplateResponse("keyword_analysis.html", context)
+
 # -------------------------------------------------
 # Worker tracking (using worker_runs collection)
 # -------------------------------------------------
@@ -778,6 +989,7 @@ WORKER_INTERVAL_MIN: Dict[str, int] = {
     "viral_finalize": 60,
     "ad_friendly_v1": 60,
     "compute_dashboard_kpis": 60,
+    "keyword_stats_all_time": 1,
     "_default": 60,
 }
 
@@ -793,6 +1005,7 @@ WORKER_DISPLAY_NAME: Dict[str, str] = {
     "viral_finalize": "Viral finalize & label writer",
     "ad_friendly_v1": "Ad-safety scoring · v1",
     "compute_dashboard_kpis": "Dashboard KPIs refresher",
+    "keyword_stats_all_time": "Keyword Stats · all-time (incremental)",
 }
 
 # Description ngắn cho từng worker
@@ -807,6 +1020,10 @@ WORKER_DESCRIPTION: Dict[str, str] = {
     "viral_finalize": "Combine model outputs and write the final viral label for videos.",
     "ad_friendly_v1": "Evaluate videos for ad-friendliness using the ad-safety model.",
     "compute_dashboard_kpis": "Aggregate KPIs for the internal dashboard.",
+    "keyword_stats_all_time": (
+        "Aggregate per-keyword 24h metrics, viral labels and region stats "
+        "into the `keyword_stats` collection."
+    ),
 }
 
 # Metric nào nên show cho từng worker (những cái nhỏ lẻ khác sẽ ẩn)
@@ -821,6 +1038,11 @@ METRIC_WHITELIST: Dict[str, List[str]] = {
     "viral_finalize": ["finalized", "processed"],
     "ad_friendly_v1": ["docs_scanned", "docs_updated"],
     "compute_dashboard_kpis": [],
+    "keyword_stats_all_time": [          
+        "videos_processed",
+        "keywords_updated",
+        "duration_sec",
+    ],
 }
 
 # Đổi tên metric cho dễ đọc
@@ -852,6 +1074,8 @@ def _group_for_worker(name: str) -> str:
         return "Ad-safety model"
     if name == "compute_dashboard_kpis":
         return "Dashboard KPIs"
+    if name == "keyword_stats_all_time":
+        return "Aggregations & Stats"
     return "Other workers"
 
 
@@ -1039,3 +1263,63 @@ async def worker_tracking_page(request: Request):
     data = load_worker_tracking_data()
     data["request"] = request
     return templates.TemplateResponse("worker_tracking.html", data)
+
+from typing import Dict, Any, List
+# ...
+from fastapi import FastAPI, Request, Query, HTTPException
+from fastapi.responses import HTMLResponse
+# KHÔNG cần JSONResponse, FastAPI tự trả JSON từ dict
+# ...
+
+from config.db import get_db
+
+@app.get("/api/keyword-region-breakdown")
+async def keyword_region_breakdown(keyword: str):
+    """
+    Trả về breakdown theo region cho 1 keyword.
+    Dùng dữ liệu từ collection 'keyword_stats':
+      - Bỏ qua region == 'ALL'
+      - Dùng videos_count làm trọng số (có thể đổi sang views_sum_24h nếu thích)
+    """
+    db = get_db()
+    coll = db["keyword_stats"]
+
+    docs = list(
+        coll.find(
+            {
+                "keyword": keyword,
+                "region": {"$ne": "ALL"},
+            },
+            {
+                "_id": 0,
+                "region": 1,
+                "videos_count": 1,
+                "views_sum_24h": 1,
+            },
+        )
+    )
+
+    # Không có dữ liệu thì trả rỗng
+    if not docs:
+        return {
+            "keyword": keyword,
+            "regions": [],
+            "videos": [],
+            "views": [],
+        }
+
+    regions: List[str] = []
+    videos: List[int] = []
+    views: List[int] = []
+
+    for d in docs:
+        regions.append(d.get("region") or "UNK")
+        videos.append(int(d.get("videos_count") or 0))
+        views.append(int(d.get("views_sum_24h") or 0))
+
+    return {
+        "keyword": keyword,
+        "regions": regions,
+        "videos": videos,
+        "views": views,
+    }

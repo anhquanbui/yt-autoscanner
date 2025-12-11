@@ -4,8 +4,8 @@
 {% block nav_viral_active %}bg-slate-800/80 text-fuchsia-300{% endblock %}
 
 {% block head_extra %}
-  <!-- Chart.js CDN -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Chart.js + datalabels -->
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
 {% endblock %}
 
 {% block content %}
@@ -121,192 +121,107 @@
     </div>
   </section>
 
-    <!-- Charts -->
-<section class="mb-10">
-  <h2 class="text-sm font-semibold text-slate-100 mb-2">
-    📊 Time curves (views, likes, comments vs. hours since publish)
-  </h2>
+  <!-- Charts -->
+  <section class="mb-10">
+    <h2 class="text-sm font-semibold text-slate-100 mb-2">
+      📊 Time curves (views, likes, comments vs. hours since publish)
+    </h2>
 
-  {% if data.timeline.labels|length == 0 %}
-    <div class="rounded-2xl border border-dashed border-slate-700 bg-slate-900/70 px-4 py-5 text-sm text-slate-300">
-      No stats_snapshots available for this video.
-    </div>
-  {% else %}
-
-    <!-- Views chart -->
-    <div class="rounded-2xl border border-slate-800 bg-slate-950/80 shadow-lg shadow-slate-900/60 px-3 py-3 mb-6">
-      <div class="flex items-center justify-between mb-1.5">
-        <h3 class="text-xs font-semibold text-slate-100">Views timeline</h3>
-        <span class="text-[0.65rem] text-slate-400">Count vs. hours</span>
+    {% if data.timeline.labels|length == 0 %}
+      <div class="rounded-2xl border border-dashed border-slate-700 bg-slate-900/70 px-4 py-5 text-sm text-slate-300">
+        No stats_snapshots available for this video.
       </div>
-      <div class="w-full h-64">
-        <canvas id="timeChartViews"></canvas>
+    {% else %}
+
+      <!-- Views chart -->
+      <div class="rounded-2xl border border-slate-800 bg-slate-950/80 shadow-lg shadow-slate-900/60 px-3 py-3 mb-6">
+        <div class="flex items-center justify-between mb-1.5">
+          <h3 class="text-xs font-semibold text-slate-100">Views timeline</h3>
+          <span class="text-[0.65rem] text-slate-400">Count vs. hours</span>
+        </div>
+        <div class="w-full h-64">
+          <canvas id="timeChartViews"></canvas>
+        </div>
+        <div id="views-checkpoints" class="mt-2 text-[0.7rem]"></div>
       </div>
-      <div id="views-checkpoints" class="mt-2 text-[0.7rem]"></div>
-    </div>
 
-    <!-- Likes chart -->
-    <div class="rounded-2xl border border-slate-800 bg-slate-950/80 shadow-lg shadow-slate-900/60 px-3 py-3 mb-6">
-      <div class="flex items-center justify-between mb-1.5">
-        <h3 class="text-xs font-semibold text-sky-100">Likes timeline</h3>
-        <span class="text-[0.65rem] text-slate-400">Count vs. hours</span>
+      <!-- Likes chart -->
+      <div class="rounded-2xl border border-slate-800 bg-slate-950/80 shadow-lg shadow-slate-900/60 px-3 py-3 mb-6">
+        <div class="flex items-center justify-between mb-1.5">
+          <h3 class="text-xs font-semibold text-sky-100">Likes timeline</h3>
+          <span class="text-[0.65rem] text-slate-400">Count vs. hours</span>
+        </div>
+        <div class="w-full h-64">
+          <canvas id="timeChartLikes"></canvas>
+        </div>
+        <div id="likes-checkpoints" class="mt-2 text-[0.7rem]"></div>
       </div>
-      <div class="w-full h-64">
-        <canvas id="timeChartLikes"></canvas>
+
+            <!-- Comments chart -->
+      <div class="rounded-2xl border border-slate-800 bg-slate-950/80 shadow-lg shadow-slate-900/60 px-3 py-3 mb-4">
+        <div class="flex items-center justify-between mb-1.5">
+          <h3 class="text-xs font-semibold text-fuchsia-100">Comments timeline</h3>
+          <span class="text-[0.65rem] text-slate-400">Count vs. hours</span>
+        </div>
+        <div class="w-full h-64">
+          <canvas id="timeChartComments"></canvas>
+        </div>
+        <div id="comments-checkpoints" class="mt-2 text-[0.7rem]"></div>
       </div>
-      <div id="likes-checkpoints" class="mt-2 text-[0.7rem]"></div>
-    </div>
 
-    <!-- Comments chart -->
-    <div class="rounded-2xl border border-slate-800 bg-slate-950/80 shadow-lg shadow-slate-900/60 px-3 py-3 mb-4">
-      <div class="flex items-center justify-between mb-1.5">
-        <h3 class="text-xs font-semibold text-fuchsia-100">Comments timeline</h3>
-        <span class="text-[0.65rem] text-slate-400">Count vs. hours</span>
+      <!-- Shape / model / actions analysis -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+        <!-- Shape analysis -->
+        <div class="rounded-2xl border border-slate-800 bg-slate-900/80 px-3 py-3" id="shape-analysis-card">
+          <div class="text-[0.7rem] uppercase tracking-wide text-slate-400 mb-1.5">
+            Shape analysis
+          </div>
+          <div id="shape-analysis-body" class="text-[0.8rem] text-slate-200 leading-relaxed">
+            <!-- Filled by JS -->
+          </div>
+          <div id="shape-analysis-tags" class="mt-2 flex flex-wrap gap-1 text-[0.7rem]"></div>
+        </div>
+
+        <!-- Model view -->
+        <div class="rounded-2xl border border-slate-800 bg-slate-900/80 px-3 py-3" id="model-view-card">
+          <div class="text-[0.7rem] uppercase tracking-wide text-slate-400 mb-1.5">
+            Why this label
+          </div>
+          <div id="model-view-body" class="text-[0.8rem] text-slate-200 leading-relaxed">
+            <!-- Filled by JS -->
+          </div>
+        </div>
+
+        <!-- Action suggestions -->
+        <div class="rounded-2xl border border-slate-800 bg-slate-900/80 px-3 py-3" id="action-suggestions-card">
+          <div class="text-[0.7rem] uppercase tracking-wide text-slate-400 mb-1.5">
+            Suggested actions
+          </div>
+          <div id="action-suggestions-body" class="text-[0.8rem] text-slate-200 leading-relaxed">
+            <!-- Filled by JS -->
+          </div>
+        </div>
       </div>
-      <div class="w-full h-64">
-        <canvas id="timeChartComments"></canvas>
-      </div>
-      <div id="comments-checkpoints" class="mt-2 text-[0.7rem]"></div>
-    </div>
 
 
-    <script>
-      (function () {
-        const labels = [
-          {% for x in data.timeline.labels %}
-            {{ x }}{% if not loop.last %}, {% endif %}
-          {% endfor %}
-        ];
+      <!-- Đẩy data sang JS (global object) -->
+        <script>
+        window.videoAnalyticsData = {
+          labels: {{ data.timeline.labels | tojson }},
+          views: {{ data.timeline.views | tojson }},
+          likes: {{ data.timeline.likes | tojson }},
+          comments: {{ data.timeline.comments | tojson }},
+          highlightHours: [1, 3, 6, 12, 24],
+          viralStatusLabel: {{ data.viral_status_label | tojson }},
+          behaviorLabel: {{ data.behavior_label | tojson }}
+        };
+      </script>
 
-        const views = [
-          {% for x in data.timeline.views %}
-            {{ x }}{% if not loop.last %}, {% endif %}
-          {% endfor %}
-        ];
 
-        const likes = [
-          {% for x in data.timeline.likes %}
-            {{ x }}{% if not loop.last %}, {% endif %}
-          {% endfor %}
-        ];
-
-        const comments = [
-          {% for x in data.timeline.comments %}
-            {{ x }}{% if not loop.last %}, {% endif %}
-          {% endfor %}
-        ];
-
-        const highlightHours = [1, 3, 6, 12, 24];
-
-        function getClosestIndex(labels, target) {
-          let bestIdx = null;
-          let bestDiff = Infinity;
-          labels.forEach((val, idx) => {
-            const diff = Math.abs(val - target);
-            if (diff < bestDiff) {
-              bestDiff = diff;
-              bestIdx = idx;
-            }
-          });
-          return bestDiff <= 0.75 ? bestIdx : null;
-        }
-
-        function getHighlightIndexSet(labels, targets) {
-          const s = new Set();
-          targets.forEach((h) => {
-            const idx = getClosestIndex(labels, h);
-            if (idx !== null) s.add(idx);
-          });
-          return s;
-        }
-
-        const highlightIndexSet = getHighlightIndexSet(labels, highlightHours);
-
-        function createLineChart(ctx, label, data, borderColor, bgColor) {
-          return new Chart(ctx, {
-            type: 'line',
-            data: {
-              labels: labels,
-              datasets: [
-                {
-                  label: label,
-                  data: data,
-                  borderColor: borderColor,
-                  backgroundColor: bgColor,
-                  borderWidth: 2,
-                  tension: 0.25,
-                  pointRadius: (context) => highlightIndexSet.has(context.dataIndex) ? 4 : 1.5,
-                  pointHoverRadius: (context) => highlightIndexSet.has(context.dataIndex) ? 6 : 3,
-                },
-              ],
-            },
-            options: {
-              responsive: true,
-              maintainAspectRatio: false,
-              scales: {
-                x: {
-                  title: { display: true, text: 'Hours since publish', color: '#cbd5f5' },
-                  ticks: { color: '#9ca3af' },
-                  grid: { color: 'rgba(55, 65, 81, 0.6)' },
-                },
-                y: {
-                  title: { display: true, text: 'Count', color: '#cbd5f5' },
-                  ticks: { color: '#9ca3af' },
-                  grid: { color: 'rgba(55, 65, 81, 0.6)' },
-                },
-              },
-              plugins: {
-                legend: { labels: { color: '#e5e7eb' } },
-                tooltip: {
-                  callbacks: {
-                    title: (items) => items.length ? `${items[0].label}h since publish` : '',
-                  },
-                },
-              },
-            },
-          });
-        }
-
-        const ctxViews = document.getElementById('timeChartViews').getContext('2d');
-        const ctxLikes = document.getElementById('timeChartLikes').getContext('2d');
-        const ctxComments = document.getElementById('timeChartComments').getContext('2d');
-
-        createLineChart(ctxViews, 'Views', views, 'rgba(248, 250, 252, 0.9)', 'rgba(248, 250, 252, 0.1)');
-        createLineChart(ctxLikes, 'Likes', likes, 'rgba(56, 189, 248, 0.9)', 'rgba(56, 189, 248, 0.15)');
-        createLineChart(ctxComments, 'Comments', comments, 'rgba(244, 114, 182, 0.9)', 'rgba(244, 114, 182, 0.15)');
-
-        function buildCheckpoints(labels, values, targets, containerId, labelName) {
-          const container = document.getElementById(containerId);
-          if (!container) return;
-
-          const chips = [];
-          targets.forEach((h) => {
-            const idx = getClosestIndex(labels, h);
-            if (idx !== null) {
-              const val = values[idx];
-              chips.push(
-                `<span class="inline-flex items-center rounded-full bg-slate-900/80 border border-slate-700 px-2 py-[2px] mr-1 mb-1">
-                  <span class="text-[0.65rem] text-slate-400 mr-1">${h}h</span>
-                  <span class="text-[0.7rem] font-semibold text-slate-100">${val.toLocaleString()}</span>
-                </span>`
-              );
-            }
-          });
-
-          container.innerHTML = chips.length
-            ? `<div class="text-[0.7rem] text-slate-300 flex flex-wrap items-center gap-1">
-                 <span class="text-slate-400 mr-1">${labelName} checkpoints:</span>${chips.join('')}
-               </div>`
-            : `<div class="text-[0.7rem] text-slate-500">No checkpoints near 1h / 3h / 6h / 12h / 24h.</div>`;
-        }
-
-        buildCheckpoints(labels, views, highlightHours, 'views-checkpoints', 'Views');
-        buildCheckpoints(labels, likes, highlightHours, 'likes-checkpoints', 'Likes');
-        buildCheckpoints(labels, comments, highlightHours, 'comments-checkpoints', 'Comments');
-      })();
-    </script>
-  {% endif %}
-</section>
+      <!-- File JS xử lý vẽ chart + highlight -->
+      <script src="/static/js/video_analytics_charts.js"></script>
+    {% endif %}
+  </section>
 
 </div>
 {% endblock %}
