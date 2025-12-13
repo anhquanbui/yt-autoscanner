@@ -43,6 +43,10 @@ $Viral12hIntervalSeconds      = 1800    # viral_12h every 30 minutes
 $Viral24hIntervalSeconds      = 1800    # viral_24h every 30 minutes
 $ViralFinalizeIntervalSeconds = 3600    # viral_finalize every 60 minutes
 
+# --- NEW: ad-friendly + keyword-stats intervals ---
+$AdFriendlyIntervalSeconds    = 45      # ad_friendly_worker every 45 seconds
+$KwStatsIntervalSeconds       = 45      # keyword_stats incremental every 45 seconds
+
 $TickSleepSeconds             = 5       # main loop tick sleep
 
 # =======================
@@ -207,11 +211,12 @@ function Get-WorkerModule([string]$ScriptRelPath) {
         "low_quality_3h_worker.py"   { return "worker.low_quality_3h_worker" }
         "low_quality_6h_worker.py"   { return "worker.low_quality_6h_worker" }
         "compute_dashboard_kpis.py"  { return "worker.compute_dashboard_kpis" }
-        # --- NEW viral workers ---
         "viral_6h.py"                { return "worker.viral_6h" }
         "viral_12h.py"               { return "worker.viral_12h" }
         "viral_24h.py"               { return "worker.viral_24h" }
         "viral_finalize.py"          { return "worker.viral_finalize" }
+        "ad_friendly_worker.py"       { return "worker.ad_friendly_worker" }
+        "keyword_stats.py"            { return "worker.keyword_stats" }
         default                      { return $null }
     }
 }
@@ -257,6 +262,8 @@ function Run-ForegroundStep([string]$Name, [string]$ScriptRelPath) {
 $Global:LowQ3hProcess        = $null
 $Global:LowQ6hProcess        = $null
 $Global:KpiProcess           = $null
+$Global:AdFriendlyProcess    = $null
+$Global:KwStatsProcess       = $null
 
 # --- NEW: viral worker process handles ---
 $Global:Viral6hProcess       = $null
@@ -318,13 +325,15 @@ function Ensure-BackgroundWorker {
 Write-Log ("Starting combined runner (discover + track + low_quality_3h + low_quality_6h + KPI + viral_6h/12h/24h + viral_finalize). " +
           "Intervals: discover={0}s, track={1}s, low_quality_3h={2}s, low_quality_6h={3}s, kpi={4}s, viral6h={5}s, viral12h={6}s, viral24h={7}s, viralFinalize={8}s" -f `
           $DiscoverIntervalSeconds, $TrackIntervalSeconds, $LowQ3hIntervalSeconds, $LowQ6hIntervalSeconds, $KpiIntervalSeconds, `
-          $Viral6hIntervalSeconds, $Viral12hIntervalSeconds, $Viral24hIntervalSeconds, $ViralFinalizeIntervalSeconds)
+          $Viral6hIntervalSeconds, $Viral12hIntervalSeconds, $Viral24hIntervalSeconds, $ViralFinalizeIntervalSeconds, $AdFriendlyIntervalSeconds, $KwStatsIntervalSeconds)
 
 $NextDiscover      = Get-Date
 $NextTrack         = Get-Date
 $NextLowQ3h        = Get-Date
 $NextLowQ6h        = Get-Date
 $NextKpi           = Get-Date
+$NextAdFriendly   = Get-Date
+$NextKwStats      = Get-Date
 
 # --- NEW viral schedulers ---
 $NextViral6h       = Get-Date
@@ -401,6 +410,25 @@ while ($true) {
                                 -ExtraArgs "--only-missing"
         $NextViralFinalize = $now.AddSeconds($ViralFinalizeIntervalSeconds)
     }
+
+        # ---- NEW: ad_friendly worker (background) ----
+    if ($now -ge $NextAdFriendly) {
+        Ensure-BackgroundWorker -Name "ad_friendly" `
+                                -ScriptRelPath "ad_friendly_worker.py" `
+                                -ProcVar ([ref]$Global:AdFriendlyProcess) `
+                                -ExtraArgs "--only-missing --no-collection-log"
+        $NextAdFriendly = $now.AddSeconds($AdFriendlyIntervalSeconds)
+    }
+
+    # ---- NEW: keyword_stats incremental (background) ----
+    if ($now -ge $NextKwStats) {
+        Ensure-BackgroundWorker -Name "keyword_stats_incremental" `
+                                -ScriptRelPath "keyword_stats.py" `
+                                -ProcVar ([ref]$Global:KwStatsProcess) `
+                                -ExtraArgs "--mode incremental --limit 500"
+        $NextKwStats = $now.AddSeconds($KwStatsIntervalSeconds)
+    }
+
 
     Start-Sleep -Seconds $TickSleepSeconds
 }
