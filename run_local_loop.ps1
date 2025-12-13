@@ -1,31 +1,3 @@
-<#
-  run_local_loop.ps1 (v8.0) — Local runner for:
-    - worker.discover_once           (foreground, đúng tiến độ)
-    - worker.track_once              (foreground, đúng tiến độ)
-    - worker.low_quality_3h_worker   (background, không block vòng lặp, --only-missing)
-    - worker.low_quality_6h_worker   (background, không block vòng lặp, --only-missing)
-    - worker.compute_dashboard_kpis  (background, không block vòng lặp)
-
-    --- NEW (viral v2) ---
-    - worker.viral_6h                (background, không block, only-missing)
-    - worker.viral_12h               (background, không block, only-missing)
-    - worker.viral_24h               (background, không block, only-missing)
-    - worker.viral_finalize          (background, không block, --only-missing)
-
-  - discover_once: quét video mới
-  - track_once: cập nhật stats cho video đang tracking
-  - low_quality_3h_worker: chấm điểm model 3h cho video 3h–<6h
-  - low_quality_6h_worker: chấm điểm model 6h cho video ≥6h
-  - compute_dashboard_kpis: snapshot KPI cho dashboard Overview
-
-  - viral_6h: chấm điểm viral 6h (ml_flags.viral_v2.h6, only-missing)
-  - viral_12h: chấm điểm viral 12h (ml_flags.viral_v2.h12, only-missing)
-  - viral_24h: validator viral 24h (ml_flags.viral_v2.h24_validation, only-missing)
-  - viral_finalize: quyết định ml_flags.viral_v2.final.* dựa trên h6/h12/h24 + lowq
-
-  PowerShell 5 compatible (no '??' operator).
-#>
-
 # =======================
 # 🔁 Intervals (seconds)
 # =======================
@@ -381,7 +353,6 @@ while ($true) {
 
     # ---- NEW: viral background workers ----
     if ($now -ge $NextViral6h) {
-        # worker.viral_6h tự default only-missing, nên không cần ExtraArgs
         Ensure-BackgroundWorker -Name "viral_6h" `
                                 -ScriptRelPath "viral_6h.py" `
                                 -ProcVar ([ref]$Global:Viral6hProcess)
