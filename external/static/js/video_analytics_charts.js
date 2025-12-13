@@ -4,7 +4,7 @@ window.addEventListener("DOMContentLoaded", function () {
   const d = window.videoAnalyticsData;
   if (!d) return;
 
-  // Ép kiểu labels về số cho chắc
+  // Force numeric labels for safety
   const labels = (d.labels || []).map((x) => Number(x));
   const views = d.views || [];
   const likes = d.likes || [];
@@ -15,7 +15,7 @@ window.addEventListener("DOMContentLoaded", function () {
 
   if (!labels.length) return;
 
-  // ---------- Helpers chung ----------
+  // ---------- Shared helpers ----------
 
   function getClosestIndex(arr, target) {
     let bestIdx = null;
@@ -39,7 +39,7 @@ window.addEventListener("DOMContentLoaded", function () {
     return s;
   }
 
-  // ---------- Chart: line + số trên mốc ----------
+  // ---------- Chart: line + value labels at checkpoints ----------
 
   function createLineChart(config) {
     const {
@@ -58,7 +58,7 @@ window.addEventListener("DOMContentLoaded", function () {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
 
-    // Plugin vẽ số ngay trên các điểm highlight
+    // Plugin: draw values above highlighted points
     const highlightLabelsPlugin = {
       id: "highlightLabels_" + canvasId,
       afterDatasetsDraw(chart) {
@@ -153,9 +153,7 @@ window.addEventListener("DOMContentLoaded", function () {
           tooltip: {
             callbacks: {
               title: (items) =>
-                items.length
-                  ? `${items[0].label}h since publish`
-                  : "",
+                items.length ? `${items[0].label}h since publish` : "",
               label: (ctx) =>
                 `${seriesLabel}: ${ctx.parsed.y.toLocaleString()}`,
             },
@@ -199,7 +197,7 @@ window.addEventListener("DOMContentLoaded", function () {
            </div>`;
   }
 
-  // ---------- Shape metrics ----------
+  // ---------- Shape metrics (growth distribution) ----------
 
   function computeShapeMetrics(labels, values) {
     const buckets = [
@@ -233,38 +231,25 @@ window.addEventListener("DOMContentLoaded", function () {
       b.share = total > 0 ? b.sum / total : 0;
     });
 
-    const early =
-      total > 0
-        ? (buckets[0].sum + buckets[1].sum) / total
-        : 0;
-    const late =
-      total > 0 ? buckets[3].sum / total : 0;
-    const mid =
-      total > 0 ? buckets[2].sum / total : 0;
+    const early = total > 0 ? (buckets[0].sum + buckets[1].sum) / total : 0;
+    const late = total > 0 ? buckets[3].sum / total : 0;
+    const mid = total > 0 ? buckets[2].sum / total : 0;
 
     return { buckets, total, early, mid, late };
   }
 
-  // ---------- Render 3 card phân tích ----------
+  // ---------- Render insights cards ----------
 
   function renderInsights(viralStatusLabel, behaviorLabel, metrics) {
-    const shapeBody = document.getElementById(
-      "shape-analysis-body"
-    );
-    const shapeTags = document.getElementById(
-      "shape-analysis-tags"
-    );
-    const modelBody = document.getElementById(
-      "model-view-body"
-    );
-    const actionBody = document.getElementById(
-      "action-suggestions-body"
-    );
+    const shapeBody = document.getElementById("shape-analysis-body");
+    const shapeTags = document.getElementById("shape-analysis-tags");
+    const modelBody = document.getElementById("model-view-body");
+    const actionBody = document.getElementById("action-suggestions-body");
 
-    // Nếu không lấy được DOM, khỏi làm
+    // Nothing to render
     if (!shapeBody && !modelBody && !actionBody) return;
 
-    // Fallback: luôn có gì đó, kể cả total = 0
+    // Always provide a fallback message (even if total = 0)
     const total = metrics.total || 0;
     const earlyPct = Math.round((metrics.early || 0) * 100);
     const latePct = Math.round((metrics.late || 0) * 100);
@@ -290,7 +275,7 @@ window.addEventListener("DOMContentLoaded", function () {
       shapeBody.textContent = txt;
     }
 
-    // --- Shape tags (bucket %) ---
+    // --- Shape tags (bucket shares) ---
     if (shapeTags && metrics.buckets) {
       const chips = metrics.buckets.map((b) => {
         const pct = Math.round((b.share || 0) * 100);
@@ -302,7 +287,7 @@ window.addEventListener("DOMContentLoaded", function () {
       shapeTags.innerHTML = chips.join("");
     }
 
-    // --- Model view ---
+    // --- Model explanation block ---
     if (modelBody) {
       const vs = viralStatusLabel || "N/A";
       const beh = behaviorLabel || "N/A";
@@ -324,10 +309,7 @@ window.addEventListener("DOMContentLoaded", function () {
         );
       }
 
-      if (
-        vsLower.includes("explosive") ||
-        vsLower.includes("super")
-      ) {
+      if (vsLower.includes("explosive") || vsLower.includes("super")) {
         lines.push(
           "The model sees both strong early growth and good continuation, which matches an 'explosive' viral pattern."
         );
@@ -345,10 +327,7 @@ window.addEventListener("DOMContentLoaded", function () {
         );
       }
 
-      if (
-        behLower.includes("stable") ||
-        behLower.includes("consistent")
-      ) {
+      if (behLower.includes("stable") || behLower.includes("consistent")) {
         lines.push(
           "Behavior is consistent across checkpoints, which usually makes this video more predictable and easier to scale."
         );
@@ -368,7 +347,7 @@ window.addEventListener("DOMContentLoaded", function () {
         "</ul>";
     }
 
-    // --- Suggested actions ---
+    // --- Action suggestions block ---
     if (actionBody) {
       const vsLower = (viralStatusLabel || "").toLowerCase();
       const behLower = (behaviorLabel || "").toLowerCase();
@@ -379,10 +358,7 @@ window.addEventListener("DOMContentLoaded", function () {
           "Keep tracking this video for a few more hours before making any decision."
         );
       } else {
-        if (
-          vsLower.includes("explosive") ||
-          vsLower.includes("super")
-        ) {
+        if (vsLower.includes("explosive") || vsLower.includes("super")) {
           actions.push(
             "Highlight this video on the channel home, playlists and community posts while momentum is strong."
           );
@@ -423,7 +399,7 @@ window.addEventListener("DOMContentLoaded", function () {
     }
   }
 
-  // ---------- Tạo 3 chart + render insights ----------
+  // ---------- Build charts + render insights ----------
 
   const highlightIndexSet = getHighlightIndexSet(labels, highlightHours);
 

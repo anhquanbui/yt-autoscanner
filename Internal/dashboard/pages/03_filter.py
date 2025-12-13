@@ -6,7 +6,7 @@ import streamlit as st
 import sys
 from pathlib import Path
 
-# đảm bảo import được config, dashboard...
+# Ensure project imports work
 ROOT = Path(__file__).resolve().parents[2]  # .../yt-autoscanner
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -19,18 +19,17 @@ from dashboard.components.system_status import (
 )
 from config.env import load_env
 
-# Ensure .env is loaded exactly once
+# Load .env once
 load_env()
 
 from dashboard.components.sidebar_nav import render_sidebar_nav
 
-# Load sidebar
+# Sidebar
 render_sidebar_nav()
 
-
-# ============================================================
-# 0. Simple styling for this page
-# ============================================================
+# =========================
+# Page CSS
+# =========================
 st.markdown(
     """
 <style>
@@ -42,7 +41,7 @@ st.markdown(
     padding-top: 2rem;
 }
 
-/* Small pill chips used in legend */
+/* Legend chips */
 .viral-pill {
     display: inline-block;
     padding: 3px 10px;
@@ -88,7 +87,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Mapping for nicer labels
+# UI labels
 STATUS_LABELS = {
     "weak_viral": "🟡 Weak viral",
     "viral": "🔵 Viral",
@@ -111,27 +110,19 @@ BEHAVIOR_LABELS = {
     None: "⚪ Unknown",
 }
 
-# ============================================================
-# 1. Mongo helpers (cached)
-# ============================================================
-
+# =========================
+# Mongo helpers
+# =========================
 @st.cache_resource(show_spinner=False)
 def get_coll():
-    """
-    Return the Mongo collection object for `videos`.
-    """
+    """Return videos collection."""
     db = get_db()
     return db["videos"]
 
 
 @st.cache_data(show_spinner=False)
 def load_keywords() -> List[str]:
-    """
-    Return list of distinct keywords for the Keyword filter.
-
-    Prefer dashboard_kpis.filter_keywords snapshot (lighter),
-    fallback to aggregate directly from videos if missing.
-    """
+    """Distinct keywords for filter (prefer dashboard_kpis snapshot)."""
     db = get_db()
     kpis = db.dashboard_kpis.find_one(sort=[("ts", -1)])
 
@@ -150,12 +141,7 @@ def load_keywords() -> List[str]:
 
 @st.cache_data(show_spinner=False)
 def load_regions_all() -> List[str]:
-    """
-    Return ALL distinct region codes for the Region filter.
-
-    Prefer dashboard_kpis.filter_regions snapshot (lighter),
-    fallback to aggregate directly from videos if missing.
-    """
+    """Distinct regions for filter (prefer dashboard_kpis snapshot)."""
     db = get_db()
     kpis = db.dashboard_kpis.find_one(sort=[("ts", -1)])
 
@@ -173,9 +159,7 @@ def load_regions_all() -> List[str]:
 
 
 def query_videos(filters: Dict[str, Any], page: int, page_size: int):
-    """
-    Query videos with the given Mongo filters and pagination.
-    """
+    """Query with pagination and minimal projection."""
     coll = get_coll()
 
     total = coll.count_documents(filters)
@@ -241,9 +225,9 @@ def query_videos(filters: Dict[str, Any], page: int, page_size: int):
     return rows, total
 
 
-# ============================================================
-# 2. Page layout
-# ============================================================
+# =========================
+# Page body
+# =========================
 st.title("🚀 Viral Filter")
 
 st.markdown(
@@ -256,7 +240,6 @@ Use this page to explore **final viral decisions**:
 """
 )
 
-# Legend: statuses + behavior explanation
 st.markdown(
     """
 <div class="behavior-box">
@@ -276,9 +259,7 @@ st.markdown(
 
 st.markdown("---")
 
-# ------------------------------------------------------------
-# 2.1 Filters
-# ------------------------------------------------------------
+# Filters
 st.subheader("🎛 Filters")
 
 keyword_list = load_keywords()
@@ -305,7 +286,6 @@ behavior_options = [
     "Neutral / unclear",
 ]
 
-# Layout: keyword | region | viral | page size
 col_k, col_r, col_v, col_bh, col_ps = st.columns([4, 3, 3, 3, 2])
 
 with col_k:
@@ -319,7 +299,7 @@ with col_v:
 
 with col_ps:
     page_size = st.selectbox("Rows per page", [25, 50, 100], index=1)
-    
+
 with col_bh:
     selected_behavior = st.selectbox("Behavior pattern", behavior_options)
 
@@ -349,7 +329,6 @@ if has_vl:
 
 if has_bh:
     key = "ml_flags.viral_v2.final.behavior"
-    # Map UI text → stored label
     map_behavior = {
         "No signal": "no_signal",
         "Early peak": "early_peak",
@@ -360,12 +339,9 @@ if has_bh:
     }
     filters[key] = map_behavior.get(selected_behavior)
 
-
 st.markdown("---")
 
-# ------------------------------------------------------------
-# 2.2 Video results
-# ------------------------------------------------------------
+# Results
 st.subheader("📼 Video Results")
 
 if not has_kw and not has_rg and not has_vl:

@@ -2,7 +2,7 @@
 import streamlit as st
 
 def render_sidebar_nav():
-    # 1) Ẩn thanh multipage mặc định: app / Overview / filter / Settings
+    # Hide Streamlit default multipage nav
     st.markdown(
         """
         <style>
@@ -13,7 +13,7 @@ def render_sidebar_nav():
         unsafe_allow_html=True,
     )
 
-    # 2) Sidebar custom của mình (khung đỏ)
+    # Custom sidebar
     with st.sidebar:
         st.markdown(
             """
@@ -44,7 +44,7 @@ def render_sidebar_nav():
 
         st.markdown("---")
 
-        # Navigation – chỉ giữ 4 mục chính
+        # Main navigation
         st.page_link("app.py", label="Overview (Home)", icon="🏠")
         st.page_link("pages/01_Overview.py", label="System KPIs", icon="📊")
         st.page_link("pages/03_filter.py", label="Viral Filter", icon="🚀")

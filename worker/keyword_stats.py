@@ -1,11 +1,12 @@
 """
 Keyword stats worker for yt-autoscanner (all_time).
 
-Đọc từ collection `videos` và build collection `keyword_stats`
-theo schema (keyword, region) + region="ALL" cho tổng toàn region.
+Reads from the `videos` collection and builds/updates the `keyword_stats` collection
+using the schema (keyword, region), plus an aggregated row with region="ALL"
+to represent totals across all regions.
 
-Dùng config.env + config.db.get_db() để kết nối Mongo đúng MONGO_URI/MONGO_DB
-đã set trong .env.
+Uses config.env + config.db.get_db() to connect to MongoDB via the configured
+MONGO_URI / MONGO_DB values in .env.
 """
 
 import argparse
@@ -14,10 +15,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Tuple, List, Dict, Any, Optional
 
 from pymongo import ASCENDING
-from config.db import get_db  # <-- dùng helper chung
+from config.db import get_db  # <-- shared DB helper
 
 # ---------------------------------------------------------------------------
-# Collections / worker name
+# Collections / worker identity
 # ---------------------------------------------------------------------------
 
 VIDEOS_COLLECTION = "videos"
@@ -37,17 +38,17 @@ logging.basicConfig(
 )
 
 # ---------------------------------------------------------------------------
-# Helpers for reading fields from video docs
+# Helpers: field extraction / normalization
 # ---------------------------------------------------------------------------
 
 
 def normalize_keyword(kw: str) -> str:
-    """Normalize keyword before using in stats."""
+    """Normalize a keyword before using it for aggregation."""
     return (kw or "").strip().lower()
 
 
 def parse_iso_dt(value: Optional[str]) -> Optional[datetime]:
-    """Parse ISO datetime string to datetime with timezone if present."""
+    """Parse an ISO datetime string into a datetime (timezone-aware if provided)."""
     if not value:
         return None
     try:
@@ -63,16 +64,17 @@ def get_24h_snapshot(
     snapshots: List[Dict[str, Any]],
 ) -> Dict[str, int]:
     """
-    From stats_snapshots, approximate 24h metrics.
+    Approximate ~24h metrics from stats_snapshots.
 
-    - Nếu có published_at:
-        - cutoff = published_at + 24h
-        - chọn snapshot có ts <= cutoff và gần cutoff nhất
-        - nếu không có, fallback snapshot cuối cùng.
-    - Nếu không có published_at:
-        - dùng snapshot cuối cùng.
+    If published_at is available:
+      - cutoff = published_at + 24 hours
+      - choose the snapshot with ts <= cutoff and closest to cutoff
+      - if none qualifies, fall back to the latest snapshot
 
-    Return:
+    If published_at is missing:
+      - use the latest snapshot
+
+    Returns:
         { views_24h, likes_24h, comments_24h }
     """
     if not snapshots:
@@ -121,7 +123,7 @@ def get_24h_snapshot(
 
 
 def extract_metrics_from_video(doc: Dict[str, Any]) -> Tuple[int, int, int]:
-    """Extract approx 24h views/likes/comments using snippet.publishedAt + stats_snapshots."""
+    """Extract approx ~24h views/likes/comments using snippet.publishedAt + stats_snapshots."""
     snippet = doc.get("snippet") or {}
     published_at_str = snippet.get("publishedAt")
     published_at = parse_iso_dt(published_at_str)
@@ -138,12 +140,13 @@ def extract_metrics_from_video(doc: Dict[str, Any]) -> Tuple[int, int, int]:
 
 def extract_label_from_video(doc: Dict[str, Any]) -> str:
     """
-    Extract final viral label từ ml_flags.viral_v2.final.status.
+    Extract the final viral label from ml_flags.viral_v2.final.status.
 
-    - "weak_viral"   -> "weak_viral"
-    - "viral"        -> "viral"
-    - "super_viral"  -> "super_viral"
-    - "non_viral" / "non_viral_lowq" / ... -> "non_viral"
+    Mapping:
+      - "weak_viral"   -> "weak_viral"
+      - "viral"        -> "viral"
+      - "super_viral"  -> "super_viral"
+      - "non_viral" / "non_viral_lowq" / ... -> "non_viral"
     """
     ml_flags = doc.get("ml_flags") or {}
     viral_v2 = ml_flags.get("viral_v2") or {}
@@ -158,7 +161,7 @@ def extract_label_from_video(doc: Dict[str, Any]) -> str:
 
 
 def extract_region_from_video(doc: Dict[str, Any]) -> str:
-    """Extract region code from source.regionCode, default 'UNKNOWN'."""
+    """Extract region code from source.regionCode (default: 'UNKNOWN')."""
     source = doc.get("source") or {}
     region = source.get("regionCode") or "UNKNOWN"
     return str(region).upper()
@@ -166,10 +169,11 @@ def extract_region_from_video(doc: Dict[str, Any]) -> str:
 
 def extract_keywords_from_video(doc: Dict[str, Any]) -> List[str]:
     """
-    Extract keyword list từ video doc.
+    Extract keywords from a video document.
 
-    Hiện tại dùng source.query làm keyword chính.
-    Sau này nếu có thêm mảng keywords thì có thể mở rộng.
+    Current behavior:
+      - Use source.query as the primary keyword.
+      - Can be extended later if a keywords array is added.
     """
     source = doc.get("source") or {}
     query_kw = source.get("query")
@@ -181,10 +185,11 @@ def extract_keywords_from_video(doc: Dict[str, Any]) -> List[str]:
 
 def extract_ad_safe_flag(doc: Dict[str, Any]) -> bool:
     """
-    Extract ad-safe flag từ ml_flags.ad_friendly_v1.label.
+    Extract ad-safety flag from ml_flags.ad_friendly_v1.label.
 
-    - "AD_FRIENDLY" -> True
-    - cái khác      -> False (tạm thời, có thể tinh chỉnh sau)
+    Current rule:
+      - "AD_FRIENDLY" -> True
+      - anything else -> False (can be refined later)
     """
     ml_flags = doc.get("ml_flags") or {}
     ad_flag = ml_flags.get("ad_friendly_v1") or {}
@@ -199,7 +204,7 @@ def extract_ad_safe_flag(doc: Dict[str, Any]) -> bool:
 
 
 def label_to_inc_fields(label: str) -> Dict[str, int]:
-    """Map viral label → weak_viral_count / viral_count / super_viral_count."""
+    """Map viral label → weak_viral_count / viral_count / super_viral_count increments."""
     label = (label or "").lower()
     return {
         "weak_viral_count": 1 if label == "weak_viral" else 0,
@@ -225,7 +230,7 @@ def update_keyword_stats_for_region(
     dry_run: bool = False,
 ):
     """
-    Update keyword_stats cho (keyword, region) và (keyword, 'ALL').
+    Update keyword_stats for (keyword, region) and also (keyword, 'ALL').
     """
     now = datetime.now(timezone.utc)
 
@@ -274,15 +279,16 @@ def update_keyword_stats_for_region(
 
 def process_video_document(db, doc: Dict[str, Any], dry_run: bool = False) -> int:
     """
-    Xử lý 1 video:
-    - lấy keyword từ source.query
-    - lấy region từ source.regionCode
-    - tính ~24h metrics từ stats_snapshots
-    - suy ra viral label + ad_safe
-    - update keyword_stats
-    - set kw_stats_processed = True
+    Process a single video:
+      - extract keyword from source.query
+      - extract region from source.regionCode
+      - compute ~24h metrics from stats_snapshots
+      - derive viral label + ad-safe flag
+      - update keyword_stats
+      - mark video as kw_stats_processed = True
 
-    Return: số lần update keyword (số keyword).
+    Returns:
+        Number of keyword updates (number of extracted keywords).
     """
     video_id = doc.get("_id")
     keywords = extract_keywords_from_video(doc)
@@ -331,9 +337,9 @@ def run_incremental(db, limit: int, dry_run: bool = False) -> Tuple[int, int]:
     """
     Incrementally process videos that have not yet been aggregated into keyword_stats.
 
-    Selection rule:
-    - kw_stats_processed != True
-    - ml_flags.viral_v2.final.status exists
+    Selection:
+      - kw_stats_processed != True
+      - ml_flags.viral_v2.final.status exists
     """
     started_at = datetime.now(timezone.utc)
     logger.info(
@@ -347,13 +353,12 @@ def run_incremental(db, limit: int, dry_run: bool = False) -> Tuple[int, int]:
         "ml_flags.viral_v2.final.status": {"$exists": True},
     }
 
-    # 👇 Đếm trước tổng số video sẽ xử lý (bị giới hạn bởi limit)
+    # Pre-count total work (bounded by limit)
     total_videos_to_process = db[VIDEOS_COLLECTION].count_documents(query)
     if total_videos_to_process > limit:
         total_videos_to_process = limit
 
-    # Vì hiện tại mỗi video chỉ có 1 keyword (source.query),
-    # nên số KW ước lượng ≈ số video
+    # Currently: 1 keyword per video (source.query), so keywords ≈ videos
     logger.info(
         "Incremental run will process up to %d videos (~%d keywords)",
         total_videos_to_process,
@@ -371,7 +376,7 @@ def run_incremental(db, limit: int, dry_run: bool = False) -> Tuple[int, int]:
             kw_updates = process_video_document(db, doc, dry_run=dry_run)
             keyword_updates += kw_updates
 
-            # 👇 Log tiến độ mỗi 100 video (hoặc tuỳ bạn chỉnh)
+            # Progress log every 100 videos (tune as needed)
             if videos_processed % 100 == 0 or videos_processed == total_videos_to_process:
                 pct = (
                     (videos_processed / total_videos_to_process) * 100
@@ -400,14 +405,14 @@ def run_incremental(db, limit: int, dry_run: bool = False) -> Tuple[int, int]:
 
     if not dry_run:
         db[WORKER_RUNS_COLLECTION].update_one(
-            {"name": WORKER_NAME, "mode": "incremental"},  # 1 doc / worker+mode
+            {"name": WORKER_NAME, "mode": "incremental"},  # one doc per worker+mode
             {
                 "$set": {
                     "name": WORKER_NAME,
                     "worker_name": WORKER_NAME,
                     "mode": "incremental",
 
-                    # dùng cho dashboard
+                    # dashboard fields
                     "last_run": finished_at,
                     "last_started_at": started_at,
                     "last_finished_at": finished_at,
@@ -429,10 +434,10 @@ def run_incremental(db, limit: int, dry_run: bool = False) -> Tuple[int, int]:
 
 def run_backfill(db, limit: int, dry_run: bool = False) -> Tuple[int, int]:
     """
-    Backfill all_time:
-    - Drop keyword_stats
-    - Bỏ qua kw_stats_processed flag
-    - Chạy lại từ đầu (limit chỉ giới hạn mỗi lần run).
+    Full rebuild (all_time backfill):
+      - Drop keyword_stats
+      - Ignore kw_stats_processed flag
+      - Recompute from scratch (limit bounds a single run)
     """
     started_at = datetime.now(timezone.utc)
     logger.info(
@@ -442,14 +447,14 @@ def run_backfill(db, limit: int, dry_run: bool = False) -> Tuple[int, int]:
     )
 
     if not dry_run:
-        logger.warning("Dropping keyword_stats collection for full rebuild.")
+        logger.warning("Dropping keyword_stats collection for a full rebuild.")
         db[KW_STATS_COLLECTION].drop()
 
     query = {
         "ml_flags.viral_v2.final.status": {"$exists": True},
     }
 
-    # 👇 Đếm tổng video có thể backfill (bị giới hạn bởi limit)
+    # Pre-count total work (bounded by limit)
     total_videos_to_process = db[VIDEOS_COLLECTION].count_documents(query)
     if total_videos_to_process > limit:
         total_videos_to_process = limit
@@ -498,12 +503,9 @@ def run_backfill(db, limit: int, dry_run: bool = False) -> Tuple[int, int]:
     )
 
     if not dry_run:
-        # snapshot 1 doc duy nhất cho (worker_name, mode="backfill")
+        # Single snapshot doc for (worker_name, mode="backfill")
         db[WORKER_RUNS_COLLECTION].update_one(
-            {
-                "name": WORKER_NAME,
-                "mode": "backfill"
-            },
+            {"name": WORKER_NAME, "mode": "backfill"},
             {
                 "$set": {
                     "name": WORKER_NAME,
@@ -525,7 +527,6 @@ def run_backfill(db, limit: int, dry_run: bool = False) -> Tuple[int, int]:
             upsert=True
         )
 
-
     return videos_processed, keyword_updates
 
 
@@ -535,7 +536,7 @@ def run_backfill(db, limit: int, dry_run: bool = False) -> Tuple[int, int]:
 
 
 def ensure_indexes(db):
-    """Tạo index cơ bản cho keyword_stats và cờ kw_stats_processed."""
+    """Create baseline indexes for keyword_stats and kw_stats_processed flag."""
     logger.info("Ensuring indexes...")
 
     db[KW_STATS_COLLECTION].create_index(
@@ -573,7 +574,7 @@ def main():
 
     args = parser.parse_args()
 
-    # 🔥 Lấy DB qua config.db.get_db() – tự load .env + MONGO_URI
+    # Get DB via config.db.get_db(): loads .env and uses configured MONGO_URI/MONGO_DB
     db = get_db()
 
     ensure_indexes(db)

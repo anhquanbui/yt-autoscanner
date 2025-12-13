@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # ======================================
-# GLOBAL PATHS
+# Global paths
 # ======================================
 PROJECT_ROOT="/home/ytscan/yt-autoscanner"
 VENV_DIR="$PROJECT_ROOT/.venv"
@@ -10,7 +10,7 @@ REQUIREMENTS_DEV="$PROJECT_ROOT/requirements-dev.txt"
 
 
 # ======================================
-# Ensure virtual environment exists
+# Ensure the virtual environment exists
 # ======================================
 check_venv() {
   if [ ! -x "$VENV_PY" ]; then
@@ -40,7 +40,7 @@ install_dev_requirements() {
 
 
 # ======================================
-# Ensure a Python module exists in venv
+# Ensure a Python module exists in the venv
 # If missing -> install dev requirements
 # ======================================
 ensure_module() {

@@ -8,17 +8,16 @@ Type=simple
 User=ytscan
 WorkingDirectory=/home/ytscan/yt-autoscanner
 
-# Chạy script auto_viral.sh
+# Start viral pipeline loop
 ExecStart=/bin/bash /home/ytscan/yt-autoscanner/scripts/auto_viral.sh
 
-# Giữ service luôn chạy
+# Keep service running
 Restart=always
 RestartSec=10
 
-# Env optional
+# Runtime env
 Environment=PYTHONUNBUFFERED=1
-# Có thể chỉnh interval ở đây, vd 15 phút:
-# Environment=AUTO_VIRAL_INTERVAL_SECONDS=900
+# Environment=AUTO_VIRAL_INTERVAL_SECONDS=900  # 15 min
 
 [Install]
 WantedBy=multi-user.target

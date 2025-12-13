@@ -7,13 +7,13 @@
   <!-- Tailwind CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
 
-  <!-- Chart.js CDN (dùng cho các page có chart) -->
+  <!-- Chart.js CDN (used on chart pages) -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
   <!-- Custom CSS -->
   <link rel="stylesheet" href="/static/css/dashboard.css">
 
-  <!-- Global JS (loading, etc.) -->
+  <!-- Global JS (page loading overlay, etc.) -->
   <script src="/static/js/base.js" defer></script>
 
   {% block head_extra %}{% endblock %}
@@ -32,7 +32,7 @@
   </div>
 
   <div class="flex min-h-screen">
-    <!-- SIDEBAR DÙNG CHUNG -->
+    <!-- Shared sidebar -->
     <aside class="w-60 bg-slate-900/90 border-r border-slate-800 flex flex-col">
       <div class="px-4 py-4 border-b border-slate-800">
         <div class="text-xs font-semibold tracking-[0.2em] text-slate-500 uppercase">
@@ -44,28 +44,28 @@
       </div>
 
       <nav class="flex-1 px-3 py-3 space-y-1 text-sm">
-        <!-- Overview Dashboard -->
+        <!-- Overview -->
         <a href="/"
            class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-800/80 text-slate-200 {% block nav_dashboard_active %}{% endblock %}">
           <span class="text-xs">📊</span>
           <span>Overview Dashboard</span>
         </a>
 
-        <!-- Viral Filter -->
+        <!-- Viral filter -->
         <a href="/viral-filter"
            class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-800/80 text-slate-300 {% block nav_viral_active %}{% endblock %}">
           <span class="text-xs">🔥</span>
           <span>Viral Filter</span>
         </a>
 
-        <!-- Keywords Analysis -->
+        <!-- Keywords analysis -->
         <a href="/keywords-analysis"
            class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-800/80 text-slate-300 {% block nav_keywords_active %}{% endblock %}">
           <span class="text-xs">🔎</span>
           <span>Keywords Analysis</span>
         </a>
 
-        <!-- Worker Tracking -->
+        <!-- Worker tracking -->
         <a href="/worker-tracking"
            class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-800/80 text-slate-300 {% block nav_worker_tracking %}{% endblock %}">
           <span class="text-xs">🛠</span>
@@ -78,7 +78,7 @@
       </div>
     </aside>
 
-    <!-- MAIN CONTENT -->
+    <!-- Main content -->
     <main class="flex-1 relative">
       {% block content %}{% endblock %}
     </main>

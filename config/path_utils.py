@@ -1,12 +1,11 @@
 # config/path_utils.py
 """
-Central helper for export/output directory resolution.
+Central helper for resolving export/output directories.
 
-This module provides a unified, environment-aware way to obtain
-the default export/output directory for all scripts, workers,
-and notebooks.
+Provides a single, environment-aware way to determine where
+scripts, workers, and notebooks should write output files.
 
-It is aligned with config.env for consistent .env loading.
+Aligned with config.env for consistent .env loading.
 """
 
 from __future__ import annotations
@@ -19,49 +18,28 @@ from config.env import load_env, get_env
 
 def get_export_dir(default_subdir: str = "data_export") -> Path:
     """
-    Resolve the unified export/output directory for the project.
+    Resolve the export/output directory for the project.
 
-    Priority order (highest → lowest):
-    ---------------------------------
-    1. EXPORT_DIR (explicit override)
-       - Allows full external control, e.g.:
-         EXPORT_DIR=/mnt/drive/yt_outputs
-
-    2. OUTPUT_DIR (legacy fallback)
-       - Older scripts may still rely on OUTPUT_DIR.
-
-    3. <project_root>/<default_subdir>
-       - Standard: <repo_root>/data_export
-       - Ensures safe default for local development and testing.
+    Priority (highest → lowest):
+    1) EXPORT_DIR   (explicit override)
+    2) OUTPUT_DIR   (legacy fallback)
+    3) <project_root>/<default_subdir>
 
     Behavior:
-    ---------
-    - Ensures .env is loaded (via load_env())
-    - Automatically creates the directory (mkdir -p)
-    - Returns a resolved absolute Path
-
-    Parameters:
-    -----------
-    default_subdir : str
-        Folder used under project_root when no env overrides exist.
-        Default is "data_export".
-
-    Returns:
-    --------
-    Path
-        Absolute path to the export directory.
+    - Ensures .env is loaded
+    - Creates the directory if missing (mkdir -p)
+    - Returns an absolute Path
     """
     # Ensure environment variables are loaded
     load_env()
 
-    # Highest-priority environment variables
+    # Highest-priority environment overrides
     base = get_env("EXPORT_DIR") or get_env("OUTPUT_DIR")
 
     if base:
         export_path = Path(base).expanduser().resolve()
     else:
-        # project_root = parent of config/
-        #   config/path_utils.py → parents[1] = <project_root>
+        # config/path_utils.py → parents[1] = project root
         project_root = Path(__file__).resolve().parents[1]
         export_path = project_root / default_subdir
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# === MongoDB Auto Backup (BSON + JSON; keep last 4) — using .env ===
+# MongoDB Auto Backup (BSON + JSON), keep last 4, load from .env
 set -euo pipefail
 
 # --- Load .env (project root -> $HOME -> CWD) ---
@@ -31,10 +31,7 @@ load_env() {
 }
 load_env
 
-# --- Required configs (pick either Docker mode or Local mode) ---
-# Docker mode requires: MONGO_CONTAINER, DB_NAME, MONGO_USER, MONGO_PASS, BACKUP_DIR
-# Local  mode prefers:  MONGO_URI and BACKUP_DIR (or DB_NAME + auth if needed)
-
+# --- Required env ---
 : "${DB_NAME:?Missing DB_NAME in env}"
 : "${BACKUP_DIR:?Missing BACKUP_DIR in env}"
 
@@ -59,7 +56,7 @@ if [ -n "${MONGO_CONTAINER:-}" ] && docker_has_container "$MONGO_CONTAINER"; the
 
   echo "[Backup] Mode: Docker container='$MONGO_CONTAINER', DB='$DB_NAME'"
 
-  # 1) In-container dump (BSON + per-collection JSON)
+  # 1) Dump inside container (BSON + per-collection JSON)
   docker exec \
   -e DB_NAME="$DB_NAME" \
   -e MONGO_USER="$MONGO_USER" \
@@ -94,14 +91,14 @@ if [ -n "${MONGO_CONTAINER:-}" ] && docker_has_container "$MONGO_CONTAINER"; the
   echo \"[In-Container] ✅ Done at \$ROOT\"
 "
 
-  # 2) Copy to host
+  # 2) Copy folder out to host
   docker cp "$MONGO_CONTAINER:/data/db/backup-$DATE" "$BACKUP_DIR/"
 
 # -------------------- LOCAL MODE --------------------
 else
   echo "[Backup] Mode: Local mongodump"
 
-  # Ưu tiên MONGO_URI; nếu không có thì dùng auth rời rạc (nếu bạn đặt)
+  # Require tools
   if command -v mongosh >/dev/null 2>&1; then :; else
     echo "❌ mongosh not found (apt install -y mongodb-clients)."; exit 1
   fi
@@ -116,7 +113,6 @@ else
   if [ -n "${MONGO_URI:-}" ]; then
     mongodump --uri "$MONGO_URI" --db "$DB_NAME" --out "$ROOT/bson"
   else
-    # Nếu không dùng URI, bạn có thể thêm các biến: MONGO_HOST, MONGO_PORT, MONGO_USER, MONGO_PASS
     : "${MONGO_HOST:=localhost}"
     : "${MONGO_PORT:=27017}"
     if [ -n "${MONGO_USER:-}" ] && [ -n "${MONGO_PASS:-}" ]; then
@@ -156,25 +152,25 @@ else
   echo "[Local] ✅ Done at $ROOT"
 fi
 
-# 3) Compress entire folder (bson + json)
+# 3) Compress (bson + json)
 tar -czf "$BACKUP_DIR/mongo-backup-$DATE.tar.gz" -C "$BACKUP_DIR" "backup-$DATE"
 
-# 4) Remove raw export folder
+# 4) Remove raw folder
 rm -rf "$BACKUP_DIR/backup-$DATE"
 echo "[Backup] ✅ Local archive: $BACKUP_DIR/mongo-backup-$DATE.tar.gz"
 
-# 5) Keep only latest 4 backups locally
+# 5) Local retention: keep last 4
 ls -1t "$BACKUP_DIR"/mongo-backup-*.tar.gz 2>/dev/null | sed -n '5,$p' | xargs -r rm -f
 echo "[Backup] 🧹 Local retention enforced."
 
-# 6) Upload to Google Drive if available
+# 6) Upload to Drive via rclone (optional)
 if command -v rclone >/dev/null 2>&1 && [ -n "$REMOTE_NAME" ] && [ -n "$REMOTE_DIR" ]; then
   REMOTE_PATH="${REMOTE_NAME}:${REMOTE_DIR}"
   rclone mkdir "$REMOTE_PATH" >/dev/null 2>&1 || true
   rclone copy "$BACKUP_DIR/mongo-backup-$DATE.tar.gz" "$REMOTE_PATH" --quiet
   echo "[Backup] ☁️ Uploaded."
 
-  # 7) Remote retention (keep last 4)
+  # 7) Remote retention: keep last 4
   rclone lsf "$REMOTE_PATH" --files-only \
     | grep -E '^mongo-backup-.*\.tar\.gz$' \
     | sort -r | sed -n '5,$p' \

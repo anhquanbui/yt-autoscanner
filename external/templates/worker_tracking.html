@@ -107,7 +107,7 @@
                   <div>Expected every ~{{ w.expected_interval_min }} min</div>
                 </div>
 
-                {# 🔥 Chỉ show metrics nếu không phải worker 'unknown' #}
+                {# Show metrics except for the 'unknown' worker #}
                 {% if w.metrics and w.name != 'unknown' %}
                   <div class="mt-2 flex flex-wrap gap-1">
                     {% for m in w.metrics %}

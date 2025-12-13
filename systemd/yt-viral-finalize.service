@@ -8,16 +8,16 @@ Type=simple
 User=ytscan
 WorkingDirectory=/home/ytscan/yt-autoscanner
 
-# Chạy script auto_viral_finalize.sh
+# Start finalize loop
 ExecStart=/bin/bash /home/ytscan/yt-autoscanner/scripts/auto_viral_finalize.sh
 
-# Giữ service luôn chạy liên tục
+# Keep service alive
 Restart=always
 RestartSec=10
 
-# Optional: logging sạch hơn + override interval
+# Runtime env
 Environment=PYTHONUNBUFFERED=1
-# Environment=AUTO_VIRAL_FINALIZE_INTERVAL_SECONDS=1800   # 30 phút
+# Environment=AUTO_VIRAL_FINALIZE_INTERVAL_SECONDS=1800  # 30 min
 
 [Install]
 WantedBy=multi-user.target

@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 import sys
 from pathlib import Path
 
-# đảm bảo import được config, dashboard...
-ROOT = Path(__file__).resolve().parents[2]  # .../yt-autoscanner
+# Ensure project imports work (config/, dashboard/)
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -16,12 +16,12 @@ from dashboard.components.system_status import (
 )
 from dashboard.components.sidebar_nav import render_sidebar_nav
 
-# Load sidebar
+# Sidebar
 render_sidebar_nav()
 
-# ============================================================
-# GLOBAL LAYOUT & THEME
-# ============================================================
+# =========================
+# Layout & global CSS
+# =========================
 st.markdown(
     """
 <style>
@@ -118,15 +118,12 @@ button[kind="secondary"] {
     unsafe_allow_html=True,
 )
 
-
-# ============================================================
-# KPI LOADER
-# ============================================================
+# =========================
+# KPI loader
+# =========================
 @st.cache_data(ttl=10)
 def load_kpis() -> dict:
-    """
-    Load the latest dashboard KPIs from Mongo.
-    """
+    """Load latest KPIs from Mongo (dashboard_kpis)."""
     db = get_db()
     doc = db.dashboard_kpis.find_one(sort=[("ts", -1)])
 
@@ -184,15 +181,11 @@ def load_kpis() -> dict:
 
     return base
 
-
-# ============================================================
-# ARCHIVE HELPERS
-# ============================================================
+# =========================
+# Archive helpers
+# =========================
 def _archive_by_query(label: str, query: dict) -> int:
-    """
-    Copy matching docs from `videos` -> `videos_archived` using $merge,
-    then delete them from `videos`. Returns deleted_count.
-    """
+    """Merge matching videos into videos_archived, then delete from videos."""
     db = get_db()
     videos = db.videos
     archived = db.videos_archived
@@ -218,9 +211,7 @@ def _archive_by_query(label: str, query: dict) -> int:
 
 
 def archive_removed_videos() -> int:
-    """
-    Archive videos counted in 'Removed / Unavailable'.
-    """
+    """Archive 'removed/unavailable' completed videos."""
     query = {
         "tracking.status": {"$in": ["complete", "completed"]},
         "tracking.stop_reason": {
@@ -232,9 +223,7 @@ def archive_removed_videos() -> int:
 
 
 def archive_stopped_lowq_videos() -> int:
-    """
-    Archive videos counted in 'Stopped (low quality)'.
-    """
+    """Archive 'stopped low-quality' videos."""
     query = {
         "tracking.status": "stopped",
         "tracking.stop_reason": {
@@ -244,10 +233,9 @@ def archive_stopped_lowq_videos() -> int:
     }
     return _archive_by_query("stopped_low_quality", query)
 
-
-# ============================================================
-# METRIC CARDS (TRACKING OVERVIEW) + INLINE ARCHIVE BUTTONS
-# ============================================================
+# =========================
+# Tracking metrics + archive actions
+# =========================
 def render_simple_metrics(kpis: dict):
     total_videos = kpis.get("total_videos", 0)
 
@@ -265,7 +253,6 @@ def render_simple_metrics(kpis: dict):
 
     c1, c2, c3 = st.columns(3)
 
-    # style nút Archived thành chữ đỏ nhỏ, giống action
     st.markdown(
         """
         <style>
@@ -287,7 +274,6 @@ def render_simple_metrics(kpis: dict):
 
     for col, (title, value, archive_type) in zip([c1, c2, c3], cards):
         with col:
-            # card chính
             st.markdown(
                 f"""
                 <div class="metric-card">
@@ -302,7 +288,6 @@ def render_simple_metrics(kpis: dict):
                 unsafe_allow_html=True,
             )
 
-            # action Archived gắn ngay dưới, căn phải
             if archive_type is not None:
                 st.markdown(
                     "<div class='archived-btn-wrapper' "
@@ -324,10 +309,9 @@ def render_simple_metrics(kpis: dict):
             else:
                 st.markdown("<div style='height: 8px'></div>", unsafe_allow_html=True)
 
-
-# ============================================================
-# METRIC CARDS (VIRAL SUMMARY)
-# ============================================================
+# =========================
+# Viral summary
+# =========================
 def render_viral_summary(kpis: dict):
     total_videos = kpis.get("total_videos", 0)
 
@@ -373,10 +357,9 @@ def render_viral_summary(kpis: dict):
 """
         col.markdown(html, unsafe_allow_html=True)
 
-
-# ============================================================
-# METRIC CARDS (AD-FRIENDLY SUMMARY)
-# ============================================================
+# =========================
+# Ad-friendly summary
+# =========================
 def render_ad_friendly_summary(kpis: dict):
     total_videos = kpis.get("total_videos", 0)
     ad_total = kpis.get("ad_friendly_total", 0)
@@ -406,10 +389,9 @@ def render_ad_friendly_summary(kpis: dict):
             unsafe_allow_html=True,
         )
 
-
-# ============================================================
-# PAGE BODY
-# ============================================================
+# =========================
+# Page body
+# =========================
 st.title("📊 YouTube AutoScanner — Overview (Local)")
 st.subheader("📌 System KPIs")
 
