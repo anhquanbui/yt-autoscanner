@@ -4,17 +4,17 @@ document.addEventListener("DOMContentLoaded", () => {
     const loader = document.getElementById("page-loading");
     if (!loader) return;
 
-    // 1) Ẩn loading sau khi trang đã render xong
+    // 1) Hide loading overlay after page has rendered
     setTimeout(() => {
         loader.classList.add("opacity-0", "pointer-events-none");
-    }, 150); // thêm 150ms cho mượt
+    }, 150); // small delay for smoother transition
 
-    // 2) Hiện loading khi user click link nội bộ (chuyển trang full page)
+    // 2) Show loading overlay when navigating via internal links
     const links = document.querySelectorAll("a[href]");
     links.forEach((link) => {
         const href = link.getAttribute("href") || "";
 
-        // Bỏ qua anchor (#...) và mở tab mới, link external
+        // Skip anchors, new-tab links, and external navigation
         if (
             href.startsWith("#") ||
             link.target === "_blank"
@@ -23,7 +23,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         link.addEventListener("click", (e) => {
-            // Nếu giữ Ctrl/Command để mở tab mới thì thôi
+            // Ignore modified clicks (Ctrl / Cmd / Shift / Alt)
             if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) {
                 return;
             }

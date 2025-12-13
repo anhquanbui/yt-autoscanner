@@ -1,42 +1,36 @@
 # ==========================================================
-# YouTube AutoScanner — Stable Training/Inference Stack
-# (Colab + Local/Worker compatible)
+#  YouTube AutoScanner — Development Environment
 # ==========================================================
 
 # --- Core runtime ---
-python-dotenv==1.0.1
-requests==2.32.3
-typing-extensions==4.12.2
-colorama==0.4.6
-tqdm==4.66.5
-joblib==1.4.2
+python-dotenv>=1.0.1
+requests>=2.31.0
+typing-extensions>=4.14.1
+colorama>=0.4.6
 
-# --- Database layer ---
+# --- Database ---
 pymongo==4.8.0
-# dnspython==2.6.1  # Uncomment if using mongodb+srv://
 
-# --- Worker utilities ---
-schedule==1.2.1
+# --- Worker Scheduling ---
+schedule>=1.2.0
 
 # --- Web API (FastAPI backend) ---
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
-
-# --- Dashboard (Streamlit UI) ---
-# Streamlit + Plotly for interactive dashboard
-streamlit==1.31.1
-tornado<7.0.0
-plotly>=5.20.0,<6.0.0
-gitpython>=3.1.43
+jinja2>=3.1.4     # << REQUIRED for templates
 
 # --- Data processing ---
-numpy==1.26.4
-pandas==2.2.3
-pyarrow==17.0.0
-fastparquet==2024.5.0
-odfpy==1.4.1
+pandas>=2.2.2
+numpy>=1.26.4
+pyarrow>=16.1.0
+python-dateutil>=2.9.0
 
 # --- Machine Learning ---
-scikit-learn==1.7.2     # đồng bộ Colab & worker để load .joblib
-scipy==1.13.1           # tương thích sklearn 1.7.2
-xgboost==2.1.1          # đồng bộ cảnh báo serialize xgb
+scikit-learn>=1.5.0
+xgboost>=2.1.0
+joblib>=1.4.0
+tqdm>=4.66.1
+
+# --- Dashboard (Internal Streamlit) ---
+streamlit>=1.38.0
+plotly>=5.22.0

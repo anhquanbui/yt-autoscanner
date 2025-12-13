@@ -31,7 +31,7 @@ templates = Jinja2Templates(directory=str(EXTERNAL_DIR / "templates"))
 
 def load_dashboard_kpis() -> Dict[str, Any]:
     """
-    Load latest snapshot from dashboard_kpis collection
+    Load the latest snapshot from the `dashboard_kpis` collection
     and compute derived KPIs for the overview page.
     """
     db = get_db()
@@ -60,6 +60,7 @@ def load_dashboard_kpis() -> Dict[str, Any]:
     non_viral = non_viral_main + non_viral_lowq
 
     def pct(x: int) -> float:
+        """Return percentage of total videos (0 if total_videos is 0)."""
         return (x / total_videos * 100.0) if total_videos else 0.0
 
     return {
@@ -93,11 +94,11 @@ def load_dashboard_kpis() -> Dict[str, Any]:
 
 
 # -----------------------------
-# Viral Filter helpers
+# Viral filter helpers
 # -----------------------------
 
 STATUS_LABELS = {
-    # Viral strength (for both list + video analytics)
+    # Viral strength (used by both list view + video analytics)
     "weak_viral": "🌡 Early Growth",
     "viral": "🔥 Going Viral",
     "super_viral": "🚀 Explosive Growth",
@@ -161,6 +162,179 @@ BEHAVIOR_OPTIONS: List[str] = [
     "Neutral / unclear",
 ]
 
+# -----------------------------
+# Keyword stats / analysis helpers
+# -----------------------------
+
+
+def _keyword_stats_coll():
+    db = get_db()
+    return db["keyword_stats"]
+
+
+def load_keyword_regions_for_stats() -> List[str]:
+    """
+    Load region list from `keyword_stats` (e.g., ALL, US, IE, JP...).
+    Ensure 'ALL' appears first (if present).
+    """
+    coll = _keyword_stats_coll()
+    regions = coll.distinct("region")
+    regions = [r for r in regions if r]  # remove None / empty
+
+    # Put ALL first if present
+    regions_sorted = sorted([r for r in regions if r != "ALL"])
+    if "ALL" in regions:
+        return ["ALL"] + regions_sorted
+    return regions_sorted
+
+
+def load_keyword_stats_view(
+    region: str,
+    min_videos: int,
+    limit: int,
+    sort_by: str,
+) -> Dict[str, Any]:
+    """
+    Read `keyword_stats` and normalize data for the Keywords Analysis page.
+
+    Rules:
+    - region:
+        - "ALL" -> only docs with region == "ALL" (aggregated across regions)
+        - else  -> only docs for that region
+    - min_videos: filter by videos_count >= min_videos
+    - limit: max number of keywords to display
+    - sort_by: metric to sort by ("viral_ratio", "avg_views", "videos",
+              "super_viral_ratio", "ad_safe_ratio")
+    """
+    coll = _keyword_stats_coll()
+
+    filters: Dict[str, Any] = {}
+    if region:
+        filters["region"] = region
+
+    if min_videos > 0:
+        filters["videos_count"] = {"$gte": min_videos}
+
+    # Fetch up to 5000 docs, then sort in Python for flexible sorting
+    max_docs = max(limit * 5, limit)
+    cursor = coll.find(filters).limit(max_docs)
+
+    rows_raw: List[Dict[str, Any]] = list(cursor)
+
+    prepared_rows: List[Dict[str, Any]] = []
+
+    total_videos_sum = 0
+    viral_ratio_sum = 0.0
+    total_ad_safe_sum = 0
+
+    for doc in rows_raw:
+        keyword = doc.get("keyword") or "(unknown)"
+        region_val = doc.get("region") or "ALL"
+
+        videos_count = int(doc.get("videos_count") or 0)
+        weak_viral = int(doc.get("weak_viral_count") or 0)
+        viral = int(doc.get("viral_count") or 0)
+        super_viral = int(doc.get("super_viral_count") or 0)
+
+        viral_total = weak_viral + viral + super_viral
+
+        views_sum = int(doc.get("views_sum_24h") or 0)
+        views_min = int(doc.get("views_min_24h") or 0)
+        views_max = int(doc.get("views_max_24h") or 0)
+
+        likes_sum = int(doc.get("likes_sum_24h") or 0)
+        likes_min = int(doc.get("likes_min_24h") or 0)
+        likes_max = int(doc.get("likes_max_24h") or 0)
+
+        comments_sum = int(doc.get("comments_sum_24h") or 0)
+        comments_min = int(doc.get("comments_min_24h") or 0)
+        comments_max = int(doc.get("comments_max_24h") or 0)
+
+        ad_safe_count = int(doc.get("ad_safe_count") or 0)
+        ad_risky_count = int(doc.get("ad_risky_count") or 0)
+
+        # Derived metrics
+        viral_ratio = (viral_total / videos_count) if videos_count > 0 else 0.0
+        super_viral_ratio = (super_viral / videos_count) if videos_count > 0 else 0.0
+
+        # NOTE:
+        # The next line intentionally keeps your current logic unchanged.
+        # You had a "clamp" block but then overwrote it with the raw ratio again.
+        # If you want, we can clean this up later.
+        ad_safe_ratio = (ad_safe_count / videos_count) if videos_count > 0 else 0.0
+
+        avg_views = (views_sum / videos_count) if videos_count > 0 else 0.0
+        avg_likes = (likes_sum / videos_count) if videos_count > 0 else 0.0
+        avg_comments = (comments_sum / videos_count) if videos_count > 0 else 0.0
+
+        total_videos_sum += videos_count
+        viral_ratio_sum += viral_ratio
+        total_ad_safe_sum += ad_safe_count
+
+        prepared_rows.append(
+            {
+                "keyword": keyword,
+                "region": region_val,
+                "videos_count": videos_count,
+                "weak_viral": weak_viral,
+                "viral": viral,
+                "super_viral": super_viral,
+                "viral_total": viral_total,
+                "viral_ratio": viral_ratio,
+                "super_viral_ratio": super_viral_ratio,
+                "views_sum": views_sum,
+                "views_min": views_min,
+                "views_max": views_max,
+                "likes_sum": likes_sum,
+                "likes_min": likes_min,
+                "likes_max": likes_max,
+                "comments_sum": comments_sum,
+                "comments_min": comments_min,
+                "comments_max": comments_max,
+                "avg_views": avg_views,
+                "avg_likes": avg_likes,
+                "avg_comments": avg_comments,
+                "ad_safe_count": ad_safe_count,
+                "ad_risky_count": ad_risky_count,
+                "ad_safe_ratio": ad_safe_ratio,
+                "last_updated": doc.get("last_updated"),
+            }
+        )
+
+    # Sort in Python by requested metric
+    if sort_by == "avg_views":
+        prepared_rows.sort(key=lambda r: r["avg_views"], reverse=True)
+    elif sort_by == "videos":
+        prepared_rows.sort(key=lambda r: r["videos_count"], reverse=True)
+    elif sort_by == "super_viral_ratio":
+        prepared_rows.sort(key=lambda r: r["super_viral_ratio"], reverse=True)
+    elif sort_by == "ad_safe_ratio":
+        prepared_rows.sort(key=lambda r: r["ad_safe_ratio"], reverse=True)
+    else:
+        # default: viral_ratio
+        prepared_rows.sort(key=lambda r: r["viral_ratio"], reverse=True)
+
+    # Apply limit after sorting
+    prepared_rows = prepared_rows[:limit]
+
+    total_keywords = len(prepared_rows)
+    avg_viral_ratio = (viral_ratio_sum / total_keywords) if total_keywords > 0 else 0.0
+    avg_ad_safe_ratio = (
+        (total_ad_safe_sum / total_videos_sum) if total_videos_sum > 0 else 0.0
+    )
+
+    summary = {
+        "total_keywords": total_keywords,
+        "total_videos": total_videos_sum,
+        "avg_viral_ratio": avg_viral_ratio,
+        "avg_ad_safe_ratio": avg_ad_safe_ratio,
+    }
+
+    return {
+        "rows": prepared_rows,
+        "summary": summary,
+    }
+
 
 def _videos_coll():
     db = get_db()
@@ -169,8 +343,8 @@ def _videos_coll():
 
 def load_filter_keywords() -> List[str]:
     """
-    Prefer keywords snapshot in dashboard_kpis.filter_keywords
-    then fallback to aggregation on videos.source.query.
+    Prefer keyword snapshot in `dashboard_kpis.filter_keywords`,
+    then fallback to aggregation on `videos.source.query`.
     """
     db = get_db()
     kpis = db.dashboard_kpis.find_one(sort=[("ts", -1)])
@@ -190,8 +364,8 @@ def load_filter_keywords() -> List[str]:
 
 def load_filter_regions() -> List[str]:
     """
-    Prefer regions snapshot in dashboard_kpis.filter_regions
-    then fallback to aggregation on videos.source.regionCode.
+    Prefer regions snapshot in `dashboard_kpis.filter_regions`,
+    then fallback to aggregation on `videos.source.regionCode`.
     """
     db = get_db()
     kpis = db.dashboard_kpis.find_one(sort=[("ts", -1)])
@@ -211,7 +385,7 @@ def load_filter_regions() -> List[str]:
 
 def query_videos(filters: Dict[str, Any], page: int, page_size: int):
     """
-    Query videos by Mongo filters with pagination.
+    Query videos using Mongo filters with pagination.
     Returns (rows, total_count).
     """
     coll = _videos_coll()
@@ -222,6 +396,7 @@ def query_videos(filters: Dict[str, Any], page: int, page_size: int):
 
     skip = (page - 1) * page_size
     if skip >= total:
+        # If requested page is out of range, snap back to last valid page.
         skip = max(0, (max(1, (total - 1) // page_size + 1) - 1) * page_size)
 
     projection = {
@@ -252,11 +427,7 @@ def query_videos(filters: Dict[str, Any], page: int, page_size: int):
         viral_v2 = ml_flags.get("viral_v2") or {}
         final_info = viral_v2.get("final") or {}
 
-        video_id = (
-            doc.get("video_id")
-            or doc.get("videoId")
-            or str(doc.get("_id"))
-        )
+        video_id = doc.get("video_id") or doc.get("videoId") or str(doc.get("_id"))
 
         title = (
             doc.get("title")
@@ -268,12 +439,8 @@ def query_videos(filters: Dict[str, Any], page: int, page_size: int):
         raw_status = final_info.get("status")
         raw_behavior = final_info.get("behavior")
 
-        status_label = STATUS_LABELS.get(
-            raw_status, raw_status or "Unknown / no decision"
-        )
-        behavior_label = BEHAVIOR_LABELS.get(
-            raw_behavior, raw_behavior or "Unknown"
-        )
+        status_label = STATUS_LABELS.get(raw_status, raw_status or "Unknown / no decision")
+        behavior_label = BEHAVIOR_LABELS.get(raw_behavior, raw_behavior or "Unknown")
 
         raw_tracking = tracking.get("status") or "unknown"
         tracking_label = TRACKING_STATUS_LABELS.get(raw_tracking, raw_tracking)
@@ -294,7 +461,7 @@ def query_videos(filters: Dict[str, Any], page: int, page_size: int):
 
 
 def _parse_iso_ts(value: str) -> datetime | None:
-    """Parse ISO timestamp string (handles ...Z and +00:00)."""
+    """Parse an ISO timestamp string (supports ...Z and +00:00)."""
     if not value:
         return None
     value = value.replace("Z", "+00:00")
@@ -305,20 +472,21 @@ def _parse_iso_ts(value: str) -> datetime | None:
 
 
 def _ensure_utc(dt: datetime | None) -> datetime | None:
-    """Convert datetime to UTC-aware (or keep None)."""
+    """Ensure a datetime is UTC-aware (or keep None)."""
     if dt is None:
         return None
     if dt.tzinfo is None:
-        # Mongo thường trả datetime naive -> gắn UTC
+        # Mongo often returns naive datetime -> treat as UTC.
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
 
+
 # -----------------------------
-# Worker tracking helpers
+# Worker heartbeat tracking helpers (worker_heartbeats collection)
 # -----------------------------
 
 DEFAULT_WORKER_INTERVAL_MIN: Dict[str, int] = {
-    # Bạn chỉnh lại cho khớp tên worker thực tế nếu khác
+    # Adjust these keys if your real worker names differ.
     "discover_once": 10,
     "track_once": 10,
     "lowq_3h": 20,
@@ -336,12 +504,12 @@ def load_worker_status() -> List[Dict[str, Any]]:
     """
     Load worker heartbeat docs from MongoDB and classify status.
 
-    Expect collection `worker_heartbeats` với schema gợi ý:
+    Expected `worker_heartbeats` schema (suggested):
     {
         "_id": "discover_once",
         "worker": "discover_once",
         "host": "vps-01",
-        "last_heartbeat": <datetime hoặc {$date: "..."} hoặc string ISO>,
+        "last_heartbeat": <datetime or {$date: "..."} or ISO string>,
         "expected_interval_min": 10,
         "last_error": "optional..."
     }
@@ -356,13 +524,9 @@ def load_worker_status() -> List[Dict[str, Any]]:
         name = doc.get("worker") or doc.get("name") or str(doc.get("_id") or "unknown")
         host = doc.get("host") or "-"
 
-        raw_ts = (
-            doc.get("last_heartbeat")
-            or doc.get("last_seen")
-            or doc.get("last_run")
-        )
+        raw_ts = doc.get("last_heartbeat") or doc.get("last_seen") or doc.get("last_run")
 
-        # Dùng _parse_iso_ts + _ensure_utc đã có sẵn trong file
+        # Use _parse_iso_ts + _ensure_utc helpers defined above
         if isinstance(raw_ts, datetime):
             last_dt = _ensure_utc(raw_ts)
         else:
@@ -376,7 +540,7 @@ def load_worker_status() -> List[Dict[str, Any]]:
             name, DEFAULT_WORKER_INTERVAL_MIN["_default"]
         )
 
-        # Phân loại trạng thái
+        # Classify status level based on staleness
         if minutes_ago is None:
             status_level = "unknown"
             status_label = "Unknown"
@@ -390,7 +554,7 @@ def load_worker_status() -> List[Dict[str, Any]]:
             status_level = "error"
             status_label = "Offline"
 
-        # Map sang icon + Tailwind class để Jinja render đẹp
+        # Map to icon + Tailwind classes for nicer Jinja rendering
         if status_level == "ok":
             status_icon = "✅"
             status_class = "bg-emerald-500/15 border border-emerald-400/60 text-emerald-200"
@@ -429,21 +593,22 @@ def load_worker_status() -> List[Dict[str, Any]]:
             }
         )
 
-    # Sort theo tên để bảng gọn
+    # Sort by worker name for a stable UI ordering
     items.sort(key=lambda x: x["name"])
     return items
 
 
 def get_video_analytics(video_id: str) -> Dict[str, Any] | None:
     """
-    Load one video doc and prepare analytics data for charts.
-    - Age of video
+    Load one video doc and prepare analytics data for charts:
+    - Video age (hours/days)
     - Time curve for views / likes / comments
     - Ad-friendly + viral status + behavior
+    - Tracking status + stop reason (patched logic)
     """
     coll = _videos_coll()
 
-    # Try several keys (_id is usually the videoId string)
+    # Try several keys (_id is often the videoId string)
     doc = coll.find_one({"_id": video_id})
     if doc is None:
         doc = coll.find_one({"video_id": video_id})
@@ -476,7 +641,7 @@ def get_video_analytics(video_id: str) -> Dict[str, Any] | None:
     else:
         last_ts = None
 
-    # Fallback last_ts = last point in stats_snapshots
+    # Fallback: last_ts = last point in stats_snapshots
     snapshots = doc.get("stats_snapshots") or []
     if snapshots and last_ts is None:
         last_ts = _parse_iso_ts(snapshots[-1].get("ts"))
@@ -528,33 +693,33 @@ def get_video_analytics(video_id: str) -> Dict[str, Any] | None:
     # Friendly labels
     raw_status = final_info.get("status")
     raw_behavior = final_info.get("behavior")
-    viral_status_label = STATUS_LABELS.get(
-        raw_status, raw_status or "No decision yet"
-    )
-    behavior_label = BEHAVIOR_LABELS.get(
-        raw_behavior, raw_behavior or "Unknown"
-    )
+    viral_status_label = STATUS_LABELS.get(raw_status, raw_status or "No decision yet")
+    behavior_label = BEHAVIOR_LABELS.get(raw_behavior, raw_behavior or "Unknown")
 
-    # Ad-friendly
+    # Ad-friendly label + score
     raw_ad_label = ad_flag.get("label")
     ad_label = AD_LABELS.get(raw_ad_label, raw_ad_label or "Unknown")
     ad_score = ad_flag.get("score")
 
-    # Tracking
+    # ==========================
+    # Tracking (PATCHED logic)
+    # ==========================
     final_tracking_status = final_info.get("tracking_status_at_final")
     final_stop_reason = final_info.get("tracking_stop_reason_at_final")
 
-    raw_tracking_status = (
-        final_tracking_status or tracking.get("status") or "unknown"
-    )
-    tracking_status = TRACKING_STATUS_LABELS.get(
-        raw_tracking_status, raw_tracking_status
-    )
-
+    # Prefer final_* values; fallback to current tracking.stop_reason
     raw_stop_reason = final_stop_reason or tracking.get("stop_reason")
-    tracking_stop_reason = TRACKING_REASON_LABELS.get(
-        raw_stop_reason, raw_stop_reason
-    )
+    tracking_stop_reason = TRACKING_REASON_LABELS.get(raw_stop_reason, raw_stop_reason)
+
+    # Safe fallback:
+    # If stop_reason exists -> tracking must be finished -> force "complete"
+    if raw_stop_reason:
+        raw_tracking_status = "complete"
+    else:
+        # No stop reason: use latest status (final first, then tracking)
+        raw_tracking_status = final_tracking_status or tracking.get("status") or "unknown"
+
+    tracking_status = TRACKING_STATUS_LABELS.get(raw_tracking_status, raw_tracking_status)
 
     return {
         "video_id": video_id,
@@ -593,17 +758,13 @@ def get_video_analytics(video_id: str) -> Dict[str, Any] | None:
 @app.get("/", response_class=HTMLResponse)
 async def dashboard_root(request: Request):
     kpis = load_dashboard_kpis()
-    return templates.TemplateResponse(
-        "dashboard.html", {"request": request, "kpis": kpis}
-    )
+    return templates.TemplateResponse("dashboard.html", {"request": request, "kpis": kpis})
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard_page(request: Request):
     kpis = load_dashboard_kpis()
-    return templates.TemplateResponse(
-        "dashboard.html", {"request": request, "kpis": kpis}
-    )
+    return templates.TemplateResponse("dashboard.html", {"request": request, "kpis": kpis})
 
 
 @app.get("/api/kpis")
@@ -631,7 +792,7 @@ async def viral_filter_page(
     keyword_options = ["(All)"] + keywords
     region_options = ["(All)"] + regions
 
-    # ----- FILTER LOGIC -----
+    # ----- FILTER FLAGS -----
     has_kw = keyword != "(All)"
     has_rg = region != "(All)"
     has_vl = final != "(All)"
@@ -666,9 +827,7 @@ async def viral_filter_page(
 
         # No Viral Signal -> non-viral, low-quality non-viral, or unknown
         elif "no viral signal" in text:
-            filters[key] = {
-                "$in": ["non_viral", "non_viral_lowq", "unknown", None]
-            }
+            filters[key] = {"$in": ["non_viral", "non_viral_lowq", "unknown", None]}
 
     # Behavior pattern filter
     if has_bh:
@@ -708,13 +867,9 @@ async def viral_filter_page(
     next_url = None
     if total > 0:
         if page > 1:
-            prev_url = "/viral-filter?" + urlencode(
-                {**base_params, "page": page - 1}
-            )
+            prev_url = "/viral-filter?" + urlencode({**base_params, "page": page - 1})
         if page < max_page:
-            next_url = "/viral-filter?" + urlencode(
-                {**base_params, "page": page + 1}
-            )
+            next_url = "/viral-filter?" + urlencode({**base_params, "page": page + 1})
 
     context = {
         "request": request,
@@ -749,24 +904,58 @@ async def video_analytics_page(request: Request, video_id: str):
     if not data:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    return templates.TemplateResponse(
-        "video_analytics.html",
-        {
-            "request": request,
-            "data": data,
-        },
+    return templates.TemplateResponse("video_analytics.html", {"request": request, "data": data})
+
+
+@app.get("/keywords-analysis", response_class=HTMLResponse)
+async def keywords_analysis_page(
+    request: Request,
+    region: str = Query("ALL"),
+    min_videos: int = Query(10, ge=0),
+    sort_by: str = Query("viral_ratio"),
+    limit: int = Query(50, ge=10, le=200),
+):
+    """
+    Keywords Analysis page: analyze keywords based on the `keyword_stats` collection
+    (all_time, per-region).
+    """
+    regions = load_keyword_regions_for_stats()
+
+    # If user-selected region doesn't exist (e.g., typed manually), fallback.
+    if region not in regions and regions:
+        region = "ALL" if "ALL" in regions else regions[0]
+
+    data = load_keyword_stats_view(
+        region=region,
+        min_videos=min_videos,
+        limit=limit,
+        sort_by=sort_by,
     )
 
+    context = {
+        "request": request,
+        "regions": regions,
+        "selected_region": region,
+        "min_videos": min_videos,
+        "sort_by": sort_by,
+        "limit": limit,
+        "rows": data["rows"],
+        "summary": data["summary"],
+    }
+
+    return templates.TemplateResponse("keyword_analysis.html", context)
+
+
 # -------------------------------------------------
-# Worker tracking (using worker_runs collection)
+# Worker tracking (worker_runs collection)
 # -------------------------------------------------
 from datetime import datetime, timezone
 from typing import List, Dict, Any
 from collections import defaultdict
 
-from config.db import get_db  # dùng DB chung
+from config.db import get_db  # shared DB accessor
 
-# Expected interval (minutes) cho từng worker
+# Expected interval (minutes) for each worker
 WORKER_INTERVAL_MIN: Dict[str, int] = {
     "discover_once": 15,
     "track_once": 15,
@@ -778,10 +967,11 @@ WORKER_INTERVAL_MIN: Dict[str, int] = {
     "viral_finalize": 60,
     "ad_friendly_v1": 60,
     "compute_dashboard_kpis": 60,
+    "keyword_stats_all_time": 1,
     "_default": 60,
 }
 
-# Tên hiển thị đẹp hơn
+# Prettier display names
 WORKER_DISPLAY_NAME: Dict[str, str] = {
     "discover_once": "Discovery queue",
     "track_once": "Tracking queue",
@@ -793,9 +983,10 @@ WORKER_DISPLAY_NAME: Dict[str, str] = {
     "viral_finalize": "Viral finalize & label writer",
     "ad_friendly_v1": "Ad-safety scoring · v1",
     "compute_dashboard_kpis": "Dashboard KPIs refresher",
+    "keyword_stats_all_time": "Keyword Stats · all-time (incremental)",
 }
 
-# Description ngắn cho từng worker
+# Short description per worker
 WORKER_DESCRIPTION: Dict[str, str] = {
     "discover_once": "Discover new videos from search queries and seed channels.",
     "track_once": "Refresh statistics for active videos that are still being tracked.",
@@ -807,9 +998,13 @@ WORKER_DESCRIPTION: Dict[str, str] = {
     "viral_finalize": "Combine model outputs and write the final viral label for videos.",
     "ad_friendly_v1": "Evaluate videos for ad-friendliness using the ad-safety model.",
     "compute_dashboard_kpis": "Aggregate KPIs for the internal dashboard.",
+    "keyword_stats_all_time": (
+        "Aggregate per-keyword 24h metrics, viral labels and region stats "
+        "into the `keyword_stats` collection."
+    ),
 }
 
-# Metric nào nên show cho từng worker (những cái nhỏ lẻ khác sẽ ẩn)
+# Metrics to display per worker (minor/noisy metrics are hidden)
 METRIC_WHITELIST: Dict[str, List[str]] = {
     "discover_once": ["pages", "total_found", "total_upserted", "reason", "error"],
     "track_once": ["completed", "processed"],
@@ -821,9 +1016,14 @@ METRIC_WHITELIST: Dict[str, List[str]] = {
     "viral_finalize": ["finalized", "processed"],
     "ad_friendly_v1": ["docs_scanned", "docs_updated"],
     "compute_dashboard_kpis": [],
+    "keyword_stats_all_time": [
+        "videos_processed",
+        "keywords_updated",
+        "duration_sec",
+    ],
 }
 
-# Đổi tên metric cho dễ đọc
+# Metric label overrides for nicer display
 METRIC_LABEL_OVERRIDES: Dict[str, str] = {
     "docs_scanned": "docs scanned",
     "docs_updated": "docs updated",
@@ -839,7 +1039,7 @@ METRIC_LABEL_OVERRIDES: Dict[str, str] = {
 
 
 def _group_for_worker(name: str) -> str:
-    """Human friendly group name for each worker."""
+    """Human-friendly group name for each worker."""
     if name in ("discover_once", "track_once"):
         return "Ingestion & tracking"
     if name.startswith("low_quality_autoflag"):
@@ -852,11 +1052,13 @@ def _group_for_worker(name: str) -> str:
         return "Ad-safety model"
     if name == "compute_dashboard_kpis":
         return "Dashboard KPIs"
+    if name == "keyword_stats_all_time":
+        return "Aggregations & Stats"
     return "Other workers"
 
 
 def _parse_worker_last_run(raw: Any) -> datetime | None:
-    """Handle datetime from Mongo (datetime) hoặc string ISO."""
+    """Handle datetime coming from Mongo (datetime) or ISO string."""
     if raw is None:
         return None
 
@@ -899,7 +1101,7 @@ def _classify_worker_status(
             level = "warning"
             label = "Delayed"
         else:
-            # Fresh enough -> dùng status của worker
+            # Fresh enough -> use reported worker status
             if "err" in base or "fail" in base:
                 level = "error"
                 label = "Error"
@@ -935,7 +1137,7 @@ def _classify_worker_status(
 
 def load_worker_tracking_data() -> Dict[str, Any]:
     """
-    Read worker_runs collection and build:
+    Read `worker_runs` collection and build:
     - workers: list of normalized worker dicts
     - groups: list[{name, workers}]
     - summary counts
@@ -973,7 +1175,7 @@ def load_worker_tracking_data() -> Dict[str, Any]:
         display_name = WORKER_DISPLAY_NAME.get(name, name)
         description = WORKER_DESCRIPTION.get(name, "")
 
-        # Lọc metrics
+        # Filter metrics
         allowed_keys = METRIC_WHITELIST.get(name)
         metrics: List[Dict[str, Any]] = []
         for key, value in doc.items():
@@ -983,12 +1185,7 @@ def load_worker_tracking_data() -> Dict[str, Any]:
                 continue
 
             label_text = METRIC_LABEL_OVERRIDES.get(key, key.replace("_", " "))
-            metrics.append(
-                {
-                    "label": label_text,
-                    "value": value,
-                }
-            )
+            metrics.append({"label": label_text, "value": value})
 
         workers.append(
             {
@@ -1039,3 +1236,38 @@ async def worker_tracking_page(request: Request):
     data = load_worker_tracking_data()
     data["request"] = request
     return templates.TemplateResponse("worker_tracking.html", data)
+
+
+@app.get("/api/keyword-region-breakdown")
+async def keyword_region_breakdown(keyword: str):
+    """
+    Return per-region breakdown for a given keyword.
+
+    Source: `keyword_stats` collection
+    - Exclude region == 'ALL'
+    - Using videos_count as weight (you can switch to views_sum_24h if desired)
+    """
+    db = get_db()
+    coll = db["keyword_stats"]
+
+    docs = list(
+        coll.find(
+            {"keyword": keyword, "region": {"$ne": "ALL"}},
+            {"_id": 0, "region": 1, "videos_count": 1, "views_sum_24h": 1},
+        )
+    )
+
+    # If no data, return empty arrays
+    if not docs:
+        return {"keyword": keyword, "regions": [], "videos": [], "views": []}
+
+    regions: List[str] = []
+    videos: List[int] = []
+    views: List[int] = []
+
+    for d in docs:
+        regions.append(d.get("region") or "UNK")
+        videos.append(int(d.get("videos_count") or 0))
+        views.append(int(d.get("views_sum_24h") or 0))
+
+    return {"keyword": keyword, "regions": regions, "videos": videos, "views": views}
