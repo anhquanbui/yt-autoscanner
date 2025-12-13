@@ -713,20 +713,30 @@ def get_video_analytics(video_id: str) -> Dict[str, Any] | None:
     ad_label = AD_LABELS.get(raw_ad_label, raw_ad_label or "Unknown")
     ad_score = ad_flag.get("score")
 
-    # Tracking
+    # ==========================
+    # Tracking (đã PATCH)
+    # ==========================
     final_tracking_status = final_info.get("tracking_status_at_final")
     final_stop_reason = final_info.get("tracking_stop_reason_at_final")
 
-    raw_tracking_status = (
-        final_tracking_status or tracking.get("status") or "unknown"
-    )
-    tracking_status = TRACKING_STATUS_LABELS.get(
-        raw_tracking_status, raw_tracking_status
-    )
-
+    # Lấy stop_reason thực tế: ưu tiên final_*, nếu không thì tracking.stop_reason
     raw_stop_reason = final_stop_reason or tracking.get("stop_reason")
     tracking_stop_reason = TRACKING_REASON_LABELS.get(
         raw_stop_reason, raw_stop_reason
+    )
+
+    # Fallback an toàn:
+    # Nếu đã có stop_reason -> chắc chắn tracking đã kết thúc => ép về "complete"
+    if raw_stop_reason:
+        raw_tracking_status = "complete"
+    else:
+        # Chưa có stop reason: dùng status mới nhất (final trước, rồi tới tracking)
+        raw_tracking_status = (
+            final_tracking_status or tracking.get("status") or "unknown"
+        )
+
+    tracking_status = TRACKING_STATUS_LABELS.get(
+        raw_tracking_status, raw_tracking_status
     )
 
     return {
@@ -756,6 +766,7 @@ def get_video_analytics(video_id: str) -> Dict[str, Any] | None:
             "comments": comments,
         },
     }
+
 
 
 # ============================================================
